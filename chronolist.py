@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 50
+BUILD = 52
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -376,7 +376,7 @@ def check_for_update(out):
         if tag and version_tuple(tag) > version_tuple(VERSION):
             zip_url = next((a.get("browser_download_url") for a in j.get("assets") or []
                             if (a.get("name") or "").lower().endswith("-windows.zip")), None)
-            out.put(("update", tag, j.get("html_url") or f"{REPO_URL}/releases/latest", zip_url))
+            out.put(("update", tag, j.get("html_url") or f"{REPO_URL}/releases/latest", zip_url, j.get("body") or ""))
     except (requests.RequestException, ValueError):
         pass
 
@@ -2629,8 +2629,8 @@ class UpdateDialog(tk.Toplevel):
                               f"Chronolist v{version} ist verfügbar (du hast v{VERSION}).\n\n"
                               "Die neue Version wird von GitHub geladen und ersetzt dieses Programm. Danach startet "
                               "Chronolist neu. Einstellungen, Anmeldung und Fortschritt bleiben erhalten."),
-                 bg=BG, fg=TEXT_DIM, font=F("ui", 13, False), justify="left", anchor="w",
-                 wraplength=px(440)).pack(fill="x", padx=pad)
+                 bg=BG, fg=TEXT, font=F("ui", 16, False), justify="left", anchor="w",
+                 wraplength=px(500)).pack(fill="x", padx=pad)
         row = tk.Frame(self, bg=BG)
         row.pack(fill="x", padx=pad, pady=pad)
         CutButton(row, L("UPDATE NOW", "JETZT UPDATEN"), self.go, width=150).pack(side="left")
@@ -2922,8 +2922,9 @@ HELP_TEXT_DE = [
 
     ("h2", "Updates"),
     ("p", "Beim Start fragt Chronolist einmal bei GitHub nach, ob es eine neuere Version gibt. Wenn ja, erscheint oben "
-          "neben der Versionsnummer ein grüner Hinweis. Ein Klick darauf fragt, ob du jetzt updaten willst. Dann lädt "
-          "Chronolist die neue Version von GitHub, ersetzt sich selbst und startet neu. Einstellungen, Anmeldung und "
+          "neben dem HILFE-Knopf ein grüner UPDATE-Knopf. Ein Klick darauf fragt, ob du jetzt updaten willst. Dann lädt "
+          "Chronolist die neue Version von GitHub, ersetzt sich selbst und startet neu. Danach steht einmal im "
+          "Protokoll, was neu ist. Einstellungen, Anmeldung und "
           "Fortschritt bleiben erhalten. Während ein Durchlauf läuft, geht das nicht, erst STOPP drücken. Wenn du "
           "Chronolist als Python-Skript startest, öffnet der Klick stattdessen die Download-Seite. Außer diesen "
           "Anfragen an GitHub wird nichts übertragen. Die Prüfung beim Start kannst du unter PROGRAMM abschalten."),
@@ -3114,9 +3115,10 @@ HELP_TEXT_EN = [
           "anywhere except to Google/YouTube itself."),
 
     ("h2", "Updates"),
-    ("p", "On start, Chronolist asks GitHub once whether there is a newer version. If so, a green note appears next "
-          "to the version number at the top. Clicking it asks whether you want to update now. Chronolist then "
-          "downloads the new version from GitHub, replaces itself and restarts. Settings, sign-in and progress stay "
+    ("p", "On start, Chronolist asks GitHub once whether there is a newer version. If so, a green UPDATE "
+          "button appears next to HELP at the top. Clicking it asks whether you want to update now. Chronolist then "
+          "downloads the new version from GitHub, replaces itself and restarts. Afterwards the log shows once "
+          "what's new. Settings, sign-in and progress stay "
           "as they are. This is not possible during a run, press STOP first. If you run Chronolist as a Python "
           "script, the click opens the download page instead. Nothing but these requests to GitHub is sent. You "
           "can turn off the check on start under PROGRAM."),
@@ -3374,6 +3376,7 @@ class Header(tk.Canvas):
         self.chip = StatusChip(self)
         self.api_btn = None      # wird von der App gesetzt
         self.help_btn = None
+        self.upd_btn = None      # grüner UPDATE-Knopf, von der App gesetzt
         self.update = None       # (version, url) wenn eine neuere Release existiert
         self.title_end = 0
         self.bind("<Configure>", lambda e: self.redraw())
@@ -3399,18 +3402,39 @@ class Header(tk.Canvas):
         bt = self.create_text(vx1 + px(10), y, text=f"BUILD {BUILD:04d}", anchor="w",
                               font=F("mono", 10, False), fill=FLUFF, tags="buildtxt")
         self.title_end = self.bbox(bt)[2] + px(20)
-        if self.update:
-            ut = self.create_text(self.title_end - px(6), y, text=f"UPDATE v{self.update[0]} ›", anchor="w",
-                                  font=F("mono", 11), fill=GREEN, tags="upd")
-            self.tag_bind("upd", "<Button-1>", lambda e: self.winfo_toplevel().update_click())
-            self.tag_bind("upd", "<Enter>", lambda e: self.configure(cursor="hand2"))
-            self.tag_bind("upd", "<Leave>", lambda e: self.configure(cursor=""))
-            self.title_end = self.bbox(ut)[2] + px(20)
+        tag_end = vx1 + px(16)       # weiter links dürfen die Knöpfe nie
         sub_t = self.create_text(x, px(64), text=f"{L('PLAYLIST UPLINK', 'PLAYLIST-UPLINK')} // {(CHANNEL.get('handle') or L('NO TARGET', 'KEIN ZIEL')).upper()} // {L('UPLOAD ORDER', 'UPLOAD-REIHENFOLGE')}", anchor="w",
                          font=F("mono", 11), fill=TEXT_MUTED)
         self.title_end = max(self.title_end, self.bbox(sub_t)[2] + px(20))
 
-        chip_w = px(210)
+        # Platz prüfen: passt alles in voller Größe? Sonst Status schmaler und HILFE nur als "?"
+        upd = self.upd_btn if self.update else None
+        gap = px(8)
+        full_help = L("?  HELP", "?  HILFE")
+
+        def need(chip_w, help_w):
+            n = chip_w + px(12) + help_w + px(16)
+            if self.api_btn is not None:
+                n += self.api_btn.winfo_reqwidth() + gap
+            if upd is not None:
+                n += upd.full_w + gap
+            return n
+        help_full_w = px(86)
+        compact = upd is not None and w - px(18) - need(px(210), help_full_w) < tag_end
+        if upd is not None:
+            upd.configure(width=upd.full_w)
+            upd.set_text(upd.full_text)
+            if compact and w - px(18) - need(px(150), px(40)) < tag_end:
+                upd.configure(width=upd.short_w)
+                upd.set_text(upd.short_text)
+        if self.help_btn is not None:
+            if compact:
+                self.help_btn.configure(width=px(40))
+                self.help_btn.set_text("?")
+            else:
+                self.help_btn.configure(width=max(help_full_w, self.help_btn.winfo_reqwidth()))
+                self.help_btn.set_text(full_help)
+        chip_w = px(150) if compact else px(210)
         cx1 = w - px(18)
         cx0 = cx1 - chip_w
         self.create_text(cx1, px(12), text="CONNECTION 201.89.43 // SYS.ID 0x7F3A", anchor="e",
@@ -3422,9 +3446,14 @@ class Header(tk.Canvas):
             self.create_window(bx, px(46), window=self.api_btn, anchor="e")
             bx -= bw_ + px(8)
         if self.help_btn is not None:
-            bw_ = self.help_btn.winfo_reqwidth()
-            self.create_window(bx, px(46), window=self.help_btn, anchor="e")
-            bx -= bw_ + px(16)
+            bw_ = int(self.help_btn.cget("width"))
+            self.create_window(bx, px(46), window=self.help_btn, anchor="e", width=bw_)
+            bx -= bw_ + gap
+        if upd is not None:
+            bw_ = int(upd.cget("width"))
+            self.create_window(bx, px(46), window=upd, anchor="e", width=bw_)
+            bx -= bw_ + gap
+        bx -= px(8)
         # BUILD-Hinweis weglassen, wenn er sonst unter die Knöpfe läuft
         bb = self.bbox("buildtxt")
         if bb and bb[2] > bx + px(8):
@@ -3781,6 +3810,7 @@ class App(tk.Tk):
         self.after(60000, self.api_tick)
         self.set_status("idle")
         self.write_log(L("CHRONOLIST ONLINE // SYSTEMS NOMINAL", "CHRONOLIST ONLINE // ALLE SYSTEME BEREIT"), "info")
+        self.show_post_update()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(200, self.poll)
         self.after(40, self.animate)
@@ -4225,6 +4255,23 @@ class App(tk.Tk):
             self.stop_btn.set_enabled(False)
             self.set_status("stopping")
 
+    def show_post_update(self):
+        """Nach einem Update einmalig die Neuerungen ins Protokoll schreiben."""
+        pu = self.settings.pop("post_update", None)
+        if not pu:
+            return
+        save(SETTINGS_FILE, self.settings)
+        self.write_log(L(f"UPDATED TO v{pu.get('version', VERSION)} // WHAT'S NEW",
+                         f"AKTUALISIERT AUF v{pu.get('version', VERSION)} // DAS IST NEU"), "ok")
+        for line in (pu.get("notes") or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("#"):
+                self.write_log("// " + line.lstrip("#").strip().upper(), "sep")
+            else:
+                self.write_log("• " + line.lstrip("-* ").strip(), "info")
+
     def cleanup_tick(self):
         # alte exe nach einem Update löschen; sie ist ggf. noch ein paar Sekunden gesperrt
         self.cleanup_tries += 1
@@ -4250,8 +4297,8 @@ class App(tk.Tk):
     def finish_update(self):
         if self.worker and self.worker.is_alive():
             self.updating = False
-            self.write_log(L("UPDATE PAUSED // STOP THE RUN AND CLICK THE GREEN TAG AGAIN",
-                             "UPDATE ANGEHALTEN // DURCHLAUF STOPPEN UND NOCHMAL AUF DEN GRÜNEN HINWEIS KLICKEN"), "err")
+            self.write_log(L("UPDATE PAUSED // STOP THE RUN AND CLICK UPDATE AGAIN",
+                             "UPDATE ANGEHALTEN // DURCHLAUF STOPPEN UND NOCHMAL AUF UPDATE KLICKEN"), "err")
             return
         err = install_update()
         if err:
@@ -4259,6 +4306,10 @@ class App(tk.Tk):
             self.write_log(L(f"UPDATE FAILED // {err} // THE CURRENT VERSION STAYS",
                              f"UPDATE FEHLGESCHLAGEN // {err} // DIE AKTUELLE VERSION BLEIBT"), "err")
             return
+        # Changelog einmalig nach dem Neustart im Protokoll zeigen
+        self.settings["post_update"] = {"version": self.header.update[0],
+                                        "notes": getattr(self, "update_notes", "")}
+        save(SETTINGS_FILE, self.settings)
         self.write_log(L("UPDATE INSTALLED // RESTARTING", "UPDATE INSTALLIERT // NEUSTART"), "ok")
         self.after(600, self.restart)
 
@@ -4333,8 +4384,17 @@ class App(tk.Tk):
                 elif kind == "update":
                     self.header.update = (msg[1], msg[2])
                     self.update_zip = msg[3] if len(msg) > 3 else None
+                    self.update_notes = msg[4] if len(msg) > 4 else ""
+                    if self.header.upd_btn is None:
+                        b = CutButton(self.header, f"▲  UPDATE v{msg[1]}", self.update_click)
+                        b.full_text, b.full_w = f"▲  UPDATE v{msg[1]}", b.winfo_reqwidth()
+                        b.short_text, b.short_w = "▲  UPDATE", px(104)
+                        b.set_color(GREEN)
+                        Tooltip(b, L(f"Version {msg[1]} is available. Click to update.",
+                                     f"Version {msg[1]} ist verfügbar. Klicken zum Updaten."))
+                        self.header.upd_btn = b
                     self.header.redraw()
-                    self.write_log(L(f"UPDATE AVAILABLE // v{msg[1]} // CLICK THE GREEN TAG IN THE HEADER", f"UPDATE VERFÜGBAR // v{msg[1]} // OBEN AUF DEN GRÜNEN HINWEIS KLICKEN"), "ok")
+                    self.write_log(L(f"UPDATE AVAILABLE // v{msg[1]} // CLICK THE GREEN UPDATE BUTTON AT THE TOP", f"UPDATE VERFÜGBAR // v{msg[1]} // OBEN AUF DEN GRÜNEN UPDATE-KNOPF KLICKEN"), "ok")
                 elif kind == "upd_progress":
                     self.write_log(L(f"DOWNLOADING UPDATE // {msg[1]} %", f"UPDATE WIRD GELADEN // {msg[1]} %"), "info")
                 elif kind == "upd_failed":

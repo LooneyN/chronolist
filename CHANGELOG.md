@@ -5,6 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+- After an in-app update, the changelog of the new version is shown once in the log.
+
+### Changed
+- A new release is shown as a green UPDATE button next to HELP instead of a small text tag. In narrow windows HELP shrinks to "?" so the button always fits.
+- Larger, brighter text in the update dialog.
+
 ## [2.10.0] - 2026-10-31
 
 ### Added
