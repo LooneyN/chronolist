@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 69
+BUILD = 70
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -111,7 +111,7 @@ API = "https://www.googleapis.com/youtube/v3"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPE = "https://www.googleapis.com/auth/youtube"
 BATCH_SIZE = 25                 # Browser-Fallback: Videos pro Anfrage
-BATCH_PAUSE = (8, 20)          # Sekunden zwischen zwei Paketen
+BATCH_PAUSE = (5, 15)          # Sekunden zwischen zwei Paketen
 COOLDOWN_EVERY = 200            # nach so vielen Videos ein kurzer Cooldown
 COOLDOWN_PAUSE = (27, 33)       # Sekunden (~30 s)
 LONG_BREAK_EVERY = 750          # nach so vielen Videos eine lange Pause
@@ -3353,7 +3353,7 @@ HELP_TEXT_DE = [
     ("h2", "Warum macht Chronolist Pausen?"),
     ("p", "Über das Edge-Fenster arbeitet Chronolist absichtlich nicht im Höchsttempo, damit es nicht wie ein Bot "
           "aussieht. Die Pausen siehst du mit Countdown auf der Jahreskarte und oben in der Statusanzeige."),
-    ("dd", "NÄCHSTES PAKET: kurze Pause zwischen zwei Paketen mit je 25 Videos, 8 bis 20 Sekunden.\n"
+    ("dd", "NÄCHSTES PAKET: kurze Pause zwischen zwei Paketen mit je 25 Videos, 5 bis 15 Sekunden.\n"
            "KURZE PAUSE: etwa 30 Sekunden nach jeweils 200 Videos.\n"
            "LANGE PAUSE: etwa fünf Minuten nach jeweils 750 Videos.\n"
            "YOUTUBE BREMST: YouTube bremst kurz, Chronolist wartet zehn Minuten.\n"
@@ -3556,7 +3556,7 @@ HELP_TEXT_EN = [
     ("h2", "Why does Chronolist pause?"),
     ("p", "Through the Edge window Chronolist deliberately doesn't work at full speed, so it doesn't look like a bot. "
           "You see the pauses with a countdown on the year card and in the status display at the top."),
-    ("dd", "NEXT BATCH: short pause between two batches of 25 videos, 8 to 20 seconds.\n"
+    ("dd", "NEXT BATCH: short pause between two batches of 25 videos, 5 to 15 seconds.\n"
            "COOLDOWN: about 30 seconds after every 200 videos.\n"
            "BREAK: about five minutes after every 750 videos.\n"
            "RATE LIMIT: YouTube slows things down briefly, Chronolist waits ten minutes.\n"

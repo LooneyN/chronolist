@@ -14,7 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Changed
 - Browser fallback: the long break after every 750 videos is about 5 minutes (was about 10).
 - Browser fallback: short cooldown of about 30 seconds every 200 videos (was about 1 minute every 150).
-- Browser fallback: 25 videos per batch (was 20), 8 to 20 seconds between batches (was 10 to 25).
+- Browser fallback: 25 videos per batch (was 20), 5 to 15 seconds between batches (was 10 to 25).
 - A new release is shown as a green UPDATE button next to HELP instead of a small text tag. In narrow windows HELP shrinks to "?" so the button always fits.
 - Larger, brighter text in the update dialog.
 
