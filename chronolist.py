@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 80
+BUILD = 82
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -116,7 +116,7 @@ COOLDOWN_EVERY = 250            # nach so vielen Videos ein kurzer Cooldown
 COOLDOWN_PAUSE = (17, 23)       # Sekunden (~20 s)
 LONG_BREAK_EVERY = 1500         # nach so vielen Videos eine lange Pause
 LONG_BREAK_PAUSE = (210, 270)   # Sekunden (~4 min)
-REMOVE_EXTRAS = False           # Sicherung: Videos, die nicht (mehr) in der Liste stehen, NICHT aus Playlists löschen
+REMOVE_EXTRAS = True            # nur bei Jahren, die per API-Nur-Videos-Liste geprüft sind
 PART_MAX = 5000                 # YouTube: höchstens 5.000 Videos pro Playlist -> danach Teil 2, 3, ...
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -252,6 +252,48 @@ def videos_only_list(uploads_id):
 
 def lf_file(): return CHAN_DIR / "videos_only.json"
 def titles_file(): return CHAN_DIR / "titles.json"
+
+
+def merge_keep(base_ids, old_items):
+    """base_ids (Reihenfolge der Kanalseite) plus alle Einträge aus old_items, die dort fehlen,
+    jeweils hinter ihrem Vorgänger aus der alten Liste eingefügt."""
+    merged = list(base_ids)
+    have = set(merged)
+    prev = None
+    for v in old_items:
+        vid = v["id"]
+        if vid in have:
+            prev = vid
+            continue
+        pos = merged.index(prev) + 1 if prev in merged else 0
+        merged.insert(pos, vid)
+        have.add(vid)
+        prev = vid
+    return merged
+
+
+def known_dates():
+    """Veröffentlichungsdaten aus allen gespeicherten API-Daten (Archiv, Suche, Nur-Videos-Liste)."""
+    d = {}
+    d.update(load(archive_file(), {}).get("found") or {})
+    for f in (sorted(CHAN_DIR.glob("collect_*.json")) if CHAN_DIR.exists() else []):
+        d.update(load(f, {}).get("found") or {})
+    d.update(load(lf_file(), {}).get("found") or {})
+    return d
+
+
+def insert_by_date(videos, extra, dates):
+    """Fehlende Videos (extra: [(id, datum)]) nach Datum zwischen die vorhandenen einsortieren."""
+    out = list(videos)
+    for vid, pub in sorted(extra, key=lambda t: t[1]):
+        pos = len(out)
+        for i, v in enumerate(out):
+            dv = v.get("published") or dates.get(v["id"])
+            if dv and dv > pub:
+                pos = i
+                break
+        out.insert(pos, {"id": vid, "published": pub})
+    return out
 
 
 def removed_by_year():
@@ -1587,12 +1629,12 @@ class Worker(threading.Thread):
         web = self.web_index(year)
         if not web:
             raise BrowserFailed(L(f"{year} // NO VIDEOS FOUND ON THE CHANNEL PAGE", f"{year} // KEINE VIDEOS AUF DER KANALSEITE GEFUNDEN"))
-        merged = list(web)       # Kanalseite = nur normale Videos; Shorts/Livestreams aus alten Listen fallen raus
+        merged = merge_keep(web, old or [])   # Kanalseite ergänzt nur; sie zeigt nicht alle Videos, also nie etwas entfernen
         videos = [{"id": v, "published": None} for v in merged]
         save(videos_file(year), videos)
         cf = collect_file(year)
         prog = load(cf, {})
-        prog.update(method="done", source="web", videos_only=True)
+        prog.update(method="done", source="web")
         save(cf, prog)
         self.scanning = None
         if old:
@@ -1657,54 +1699,94 @@ class Worker(threading.Thread):
         self.log(L(f"VIDEOS ONLY // {len(data['found'])} VIDEOS", f"NUR VIDEOS // {len(data['found'])} VIDEOS"), "ok")
         return data
 
-    def videos_only(self, year, videos):
-        """Shorts und Livestreams aus einer (älteren) Liste entfernen. Liefert die bereinigte Liste;
-        hat sich etwas geändert, wird die Playlist beim Füllen nachgetragen/bereinigt."""
+    def restore_wrongly_removed(self, year, videos):
+        """Build 75–79 haben Videos aussortiert, die auf der Kanalseite fehlten – das waren oft normale
+        Videos. Einmalig alles zurückholen; danach prüft nur noch die API-Liste."""
         cf = collect_file(year)
         prog = load(cf, {})
-        if prog.get("videos_only"):
+        if prog.get("restored_v80"):
             return videos
-        self.log(L(f"{year} // CHECKING FOR SHORTS/LIVESTREAMS ...", f"{year} // PRÜFE AUF SHORTS/LIVESTREAMS ..."))
+        # Was gehört rein? Nur-Videos-Liste der API, wenn vorhanden; für alte Jahre (vor dieser Liste) alles
         allowed = None
-        try:
-            if prog.get("source") == "web":
-                # über die Kanalseite abgeglichen, aber evtl. mit alten Einträgen (Shorts/Livestreams) gemischt
-                idx = load(web_index_file(), {})
-                if idx.get("year") and (idx.get("end") or (idx.get("last") and int(idx["last"][:4]) > year)):
-                    allowed = {v for v, yy in idx["year"].items() if yy == year}
-                elif self.fallback:
-                    allowed = set(self.web_index(year))
-            elif not quota_blocked("units"):
-                data = self.lf_scan()
-                if data and data.get("done"):
-                    if not (data.get("capped") and year <= int(data.get("oldest") or 0)):
-                        allowed = {v for v, p in data["found"].items() if p[:4] == str(year)}
-            if allowed is None and self.fallback:
-                allowed = set(self.web_index(year))
-        except QuotaExceeded:
-            if self.fallback:
-                allowed = set(self.web_index(year))
-        if allowed is None:
-            self.log(L(f"{year} // SHORTS/LIVESTREAMS CHECK POSTPONED // NEEDS API QUOTA OR FALLBACK",
-                       f"{year} // PRÜFUNG AUF SHORTS/LIVESTREAMS VERSCHOBEN // BRAUCHT API-KONTINGENT ODER FALLBACK"), "warn")
-            return videos          # später noch einmal versuchen
-        if not allowed:
-            return videos          # nichts Verlässliches zum Vergleichen
-        cleaned = [v for v in videos if v["id"] in allowed]
-        prog["videos_only"] = True
-        save(cf, prog)
-        removed = len(videos) - len(cleaned)
-        if not removed:
-            self.log(L(f"{year} // NO SHORTS/LIVESTREAMS FOUND", f"{year} // KEINE SHORTS/LIVESTREAMS GEFUNDEN"), "ok")
-        if removed:
-            save(videos_file(year), cleaned)
+        lf = load(lf_file(), {})
+        cut = archive_cutoff()
+        old_year = (lf.get("done") and lf.get("capped") and year <= int(lf.get("oldest") or 0)) or \
+                   (not lf.get("done") and cut is not None and year < cut)
+        if not old_year:
+            if not lf.get("done"):
+                if quota_blocked("units"):
+                    return videos               # erst mit Kontingent zuverlässig möglich
+                try:
+                    lf = self.lf_scan() or {}
+                except QuotaExceeded:
+                    return videos
+            allowed = {v for v, p in (lf.get("found") or {}).items() if p[:4] == str(year)}
+            if not allowed:
+                return videos
+        prog["restored_v80"] = True
+        prog.pop("videos_only", None)
+        dates = known_dates()
+        have = {v["id"] for v in videos}
+        extra = [(v, p) for v, p in dates.items()
+                 if p[:4] == str(year) and v not in have and (allowed is None or v in allowed)]
+        if extra:
+            videos = insert_by_date(videos, extra, dates)
+            save(videos_file(year), videos)
             st = load(state_file(year), {})
             if st.get("playlist_id"):
                 st["repair"] = True
                 save(state_file(year), st)
-            self.log(L(f"{year} // {removed} SHORTS/LIVESTREAMS REMOVED FROM THE LIST",
-                       f"{year} // {removed} SHORTS/LIVESTREAMS AUS DER LISTE ENTFERNT"), "warn")
+            self.log(L(f"{year} // {len(extra)} VIDEO(S) RESTORED TO THE LIST (WRONGLY LEFT OUT BEFORE)",
+                       f"{year} // {len(extra)} VIDEO(S) WIEDER IN DIE LISTE (VORHER FÄLSCHLICH AUSSORTIERT)"), "warn")
             self.emit("progress", year)
+        save(cf, prog)
+        return videos
+
+    def videos_only(self, year, videos):
+        """Shorts und Livestreams entfernen – nur anhand der Nur-Videos-Liste der API (zuverlässig).
+        Ohne Kontingent wird verschoben, nicht geraten."""
+        videos = self.restore_wrongly_removed(year, videos)
+        cf = collect_file(year)
+        prog = load(cf, {})
+        if prog.get("videos_only"):
+            return videos
+        if quota_blocked("units"):
+            if not getattr(self, "_lf_postponed", False):
+                self._lf_postponed = True
+                self.log(L("SHORTS/LIVESTREAMS CHECK POSTPONED // NEEDS API QUOTA (ABOUT 1 UNIT PER 50 VIDEOS, ONCE)",
+                           "PRÜFUNG AUF SHORTS/LIVESTREAMS VERSCHOBEN // BRAUCHT API-KONTINGENT (EINMALIG CA. 1 EINHEIT PRO 50 VIDEOS)"), "warn")
+            return videos
+        try:
+            data = self.lf_scan()
+        except QuotaExceeded:
+            return videos
+        if not data or not data.get("done"):
+            return videos
+        oldest = int(data.get("oldest") or 0)
+        if data.get("capped") and year <= oldest:
+            prog["videos_only"] = True          # zu alt für die API-Liste; Shorts gab es damals ohnehin nicht
+            save(cf, prog)
+            return videos
+        self.log(L(f"{year} // CHECKING FOR SHORTS/LIVESTREAMS ...", f"{year} // PRÜFE AUF SHORTS/LIVESTREAMS ..."))
+        allowed = {v for v, p in data["found"].items() if p[:4] == str(year)}
+        if not allowed:
+            return videos
+        cleaned = [v for v in videos if v["id"] in allowed]
+        prog["videos_only"] = True
+        prog["lf_checked"] = True
+        save(cf, prog)
+        removed = len(videos) - len(cleaned)
+        if not removed:
+            self.log(L(f"{year} // NO SHORTS/LIVESTREAMS FOUND", f"{year} // KEINE SHORTS/LIVESTREAMS GEFUNDEN"), "ok")
+            return videos
+        save(videos_file(year), cleaned)
+        st = load(state_file(year), {})
+        if st.get("playlist_id"):
+            st["repair"] = True
+            save(state_file(year), st)
+        self.log(L(f"{year} // {removed} SHORTS/LIVESTREAMS REMOVED FROM THE LIST",
+                   f"{year} // {removed} SHORTS/LIVESTREAMS AUS DER LISTE ENTFERNT"), "warn")
+        self.emit("progress", year)
         return cleaned
 
     def refresh_new(self, year, videos):
@@ -1772,6 +1854,7 @@ class Worker(threading.Thread):
     def collect(self, year):
         cached = load(videos_file(year), None)
         if cached is not None:
+            cached = self.restore_wrongly_removed(year, cached)
             cut = archive_cutoff()
             searched = cut is not None and year <= cut          # Liste stammt aus der lückenhaften Suche
             if self.fallback and searched and load(collect_file(year), {}).get("source") != "web":
@@ -2228,7 +2311,7 @@ class Worker(threading.Thread):
                 self.log(L(f"REPAIR {tag} // PLAYLIST HAS {len(items)} VIDEOS", f"NACHTRAG {tag} // PLAYLIST HAT {len(items)} VIDEOS"))
                 wanted = set(order_all)
                 extras = [it for it in items if it["vid"] not in wanted]
-                if extras and not REMOVE_EXTRAS:
+                if extras and not (REMOVE_EXTRAS and load(collect_file(year), {}).get("lf_checked")):
                     self.log(L(f"REPAIR {tag} // {len(extras)} VIDEO(S) NOT IN THE LIST // LEFT IN THE PLAYLIST FOR NOW",
                                f"NACHTRAG {tag} // {len(extras)} VIDEO(S) NICHT IN DER LISTE // BLEIBEN VORERST IN DER PLAYLIST"), "warn")
                     extras = []
@@ -3649,8 +3732,11 @@ HELP_TEXT_DE = [
             "Chronolist merkt sich deshalb das Paket, das gerade unterwegs ist, und prüft nach STOPP oder beim "
             "nächsten Start nur dieses. Das geht in Sekunden. Die ganze Playlist liest es nur am Ende eines Jahres "
             "und beim Knopf PRÜFEN: Doppelte werden entfernt und der Fortschritt wird abgeglichen.\n"
-            "Shorts und Livestreams kommen nicht in die Playlists. Ältere Listen, in denen noch welche stehen, werden "
-            "beim nächsten Durchlauf des Jahres bereinigt (mit FALLBACK auch in der Playlist selbst)."),
+            "Shorts und Livestreams kommen nicht in die Playlists. Erkannt werden sie zuverlässig nur über die "
+            "Nur-Videos-Liste der API. Sie wird einmal gelesen (ca. 1 Einheit pro 50 Videos), sobald Kontingent da "
+            "ist. Danach werden ältere Listen beim nächsten Durchlauf des Jahres bereinigt, mit FALLBACK auch die "
+            "Playlist selbst. Die Kanalseite ergänzt nur fehlende Videos, entfernt aber nie welche, weil sie nicht "
+            "alle Videos zeigt."),
     ("num", "7.  Nächstes Jahr. Ist ein Jahr fertig, geht es mit dem nächsten markierten Jahr in der Reihenfolge der "
             "Liste weiter. Wurden dessen Videos noch nicht gefunden und ist das Kontingent leer, hält Chronolist an. "
             "Mit VORZIEHEN nimmt es stattdessen das nächste markierte Jahr, das schon bereit ist, und holt das "
@@ -3867,8 +3953,10 @@ HELP_TEXT_EN = [
             "remembers the batch in flight and after STOP or on the next start checks only that one, which takes "
             "seconds. It reads the whole playlist only at the end of a year and with the CHECK button: duplicates "
             "are removed and the progress is synced.\n"
-            "Shorts and livestreams are not added to the playlists. Older lists that still contain some are cleaned "
-            "up the next time the year runs (with FALLBACK also in the playlist itself)."),
+            "Shorts and livestreams are not added to the playlists. They are only detected reliably through the API's "
+            "videos-only list, which is read once (about 1 unit per 50 videos) when quota is available. After that, "
+            "older lists are cleaned the next time the year runs, with FALLBACK also the playlist itself. The "
+            "channel page only adds missing videos and never removes any, because it doesn't show every video."),
     ("num", "7.  Next year. When a year is done, Chronolist moves on to the next selected year in the order of the "
             "list. If that year's videos haven't been found yet and the quota is used up, it stops. With SKIP AHEAD it "
             "takes the next selected year that is already ready instead and catches up later."),

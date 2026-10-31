@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Added
 - Overview of left-out videos (shorts, livestreams, wrong hits of the old search) with titles and links: click the log line "… REMOVED // SHOW ›" or LEFT OUT in the playlist settings.
 - Chronolist remembers the window size and position (and whether it was maximized), as long as that monitor is still connected.
-- Shorts and livestreams are left out. The API now reads the channel's list of regular videos; older lists are cleaned up the next time a year runs, and with FALLBACK the extra videos are removed from the playlist too.
+- Shorts and livestreams are left out, detected through the API's videos-only list (read once when quota is available). Lists are cleaned the next time a year runs; with FALLBACK the playlist too. The channel page only adds missing videos and never removes any.
 - The current year (in January also the previous one) is kept up to date: on every run new uploads are appended. It stays selected when done. New channels now select the current year too.
 - Years with more than 5,000 videos are split automatically into "Part 1", "Part 2", … (YouTube's playlist limit). Checking, repairing and thumbnails work per part.
 - Year cards show what is happening right now with progress (reading the channel page, adding, sorting, checking the playlist), on the card of the year it concerns, e.g. the pre-scan of the next year.
