@@ -53,7 +53,7 @@ Chronolist uses the official YouTube Data API v3 with **your own** credentials. 
 ## Usage
 
 1. Click **EDIT** on the *Target Channel* card and enter the channel.
-2. Select one or more years on the left.
+2. All completed years are selected. Deselect the ones you don't want and drag the cards to change the order; selected years are processed from top to bottom.
 3. Press **START**.
 
 The in-app **HELP** (currently in German) explains every button, status and pause in detail.
