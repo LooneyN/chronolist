@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+- Development builds are marked with a `-dev` suffix (e.g. `2.8.0-dev`). The update check treats them as newer than every earlier release but older than the final release with the same number.
+
 ## [2.7.0] - 2026-10-31
 
 First public release.

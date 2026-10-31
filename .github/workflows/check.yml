@@ -3,7 +3,7 @@ name: Check
 # Quick sanity check on every push and pull request: the script must compile.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
 
 jobs:

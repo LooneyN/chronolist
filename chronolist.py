@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Chronolist v2.7.0: füllt öffentliche YouTube-Playlists "<Kanal> <Jahr> in Upload-Reihenfolge"
+Chronolist v2.8.0-dev: füllt öffentliche YouTube-Playlists "<Kanal> <Jahr> in Upload-Reihenfolge"
 mit allen Videos eines frei wählbaren Kanals aus dem jeweiligen Jahr (alt -> neu).
 
 https://github.com/LooneyN/chronolist  ·  MIT License
@@ -52,8 +52,8 @@ PLAYLIST_TEMPLATE = DEFAULT_PLAYLIST_TEMPLATE
 DESCRIPTION_TEMPLATE = DEFAULT_DESCRIPTION_TEMPLATE
 PRIVACY = "public"
 APP_NAME = "Chronolist"
-VERSION = "2.7.0"
-BUILD = 35
+VERSION = "2.8.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
+BUILD = 36
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -273,7 +273,11 @@ def apply_templates(settings):
 
 
 def version_tuple(v):
-    return tuple(int(x) for x in re.findall(r"\d+", v or "")[:3]) or (0,)
+    """'2.8.0' -> (2, 8, 0, 1), '2.8.0-dev' -> (2, 8, 0, 0): ein Entwicklungsstand gilt als älter
+    als das fertige Release mit derselben Nummer, aber neuer als alle früheren Releases."""
+    nums = [int(x) for x in re.findall(r"\d+", (v or "").split("-")[0])[:3]]
+    nums += [0] * (3 - len(nums))
+    return tuple(nums) + (0 if "-" in (v or "") else 1,)
 
 
 def check_for_update(out):
