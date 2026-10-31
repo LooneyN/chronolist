@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.10.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 45
+BUILD = 46
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -280,6 +280,25 @@ def year_info(y):
     done = min(load(state_file(y), {}).get("next", 0), n)
     code = "done" if done >= n else ("progress" if done else "ready")
     return {"code": code, "done": done, "total": n}
+
+
+FALLBACK_ON = False   # Spiegel des FALLBACK-Schalters, damit die Jahreskarten wissen, was ohne API geht
+
+
+def year_blocked(info):
+    """Reset-Zeit, wenn dieses Jahr erst nach dem API-Reset weitergehen kann, sonst None.
+    Suchen geht nur über die API; Einfügen geht mit FALLBACK auch ohne."""
+    code = info["code"]
+    if code == "done":
+        return None
+    if code in ("none", "scanning"):
+        return quota_blocked("units") or quota_blocked("search")
+    return None if FALLBACK_ON else quota_blocked("units")
+
+
+def status_role(code):
+    """Farbe nach Zustand, wie eine Ampel: Grün fertig, Gelb in Arbeit, Cyan (Grundfarbe) alles andere."""
+    return GREEN if code == "done" else YELLOW if code == "progress" else CYAN
 
 
 # ------------------------------------------------------------ Windows-Autostart
@@ -896,7 +915,8 @@ class Worker(threading.Thread):
                     continue
                 if self.fallback and self.mode == "api":
                     self.prefetch(y + 1)
-                self.fill(y, videos)
+                if self.fill(y, videos):
+                    self.emit("select", None, y)    # fertig -> abwählen
             self.log(L("ALL TARGETS PROCESSED", "ALLE AUSGEWÄHLTEN JAHRE BEARBEITET"), "ok")
         except Stopped:
             reason = "gestoppt"
@@ -1870,8 +1890,15 @@ class YearRow(Panel):
         self.checking = False
         self.pause = None          # None | {"kind": "manual", "t": start} | {"kind": "wait", "t": ende, "label": ..}
         self.info = year_info(year)
+        self.blocked = None        # Reset-Zeit, wenn das Jahr erst nach dem API-Reset weitergeht
+        self.role = status_role(self.info["code"])
         self.geo = None
         self.last_label = None
+
+    def palette(self):
+        # laufende Karte leuchtet in ihrer Zustandsfarbe statt pauschal grün
+        _, edge, tint, glow = super().palette()
+        return self.role, edge, tint, glow
 
     def status_text(self):
         code, run = self.info["code"], self.running
@@ -1879,6 +1906,9 @@ class YearRow(Panel):
             return L("CHECKING PLAYLIST...", "PLAYLIST WIRD GEPRÜFT..."), True
         if run and self.pause:
             return pause_label(self.pause, time.time()), False
+        if self.blocked and not run:
+            t = self.blocked.astimezone().strftime("%H:%M")
+            return L(f"NEEDS API // FROM {t}", f"BRAUCHT API // AB {t}"), False
         if code in ("none", "scanning"):
             return (L("SCANNING...", "SUCHE LÄUFT...") if run else L("SCAN PAUSED", "SUCHE PAUSIERT")
                     if code == "scanning" else L("NOT SCANNED", "NICHT GESUCHT")), run
@@ -1911,6 +1941,10 @@ class YearRow(Panel):
             # pausiert: Play-Symbol, Klick setzt fort
             self.create_polygon(ix + 11 * u, top + 8 * u, ix + 11 * u, top + 24 * u, ix + 24 * u, top + 16 * u,
                                 fill=icol, outline=icol)
+        elif self.info["code"] == "done":
+            # fertig: Haken
+            self.create_line(ix + 9 * u, top + 16 * u, ix + 14 * u, top + 21 * u, ix + 23 * u, top + 11 * u,
+                             fill=icol, width=max(2, px(2.5)), capstyle="round", joinstyle="round")
         else:
             for yy, xe in ((9, 20), (14, 20), (19, 15)):
                 self.create_line(ix + 7 * u, top + yy * u, ix + xe * u, top + yy * u, fill=icol,
@@ -1923,7 +1957,7 @@ class YearRow(Panel):
         self.create_text(nx, y0 + h * 0.32, text=str(self.year), anchor="w", font=F("ui", 16),
                          fill=TEXT if on else TEXT_DIM)
         text, blinking = self.status_text()
-        scol = role if on else TEXT_MUTED
+        scol = RED if (self.blocked and not self.running) else role if on else TEXT_MUTED
         item = self.create_text(nx, y0 + h * 0.62, text=text, anchor="w", font=F("mono", 11), fill=scol,
                                 tags="stat")
         self.last_label = text
@@ -1947,6 +1981,8 @@ class YearRow(Panel):
                              fill=role if on else TEXT_DIM, tags="pct")
             self.create_text(cx, mid + px(11), text=f"{done} / {total}", font=F("mono", 12),
                              fill=TEXT if on else TEXT_MUTED, tags="cnt")
+        elif self.blocked and not self.running:
+            self.create_text(cx, mid, text="API", font=F("mono", 15), fill=RED)
         else:
             self.create_text(cx, mid, text="--", font=F("mono", 15), fill=mix(TEXT_MUTED, BG, 0.6))
 
@@ -2001,6 +2037,11 @@ class YearRow(Panel):
         self.checking = on
         self.redraw()
 
+    def refresh_blocked(self):
+        b = None if self.running else year_blocked(self.info)
+        if b != self.blocked:
+            self.refresh()
+
     def set_pause(self, p):
         self.pause = p
         self.refresh()
@@ -2028,7 +2069,8 @@ class YearRow(Panel):
                 self.itemconfigure("cnt", text=f"{done} / {total}")
                 return
         manual = self.running and self.pause and self.pause["kind"] == "manual"
-        self.role = YELLOW if manual else CYAN
+        self.blocked = None if self.running else year_blocked(self.info)
+        self.role = YELLOW if manual else status_role(self.info["code"])
         self.st = "active" if manual else "running" if self.running else "active" if self.selected else "inactive"
         self.redraw()
 
@@ -2771,6 +2813,13 @@ HELP_TEXT_DE = [
           "Rechts siehst du den Fortschritt in "
           "Prozent und wie viele Videos schon drin sind. Während ein Jahr läuft, ist sein Symbol links ein "
           "Pause-Knopf, beim Pausieren ein Play-Knopf. Das funktioniert wie PAUSE und WEITER."),
+    ("dt", "Farben"),
+    ("p", "Grün mit Haken: fertig, alle Videos sind drin. Fertige Jahre werden automatisch abgewählt.\n"
+          "Gelb: angefangen, aber noch nicht fertig.\n"
+          "Cyan: noch nicht angefangen.\n"
+          "Roter Text \"BRAUCHT API\": Hier geht es erst nach dem Reset des Tageskontingents weiter, die Uhrzeit "
+          "steht dahinter. Das betrifft Jahre, deren Videos noch gesucht werden müssen, denn das geht nur über die "
+          "API. Bei angefangenen und bereiten Jahren nur, wenn FALLBACK aus ist."),
     ("dt", "Was unter dem Jahr stehen kann"),
     ("dd", "NICHT GESUCHT: Die Videos wurden noch nicht gesucht.\n"
            "SUCHE PAUSIERT: Die Suche wurde angefangen, ist aber noch nicht fertig.\n"
@@ -2960,6 +3009,13 @@ HELP_TEXT_EN = [
           "mouse button held. On the right you see the progress in percent and how many videos "
           "are already in. While a year is running, its icon on the left is a pause button, and a play button while "
           "paused. It works like PAUSE and RESUME."),
+    ("dt", "Colors"),
+    ("p", "Green with a check mark: done, all videos are in. Finished years are deselected automatically.\n"
+          "Yellow: started but not finished.\n"
+          "Cyan: not started yet.\n"
+          "Red text \"NEEDS API\": this year can only continue after the daily quota resets, the time is shown "
+          "next to it. This applies to years whose videos still have to be searched, which only works through the "
+          "API. For started and ready years only when FALLBACK is off."),
     ("dt", "What can appear under a year"),
     ("dd", "NOT SCANNED: the videos haven't been searched yet.\n"
            "SCAN PAUSED: the search was started but isn't finished.\n"
@@ -3616,6 +3672,10 @@ class App(tk.Tk):
         opts.columnconfigure(1, weight=1, uniform="opt")
         # Zeile 1: Ablauf
         self.fallback = bool(self.settings.get("browser_fallback", False))
+        global FALLBACK_ON
+        FALLBACK_ON = self.fallback
+        for r in self.rows.values():
+            r.refresh_blocked()
         self.fallback_card = ToggleCard(opts, "FALLBACK", L("EDGE AFTER QUOTA", "EDGE BEI LIMIT"),
                                         self.fallback, self.toggle_fallback, compact=True)
         self.fallback_card.grid(row=0, column=0, sticky="ew", padx=(0, px(3)), pady=(0, px(4)))
@@ -3760,7 +3820,11 @@ class App(tk.Tk):
             self.worker.skip_ahead = self.skip_ahead
 
     def toggle_fallback(self):
+        global FALLBACK_ON
         self.fallback = not self.fallback
+        FALLBACK_ON = self.fallback
+        for r in self.rows.values():
+            r.refresh_blocked()
         self.fallback_card.update_value(self.fallback)
         self.save_settings()
         if self.worker and self.worker.is_alive():
@@ -3995,6 +4059,8 @@ class App(tk.Tk):
 
     def api_tick(self):
         self.update_api_button()
+        for r in self.rows.values():
+            r.refresh_blocked()
         self.after(60000, self.api_tick)
 
     def show_help(self):
@@ -4244,6 +4310,8 @@ class App(tk.Tk):
                 elif kind == "api":
                     self.api_ok = msg[1]
                     self.update_api_button()
+                    for r in self.rows.values():
+                        r.refresh_blocked()
                 elif kind == "channel":
                     self.apply_channel(msg[1])
                 elif kind == "update":
