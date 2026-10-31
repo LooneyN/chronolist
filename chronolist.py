@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.10.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 47
+BUILD = 48
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -110,8 +110,8 @@ BROWSER_PROFILE = HERE / "browser_profile"
 API = "https://www.googleapis.com/youtube/v3"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPE = "https://www.googleapis.com/auth/youtube"
-BATCH_SIZE = 15                 # Browser-Fallback: Videos pro Anfrage
-BATCH_PAUSE = (15, 30)          # Sekunden zwischen zwei Paketen
+BATCH_SIZE = 20                 # Browser-Fallback: Videos pro Anfrage
+BATCH_PAUSE = (10, 25)          # Sekunden zwischen zwei Paketen
 COOLDOWN_EVERY = 150            # nach so vielen Videos ein kurzer Cooldown
 COOLDOWN_PAUSE = (54, 66)       # Sekunden (~60 s)
 LONG_BREAK_EVERY = 750          # nach so vielen Videos eine lange Pause
@@ -2771,7 +2771,7 @@ HELP_TEXT_DE = [
             "um Mitternacht kalifornischer Zeit. Chronolist rechnet das in deine Uhrzeit um.\n"
             "• FALLBACK an: Chronolist öffnet ein eigenes Edge-Fenster und fügt die restlichen Videos über die "
             "YouTube-Webseite ein, genau so, wie die Webseite es beim Speichern selbst macht. Dabei werden keine "
-            "Einheiten verbraucht. Es läuft in Paketen zu 15 Videos mit Pausen dazwischen. Neue Playlists kann das "
+            "Einheiten verbraucht. Es läuft in Paketen zu 20 Videos mit Pausen dazwischen. Neue Playlists kann das "
             "Edge-Fenster auch anlegen. Videos finden (Schritt 2) kann es aber nicht.\n"
             "Chronolist merkt sich, wenn das Kontingent oder das Suchlimit an einem Tag aufgebraucht ist. Bis zum "
             "Reset fragt es nach einem Neustart nicht noch einmal nach, sondern nimmt gleich den Fallback. In dieser "
@@ -2894,7 +2894,7 @@ HELP_TEXT_DE = [
     ("h2", "Warum macht Chronolist Pausen?"),
     ("p", "Über das Edge-Fenster arbeitet Chronolist absichtlich nicht im Höchsttempo, damit es nicht wie ein Bot "
           "aussieht. Die Pausen siehst du mit Countdown auf der Jahreskarte und oben in der Statusanzeige."),
-    ("dd", "NÄCHSTES PAKET: kurze Pause zwischen zwei Paketen mit je 15 Videos, 15 bis 30 Sekunden.\n"
+    ("dd", "NÄCHSTES PAKET: kurze Pause zwischen zwei Paketen mit je 20 Videos, 10 bis 25 Sekunden.\n"
            "KURZE PAUSE: etwa eine Minute nach jeweils 150 Videos.\n"
            "LANGE PAUSE: etwa zehn Minuten nach jeweils 750 Videos.\n"
            "YOUTUBE BREMST: YouTube bremst kurz, Chronolist wartet zehn Minuten.\n"
@@ -2970,7 +2970,7 @@ HELP_TEXT_EN = [
             "time; Chronolist converts it to your local time.\n"
             "• FALLBACK on: Chronolist opens its own Edge window and adds the remaining videos through the YouTube "
             "website, exactly the way the website does it when you save a video. This uses no units. It works in "
-            "batches of 15 videos with pauses in between. The Edge window can also create new playlists. It cannot "
+            "batches of 20 videos with pauses in between. The Edge window can also create new playlists. It cannot "
             "find videos (step 2), though.\n"
             "Chronolist remembers when the quota or the search limit was used up on a given day. Until the reset it "
             "won't ask again after a restart and goes straight to the fallback. During that time the API button is "
@@ -3088,7 +3088,7 @@ HELP_TEXT_EN = [
     ("h2", "Why does Chronolist pause?"),
     ("p", "Through the Edge window Chronolist deliberately doesn't work at full speed, so it doesn't look like a bot. "
           "You see the pauses with a countdown on the year card and in the status display at the top."),
-    ("dd", "NEXT BATCH: short pause between two batches of 15 videos, 15 to 30 seconds.\n"
+    ("dd", "NEXT BATCH: short pause between two batches of 20 videos, 10 to 25 seconds.\n"
            "COOLDOWN: about one minute after every 150 videos.\n"
            "BREAK: about ten minutes after every 750 videos.\n"
            "RATE LIMIT: YouTube slows things down briefly, Chronolist waits ten minutes.\n"

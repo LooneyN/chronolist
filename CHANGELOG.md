@@ -15,6 +15,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Selected years are simply worked through one after another. Chronolist no longer adds or deselects years on its own; SKIP AHEAD only picks from the selected years.
 - For a new channel all completed years are selected by default.
 - Finished years are deselected automatically.
+- Browser fallback: 20 videos per batch (was 15), 10 to 25 seconds between batches (was 15 to 30).
 
 ### Fixed
 - SKIP AHEAD now continues with the next selected year that is ready or in progress, instead of jumping to a new year behind it.
