@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.10.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 44
+BUILD = 45
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -891,25 +891,12 @@ class Worker(threading.Thread):
                     why = L("DAILY SEARCH LIMIT", "SUCHLIMIT") if isinstance(e, SearchLimit) else L("API QUOTA", "API-KONTINGENT")
                     self.log(L(f"{y} NOT SCANNED YET ({why}) // SKIP AHEAD TO {nxt}", f"{y} NOCH NICHT GESUCHT ({why}) // WEITER MIT {nxt}"), "warn")
                     deferred.append(y)
-                    if nxt in queue_:
-                        queue_.remove(nxt)      # schon ausgewählt: nur nach vorne holen
-                    else:
-                        self.emit("select", nxt, None)
+                    queue_.remove(nxt)          # nach vorne holen, Rest bleibt in deiner Reihenfolge
                     queue_.insert(0, nxt)
                     continue
                 if self.fallback and self.mode == "api":
                     self.prefetch(y + 1)
-                if not self.fill(y, videos):
-                    continue
-                # Jahr fertig -> automatisch mit dem nächsten abgeschlossenen Jahr weitermachen
-                nxt = y + 1
-                while nxt in deferred or (self.skip_ahead and nxt < datetime.date.today().year
-                                          and year_info(nxt)["code"] == "done"):
-                    nxt += 1
-                if nxt < datetime.date.today().year and nxt not in queue_ and nxt not in self.years:
-                    queue_.append(nxt)
-                    self.emit("select", nxt, y)
-                    self.log(L(f"{y} DONE // AUTO-ADVANCE TO {nxt}", f"{y} FERTIG // WEITER MIT {nxt}"), "ok")
+                self.fill(y, videos)
             self.log(L("ALL TARGETS PROCESSED", "ALLE AUSGEWÄHLTEN JAHRE BEARBEITET"), "ok")
         except Stopped:
             reason = "gestoppt"
@@ -1060,16 +1047,10 @@ class Worker(threading.Thread):
                              f"ZU VIELE FEHLVERSUCHE // {method} {path} // ZULETZT: {last}"))
 
     def next_ready_year(self, after, queue_):
-        """Nächstes Jahr, dessen Videoliste schon fertig ist und das noch nicht voll ist.
-        Zuerst unter den ausgewählten Jahren in ihrer Reihenfolge, erst dann ein neues Jahr nach `after`."""
+        """Nächstes markiertes Jahr (in deiner Reihenfolge), dessen Videoliste schon fertig ist und das noch
+        nicht voll ist. Es werden nie Jahre dazugenommen, die du nicht markiert hast."""
         for y in queue_:
             if year_info(y)["code"] in ("ready", "progress"):
-                return y
-        for y in range(after + 1, datetime.date.today().year):
-            if y in queue_:
-                continue
-            info = year_info(y)
-            if info["code"] in ("ready", "progress"):
                 return y
         return None
 
@@ -1978,6 +1959,8 @@ class YearRow(Panel):
 
     # --- Animation der aktiven Karte: nur Ladebalken + ruhiger Glow
     def _click(self, e):
+        if getattr(self, "dragging", False):
+            return
         g = self.icon_geo
         if (self.running and self.pause_command and g
                 and g[0] <= e.x <= g[2] and g[1] <= e.y <= g[3]):
@@ -2741,9 +2724,10 @@ HELP_TEXT_DE = [
             "Zeit ist der API-Knopf gelb und zeigt LIMIT."),
     ("num", "6.  Prüfen. Beim Start, alle 750 Videos, nach STOPP und am Ende eines Jahres schaut Chronolist die "
             "Playlist auf doppelte Videos durch. Doppelte werden entfernt und der Fortschritt wird abgeglichen."),
-    ("num", "7.  Nächstes Jahr. Ist ein Jahr fertig, geht es mit dem nächsten weiter. Wurden dessen Videos noch nicht "
-            "gefunden und ist das Kontingent leer, hält Chronolist an. Mit VORZIEHEN springt es stattdessen zum "
-            "nächsten Jahr, das schon bereit ist, und holt das fehlende später nach."),
+    ("num", "7.  Nächstes Jahr. Ist ein Jahr fertig, geht es mit dem nächsten markierten Jahr in der Reihenfolge der "
+            "Liste weiter. Wurden dessen Videos noch nicht gefunden und ist das Kontingent leer, hält Chronolist an. "
+            "Mit VORZIEHEN nimmt es stattdessen das nächste markierte Jahr, das schon bereit ist, und holt das "
+            "fehlende später nach."),
 
     ("h2", "Was sind Einheiten?"),
     ("p", "Die Nutzung der YouTube-Schnittstelle ist kostenlos. Es fällt kein Geld an. Google gibt aber jedem Projekt "
@@ -2780,8 +2764,11 @@ HELP_TEXT_DE = [
           "den Namen und das Startjahr. Jeder Kanal hat seinen eigenen Fortschritt."),
 
     ("h2", "Jahre"),
-    ("p", "Jede Karte steht für ein Jahr. Mit einem Klick wählst du ein Jahr aus oder wieder ab. Ausgewählte Jahre "
-          "sind hell umrandet und werden beim Start nacheinander bearbeitet. Rechts siehst du den Fortschritt in "
+    ("p", "Jede Karte steht für ein Jahr. Mit einem Klick markierst du ein Jahr oder nimmst die Markierung weg. "
+          "Markierte Jahre sind hell umrandet und werden beim Start nacheinander bearbeitet, von oben nach unten. "
+          "Bei einem neuen Kanal sind alle abgeschlossenen Jahre markiert, nimm einfach die raus, die du nicht willst. "
+          "Die Reihenfolge änderst du, indem du eine Karte mit gedrückter Maustaste nach oben oder unten ziehst. "
+          "Rechts siehst du den Fortschritt in "
           "Prozent und wie viele Videos schon drin sind. Während ein Jahr läuft, ist sein Symbol links ein "
           "Pause-Knopf, beim Pausieren ein Play-Knopf. Das funktioniert wie PAUSE und WEITER."),
     ("dt", "Was unter dem Jahr stehen kann"),
@@ -2795,7 +2782,7 @@ HELP_TEXT_DE = [
 
     ("h2", "Steuerung"),
     ("dt", "START"),
-    ("dd", "Startet für die ausgewählten Jahre. Ist ein Jahr fertig, geht es von selbst mit dem nächsten weiter."),
+    ("dd", "Arbeitet die markierten Jahre nacheinander ab, in der Reihenfolge der Liste."),
     ("dt", "PAUSE und WEITER"),
     ("dd", "PAUSE hält nach dem aktuellen Schritt an. Mit WEITER geht es genau dort weiter."),
     ("dt", "STOPP"),
@@ -2818,7 +2805,7 @@ HELP_TEXT_DE = [
            "Anfang aus."),
     ("dt", "VORZIEHEN"),
     ("dd", "Kann ein Jahr gerade nicht gesucht werden, weil das Kontingent oder das Suchlimit aufgebraucht ist, "
-           "macht Chronolist mit dem nächsten Jahr weiter, das schon bereit ist. Das übersprungene Jahr kommt später "
+           "macht Chronolist mit dem nächsten markierten Jahr weiter, das schon bereit ist. Das übersprungene Jahr kommt später "
            "dran. Ist der Schalter aus, hält Chronolist in diesem Fall an."),
     ("dt", "AUTOSTART"),
     ("dd", "Startet automatisch, sobald du das Programm öffnest."),
@@ -2928,9 +2915,9 @@ HELP_TEXT_EN = [
             "yellow and shows LIMIT."),
     ("num", "6.  Check. On start, every 750 videos, after STOP and at the end of each year, Chronolist checks the "
             "playlist for duplicate videos. Duplicates are removed and the progress is synced."),
-    ("num", "7.  Next year. When a year is done, Chronolist moves on to the next one. If that year's videos haven't "
-            "been found yet and the quota is used up, it stops. With SKIP AHEAD it jumps to the next year that is "
-            "already ready instead and catches up later."),
+    ("num", "7.  Next year. When a year is done, Chronolist moves on to the next selected year in the order of the "
+            "list. If that year's videos haven't been found yet and the quota is used up, it stops. With SKIP AHEAD it "
+            "takes the next selected year that is already ready instead and catches up later."),
 
     ("h2", "What are units?"),
     ("p", "Using the YouTube API is free. There is no money involved. Google does give every project a fixed daily "
@@ -2968,7 +2955,9 @@ HELP_TEXT_EN = [
 
     ("h2", "Target years"),
     ("p", "Each card is one year. Click a year to select or deselect it. Selected years have a bright border and are "
-          "processed one after another on START. On the right you see the progress in percent and how many videos "
+          "processed one after another on START, from top to bottom. For a new channel all completed years are "
+          "selected; just deselect the ones you don't want. To change the order, drag a card up or down with the "
+          "mouse button held. On the right you see the progress in percent and how many videos "
           "are already in. While a year is running, its icon on the left is a pause button, and a play button while "
           "paused. It works like PAUSE and RESUME."),
     ("dt", "What can appear under a year"),
@@ -3003,7 +2992,7 @@ HELP_TEXT_EN = [
            "Service. In the worst case your account can be restricted. That's why the switch is off by default."),
     ("dt", "SKIP AHEAD"),
     ("dd", "If a year can't be searched right now because the quota or the search limit is used up, Chronolist "
-           "continues with the next year that is already ready. The skipped year comes later. With the switch off, "
+           "continues with the next selected year that is already ready. The skipped year comes later. With the switch off, "
            "Chronolist stops in that case."),
     ("dt", "AUTO-RUN"),
     ("dd", "Starts automatically as soon as you open the program."),
@@ -3564,10 +3553,11 @@ class App(tk.Tk):
         self.channel_card = ChannelCard(left, self.edit_channel)
         self.channel_card.grid(row=1, column=0, sticky="ew", pady=(0, px(16)))
         self.channel_card.update_state()
-        Section(left, L("TARGET YEARS", "JAHRE"), L("CLICK TO TOGGLE", "KLICK ZUM AUSWÄHLEN")).grid(row=2, column=0, sticky="ew", pady=(0, px(6)))
+        Section(left, L("TARGET YEARS", "JAHRE"), L("CLICK // DRAG TO SORT", "KLICKEN // ZIEHEN ZUM SORTIEREN")).grid(row=2, column=0, sticky="ew", pady=(0, px(6)))
         self.scroll = ScrollArea(left)
         self.scroll.grid(row=3, column=0, sticky="nsew")
         self.rows = {}
+        self.order = []
         self.build_rows()
 
         # --- rechts: Steuerung, Optionen, Login, Log
@@ -3727,10 +3717,11 @@ class App(tk.Tk):
 
     # --- Einstellungen
     def selected_years(self):
-        return sorted(y for y, r in self.rows.items() if r.selected)
+        """Markierte Jahre in der Reihenfolge der Liste (per Drag & Drop änderbar)."""
+        return [y for y in self.order if self.rows[y].selected]
 
     def save_settings(self):
-        self.settings.update(years=self.selected_years(), autorun=self.autorun, limit=self.limit_val,
+        self.settings.update(years=self.selected_years(), year_order=list(self.order), autorun=self.autorun, limit=self.limit_val,
                              browser_fallback=getattr(self, "fallback", False),
                              skip_ahead=getattr(self, "skip_ahead", False))
         save(SETTINGS_FILE, self.settings)
@@ -3827,14 +3818,86 @@ class App(tk.Tk):
             r.destroy()
         self.rows = {}
         selected = set(self.settings.get("years", []))
-        for y in YEARS:
+        saved = [y for y in self.settings.get("year_order", []) if y in YEARS]
+        self.order = saved + [y for y in YEARS if y not in saved]
+        for y in self.order:
             row = YearRow(self.scroll.inner, y, command=lambda y=y: self.toggle_year(y), pause_command=self.toggle_pause)
             Tooltip(row, lambda r=row: self.year_tip(r))
             row.pack(fill="x", pady=(0, px(4)))
             row.refresh(selected=y in selected)
-            self.scroll.wheel(row)
+            self.bind_drag(row)
             self.rows[y] = row
         self.scroll.canvas.yview_moveto(0)
+
+    # --- Reihenfolge per Drag & Drop
+    def bind_drag(self, row):
+        row.bind("<ButtonPress-1>", lambda e, r=row: self.drag_press(r, e), add="+")
+        row.bind("<B1-Motion>", lambda e, r=row: self.drag_motion(r, e), add="+")
+        row.bind("<ButtonRelease-1>", lambda e, r=row: self.drag_release(r, e), add="+")
+
+    def drag_press(self, row, e):
+        self.drag = {"row": row, "y0": e.y_root, "on": False, "to": None}
+
+    def drag_target(self, y_root):
+        """Index, vor dem eingefügt wird, und die y-Position der Markierung (im inneren Frame)."""
+        inner = self.scroll.inner
+        rel = y_root - inner.winfo_rooty()
+        rows = [self.rows[y] for y in self.order]
+        for i, r in enumerate(rows):
+            if rel < r.winfo_y() + r.winfo_height() / 2:
+                return i, max(0, r.winfo_y() - px(3))
+        last = rows[-1]
+        return len(rows), last.winfo_y() + last.winfo_height() + px(1)
+
+    def drag_motion(self, row, e):
+        d = getattr(self, "drag", None)
+        if not d or d["row"] is not row:
+            return
+        if not d["on"]:
+            if abs(e.y_root - d["y0"]) < px(8):
+                return
+            d["on"] = True
+            row.dragging = True
+            self.drag_line = tk.Frame(self.scroll.inner, bg=YELLOW, height=max(2, px(3)))
+            row.set(role=YELLOW, state="active")
+            self.configure(cursor="sb_v_double_arrow")
+        # am Rand automatisch scrollen
+        c = self.scroll.canvas
+        cy = e.y_root - c.winfo_rooty()
+        if cy < px(30):
+            c.yview_scroll(-1, "units")
+        elif cy > c.winfo_height() - px(30):
+            c.yview_scroll(1, "units")
+        idx, ly = self.drag_target(e.y_root)
+        d["to"] = idx
+        self.drag_line.place(x=0, y=ly, relwidth=1)
+        self.drag_line.lift()
+
+    def drag_release(self, row, e):
+        d = getattr(self, "drag", None)
+        self.drag = None
+        if not d or not d["on"]:
+            return
+        row.dragging = False
+        self.configure(cursor="")
+        if getattr(self, "drag_line", None):
+            self.drag_line.destroy()
+            self.drag_line = None
+        idx = d["to"]
+        y = row.year
+        old = self.order.index(y)
+        if idx is not None and idx not in (old, old + 1):
+            self.order.remove(y)
+            self.order.insert(idx - 1 if idx > old else idx, y)
+            for yy in self.order:
+                self.rows[yy].pack_forget()
+            for yy in self.order:
+                self.rows[yy].pack(fill="x", pady=(0, px(4)))
+            self.save_settings()
+            if self.worker and self.worker.is_alive():
+                self.write_log(L("NEW ORDER APPLIES FROM THE NEXT START", "NEUE REIHENFOLGE GILT AB DEM NÄCHSTEN START"),
+                               "info")
+        row.refresh()
 
     def busy(self):
         if self.worker and self.worker.is_alive():
@@ -3856,8 +3919,9 @@ class App(tk.Tk):
 
     def year_tip(self, row):
         if row.selected:
-            sel = L("Selected, will be processed on START. Click again to deselect.",
-                    "Ausgewählt, wird beim START bearbeitet. Erneut klicken zum Abwählen.")
+            sel = L("Selected, will be processed on START. Click again to deselect. Drag to change the order.",
+                    "Markiert, wird beim START bearbeitet. Erneut klicken zum Abwählen. Ziehen ändert die "
+                    "Reihenfolge.")
         else:
             sel = L("Click to select this year.", "Klicken, um dieses Jahr auszuwählen.")
         info = row.info
@@ -3892,10 +3956,10 @@ class App(tk.Tk):
                                      "(@name, link or channel ID).",
                                      "Der Kanal, dessen Videos gesammelt werden. Über ÄNDERN einen anderen Kanal "
                                      "eingeben (@Name, Link oder Kanal-ID)."))
-        Tooltip(self.start_btn, L("Starts working on the years selected on the left. Finished years move on to the "
-                                  "next one automatically.",
-                                  "Startet die Arbeit für die links ausgewählten Jahre. Fertige Jahre gehen "
-                                  "automatisch ins nächste über."))
+        Tooltip(self.start_btn, L("Works through the years selected on the left, one after another, in the order "
+                                  "of the list.",
+                                  "Arbeitet die links markierten Jahre nacheinander ab, in der Reihenfolge der "
+                                  "Liste."))
         Tooltip(self.pause_btn, L("Pauses after the current step. RESUME continues right there.",
                                   "Hält nach dem aktuellen Schritt an. WEITER macht genau dort weiter."))
         Tooltip(self.stop_btn, L("Ends the run. Before that, the current playlist is checked for duplicates once more. "
@@ -3911,10 +3975,10 @@ class App(tk.Tk):
                                       "Wenn das tägliche YouTube-Kontingent leer ist, über ein eigenes Edge-Fenster "
                                       "weitermachen. Achtung: verstößt gegen die YouTube-Regeln, Risiko für dein "
                                       "Konto."))
-        Tooltip(self.skip_card, L("If a year can't be searched right now, continue with the next ready year and "
-                                  "catch up on the skipped one later.",
-                                  "Kann ein Jahr gerade nicht gesucht werden, mit dem nächsten fertigen Jahr "
-                                  "weitermachen und das übersprungene später nachholen."))
+        Tooltip(self.skip_card, L("If a year can't be searched right now, continue with the next selected year that "
+                                  "is ready and catch up on the skipped one later.",
+                                  "Kann ein Jahr gerade nicht gesucht werden, mit dem nächsten markierten Jahr "
+                                  "weitermachen, das bereit ist, und das übersprungene später nachholen."))
         Tooltip(self.autorun_card, L("Start working automatically when Chronolist opens.",
                                      "Beim Öffnen von Chronolist automatisch starten."))
         Tooltip(self.win_card, L("Start Chronolist automatically with Windows.",
@@ -4001,7 +4065,9 @@ class App(tk.Tk):
     def apply_channel(self, info):
         self.settings["channel"] = info
         set_channel(info)
-        self.settings["years"] = [YEARS[0]] if YEARS else []
+        # neuer Kanal: alle abgeschlossenen Jahre markiert, chronologisch
+        self.settings["years"] = [y for y in YEARS if y < datetime.date.today().year]
+        self.settings["year_order"] = list(YEARS)
         save(SETTINGS_FILE, self.settings)
         self.build_rows()
         self.channel_card.update_state(resolving=False)
