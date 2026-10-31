@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 62
+BUILD = 63
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1876,8 +1876,13 @@ class Worker(threading.Thread):
         pid = state["playlist_id"]
         self.ensure_browser()
         self.emit("checking", year, True)
+
+        def reading(n):
+            self.act(L(f"READING PLAYLIST // {n} READ", f"LESE PLAYLIST // {n} GELESEN"), year)
         try:
-            items = self.browser.list_items(pid)
+            self.log(L(f"REPAIR {year} // READING THE PLAYLIST ...", f"NACHTRAG {year} // LESE DIE PLAYLIST ..."))
+            items = self.browser.list_items(pid, reading)
+            self.log(L(f"REPAIR {year} // PLAYLIST HAS {len(items)} VIDEOS", f"NACHTRAG {year} // PLAYLIST HAT {len(items)} VIDEOS"))
             present = {it["vid"] for it in items}
             order = [v["id"] for v in videos]
             last = max((i for i, v in enumerate(order) if v in present), default=-1)
@@ -1906,9 +1911,12 @@ class Worker(threading.Thread):
                 self.log(L(f"REPAIR {year} // {len(added)} VIDEO(S) ADDED", f"NACHTRAG {year} // {len(added)} VIDEO(S) EINGEFÜGT"), "ok")
             # Reihenfolge prüfen und alles verschieben, was falsch steht (auch nach einem Abbruch)
             self.emit("checking", year, True)
-            items = self.browser.list_items(pid)
+            self.log(L(f"REPAIR {year} // CHECKING THE ORDER ...", f"NACHTRAG {year} // PRÜFE DIE REIHENFOLGE ..."))
+            items = self.browser.list_items(pid, reading)
             self.emit("checking", year, False)
             moves = plan_moves(order, items)
+            if not moves:
+                self.log(L(f"REPAIR {year} // ORDER IS CORRECT", f"NACHTRAG {year} // REIHENFOLGE STIMMT"), "ok")
             if moves:
                 self.log(L(f"REPAIR {year} // MOVING {len(moves)} VIDEO(S) TO THE RIGHT SPOT ...",
                            f"NACHTRAG {year} // VERSCHIEBE {len(moves)} VIDEO(S) AN DIE RICHTIGE STELLE ..."))
