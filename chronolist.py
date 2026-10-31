@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 64
+BUILD = 65
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -4256,7 +4256,7 @@ class App(tk.Tk):
         lsb.bind("<B1-Motion>", update_follow, add="+")
         self.logbox.bind("<Configure>", keep_bottom, add="+")
         for tag, col in (("ts", RED_MILD), ("info", TEXT_DIM), ("ok", GREEN), ("warn", YELLOW),
-                         ("err", RED), ("sep", RED)):
+                         ("err", RED), ("sep", RED), ("leaf", GREEN)):
             self.logbox.tag_configure(tag, foreground=col)
         self.log_panel.windows.append(
             lambda x0, y0, x1, y1, c: self.log_panel.create_window(
@@ -4814,7 +4814,14 @@ class App(tk.Tk):
         stamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.logbox.config(state="normal")
         self.logbox.insert("end", f"[{stamp}] ", "ts")
-        self.logbox.insert("end", f"{text}\n", level)
+        m = re.match(r"^((?:REPAIR|NACHTRAG) \d+ // )(420)(/\d+ (?:MOVED|VERSCHOBEN))$", text)
+        if m:
+            # kleines Easter Egg
+            self.logbox.insert("end", m.group(1), level)
+            self.logbox.insert("end", m.group(2), "leaf")
+            self.logbox.insert("end", f"{m.group(3)}\n", level)
+        else:
+            self.logbox.insert("end", f"{text}\n", level)
         if getattr(self, "log_follow", True):
             self.logbox.see("end")
         self.logbox.config(state="disabled")
