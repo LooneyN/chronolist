@@ -1,11 +1,13 @@
 name: Release
 
-# Runs when a version tag like v2.7.0 is pushed:
-# checks that the tag matches VERSION in chronolist.py, builds Chronolist.exe
-# and publishes a GitHub release with the notes from CHANGELOG.md.
+# Runs when a version tag like v2.7.0 is pushed, or manually via
+# Actions -> Release -> Run workflow (on main). The manual run takes the tag
+# from VERSION in chronolist.py and creates it together with the release.
+# Builds Chronolist.exe and publishes a GitHub release with the notes from CHANGELOG.md.
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -23,10 +25,17 @@ jobs:
       - name: Check tag matches VERSION
         shell: bash
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
           CODE=$(python -c "import re;print(re.search(r'^VERSION = \"(.+?)\"', open('chronolist.py', encoding='utf-8').read(), re.M).group(1))")
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$GITHUB_REF_NAME" != "main" ]; then echo "::error::Run the release from main"; exit 1; fi
+            case "$CODE" in *-dev*) echo "::error::VERSION $CODE is a dev version"; exit 1;; esac
+            TAG="$CODE"
+          else
+            TAG="${GITHUB_REF_NAME#v}"
+          fi
           echo "Tag: $TAG  Code: $CODE"
           if [ "$TAG" != "$CODE" ]; then echo "::error::Tag v$TAG does not match VERSION $CODE in chronolist.py"; exit 1; fi
+          echo "TAG=v$TAG" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: |
@@ -41,15 +50,16 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force release | Out-Null
           Copy-Item dist/Chronolist.exe, README.md, LICENSE, CHANGELOG.md release/
-          Compress-Archive -Path release/* -DestinationPath "Chronolist-$env:GITHUB_REF_NAME-windows.zip"
+          Compress-Archive -Path release/* -DestinationPath "Chronolist-$env:TAG-windows.zip"
 
       - name: Release notes
         shell: bash
         env:
           PYTHONIOENCODING: utf-8
-        run: python scripts/release_notes.py "${{ github.ref_name }}" > notes.md
+        run: python scripts/release_notes.py "$TAG" > notes.md
 
       - name: Publish release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" "Chronolist-${{ github.ref_name }}-windows.zip" --title "Chronolist ${{ github.ref_name }}" --notes-file notes.md
+        run: gh release create "$TAG" "Chronolist-$TAG-windows.zip" --target "$GITHUB_SHA" --title "Chronolist $TAG" --notes-file notes.md
