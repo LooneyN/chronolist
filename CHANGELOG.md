@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-10-31
+
 ### Added
 - Year order by drag & drop. Selected years are processed from top to bottom in that order.
 - The icon of the running year is a pause/resume button.
@@ -65,7 +67,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v2.9.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v2.10.0...HEAD
+[2.10.0]: https://github.com/LooneyN/chronolist/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/LooneyN/chronolist/compare/v2.8.0...v2.9.0
 [2.8.0]: https://github.com/LooneyN/chronolist/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/LooneyN/chronolist/releases/tag/v2.7.0
