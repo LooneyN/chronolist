@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.9.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 41
+BUILD = 42
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -115,6 +115,7 @@ BATCH_PAUSE = (15, 30)          # Sekunden zwischen zwei Paketen
 COOLDOWN_EVERY = 150            # nach so vielen Videos ein kurzer Cooldown
 COOLDOWN_PAUSE = (54, 66)       # Sekunden (~60 s)
 LONG_BREAK_EVERY = 750          # nach so vielen Videos eine lange Pause
+CHECK_EVERY = 750               # Zwischenprüfung der Playlist während eines Laufs
 LONG_BREAK_PAUSE = (540, 660)   # Sekunden (~10 min)
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -1579,7 +1580,7 @@ class Worker(threading.Thread):
             self.emit("progress", year)
             since_check = getattr(self, "_since_check", 0) + len(chunk)
             self._since_check = since_check
-            if since_check >= 100 and i < len(videos):
+            if since_check >= CHECK_EVERY and i < len(videos):
                 self._since_check = 0
                 state = self.verify(year, videos, state, L("INTERVAL", "ZWISCHENPRÜFUNG"))
                 i = state["next"]
@@ -2715,7 +2716,7 @@ HELP_TEXT_DE = [
             "Chronolist merkt sich, wenn das Kontingent oder das Suchlimit an einem Tag aufgebraucht ist. Bis zum "
             "Reset fragt es nach einem Neustart nicht noch einmal nach, sondern nimmt gleich den Fallback. In dieser "
             "Zeit ist der API-Knopf gelb und zeigt LIMIT."),
-    ("num", "6.  Prüfen. Beim Start, alle 100 Videos, nach STOPP und am Ende eines Jahres schaut Chronolist die "
+    ("num", "6.  Prüfen. Beim Start, alle 750 Videos, nach STOPP und am Ende eines Jahres schaut Chronolist die "
             "Playlist auf doppelte Videos durch. Doppelte werden entfernt und der Fortschritt wird abgeglichen."),
     ("num", "7.  Nächstes Jahr. Ist ein Jahr fertig, geht es mit dem nächsten weiter. Wurden dessen Videos noch nicht "
             "gefunden und ist das Kontingent leer, hält Chronolist an. Mit VORZIEHEN springt es stattdessen zum "
@@ -2901,7 +2902,7 @@ HELP_TEXT_EN = [
             "Chronolist remembers when the quota or the search limit was used up on a given day. Until the reset it "
             "won't ask again after a restart and goes straight to the fallback. During that time the API button is "
             "yellow and shows LIMIT."),
-    ("num", "6.  Check. On start, every 100 videos, after STOP and at the end of each year, Chronolist checks the "
+    ("num", "6.  Check. On start, every 750 videos, after STOP and at the end of each year, Chronolist checks the "
             "playlist for duplicate videos. Duplicates are removed and the progress is synced."),
     ("num", "7.  Next year. When a year is done, Chronolist moves on to the next one. If that year's videos haven't "
             "been found yet and the quota is used up, it stops. With SKIP AHEAD it jumps to the next year that is "
