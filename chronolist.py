@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 82
+BUILD = 83
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -116,7 +116,7 @@ COOLDOWN_EVERY = 250            # nach so vielen Videos ein kurzer Cooldown
 COOLDOWN_PAUSE = (17, 23)       # Sekunden (~20 s)
 LONG_BREAK_EVERY = 1500         # nach so vielen Videos eine lange Pause
 LONG_BREAK_PAUSE = (210, 270)   # Sekunden (~4 min)
-REMOVE_EXTRAS = True            # nur bei Jahren, die per API-Nur-Videos-Liste geprüft sind
+REMOVE_EXTRAS = True            # nur Videos, die nachweislich Shorts sind, werden aus Playlists entfernt
 PART_MAX = 5000                 # YouTube: höchstens 5.000 Videos pro Playlist -> danach Teil 2, 3, ...
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -243,14 +243,26 @@ def archive_cutoff():
 CAP_SEEN = 19900      # YouTube liefert Upload-Listen nur bis ca. 20.000 Einträge
 
 
-def videos_only_list(uploads_id):
-    """Upload-Liste 'UU…' -> Liste nur mit normalen Videos 'UULF…' (ohne Shorts und Livestreams)."""
-    if uploads_id and uploads_id.startswith("UU") and not uploads_id.startswith("UULF"):
-        return "UULF" + uploads_id[2:]
+def full_uploads(uploads_id):
+    """Immer die vollständige Upload-Liste 'UU…' (inkl. Livestreams; Shorts filtern wir selbst)."""
+    if uploads_id and uploads_id.startswith("UU") and uploads_id[2:4] in ("LF", "SH", "LV") and len(uploads_id) > 24:
+        return "UU" + uploads_id[4:]
     return uploads_id
 
 
+def shorts_list(uploads_id):
+    """Upload-Liste 'UU…' -> Liste nur mit den Shorts des Kanals 'UUSH…'."""
+    up = full_uploads(uploads_id)
+    return "UUSH" + up[2:] if up and up.startswith("UU") else None
+
+
 def lf_file(): return CHAN_DIR / "videos_only.json"
+def shorts_file(): return CHAN_DIR / "shorts.json"
+
+
+def known_shorts():
+    d = load(shorts_file(), {})
+    return set(d.get("ids") or []) if d.get("done") else None
 def titles_file(): return CHAN_DIR / "titles.json"
 
 
@@ -278,7 +290,6 @@ def known_dates():
     d.update(load(archive_file(), {}).get("found") or {})
     for f in (sorted(CHAN_DIR.glob("collect_*.json")) if CHAN_DIR.exists() else []):
         d.update(load(f, {}).get("found") or {})
-    d.update(load(lf_file(), {}).get("found") or {})
     return d
 
 
@@ -297,8 +308,8 @@ def insert_by_date(videos, extra, dates):
 
 
 def removed_by_year():
-    """Videos, die gefunden, aber nicht (mehr) in der Jahresliste sind – also Shorts, Livestreams und
-    Fehltreffer der alten Suche. Ergibt sich aus den alten Scan-Daten im Vergleich zur heutigen Liste."""
+    """Videos, die gefunden, aber nicht in der Jahresliste sind (Shorts). Ergibt sich aus den
+    gespeicherten Scan-Daten im Vergleich zur heutigen Liste."""
     cand = {}
     for vid, pub in (load(archive_file(), {}).get("found") or {}).items():
         cand.setdefault(int(pub[:4]), {})[vid] = pub
@@ -1492,9 +1503,9 @@ class Worker(threading.Thread):
                 items = self.call("GET", "channels", {"part": "contentDetails,statistics", **q}).get("items", [])
                 if not items:
                     return
-                prog = {"uploads": videos_only_list(items[0]["contentDetails"]["relatedPlaylists"]["uploads"]),
+                prog = {"uploads": full_uploads(items[0]["contentDetails"]["relatedPlaylists"]["uploads"]),
                         "total": int(items[0]["statistics"]["videoCount"]),
-                        "found": {}, "page_token": None, "seen": 0, "videos_only": True}
+                        "found": {}, "page_token": None, "seen": 0}
                 save(archive_file(), prog)
             self.log(L(f"ARCHIVE SCAN // ALL YEARS IN ONE PASS // {prog['seen']}/{prog['total']} ...", f"ARCHIV-SCAN // ALLE JAHRE IN EINEM DURCHGANG // {prog['seen']}/{prog['total']} ..."))
             pages = 0
@@ -1641,8 +1652,8 @@ class Worker(threading.Thread):
             old_ids = {v["id"] for v in old}
             plus = len(set(merged) - old_ids)
             minus = len(old_ids - set(merged))
-            self.log(L(f"{year} // {len(merged)} VIDEOS // {plus} NEW, {minus} REMOVED (SHORTS/LIVESTREAMS)",
-                       f"{year} // {len(merged)} VIDEOS // {plus} NEU, {minus} ENTFERNT (SHORTS/LIVESTREAMS)"),
+            self.log(L(f"{year} // {len(merged)} VIDEOS // {plus} NEW",
+                       f"{year} // {len(merged)} VIDEOS // {plus} NEU"),
                      "ok" if plus or minus else "info")
         else:
             self.log(L(f"{len(videos)} VIDEOS FROM {year} FOUND", f"{len(videos)} VIDEOS AUS {year} GEFUNDEN"), "ok")
@@ -1650,142 +1661,132 @@ class Worker(threading.Thread):
         self.act(None, year)
         return videos
 
-    def lf_scan(self):
-        """Einmal die Liste 'nur normale Videos' des Kanals über die API lesen (1 Einheit pro 50).
-        Ergebnis: {Jahr: [IDs]} in videos_only.json. Wird fortgesetzt, falls das Kontingent ausgeht."""
-        data = load(lf_file(), {})
+    def uploads_id(self):
+        up = load(archive_file(), {}).get("uploads")
+        if not up:
+            for f in sorted(CHAN_DIR.glob("collect_*.json")):
+                up = load(f, {}).get("uploads")
+                if up:
+                    break
+        if not up:
+            q = {"id": CHANNEL["id"]} if CHANNEL.get("id") else {"forHandle": CHANNEL.get("handle", "")}
+            items = self.call("GET", "channels", {"part": "contentDetails", **q}).get("items", [])
+            up = items[0]["contentDetails"]["relatedPlaylists"]["uploads"] if items else None
+        return full_uploads(up)
+
+    def shorts_scan(self):
+        """Einmal die Shorts-Liste des Kanals über die API lesen (1 Einheit pro 50). Ergebnis in shorts.json."""
+        data = load(shorts_file(), {})
         if data.get("done"):
-            return data
+            return set(data.get("ids") or [])
         if not data.get("list"):
-            up = load(archive_file(), {}).get("uploads")
-            if not up:
-                q = {"id": CHANNEL["id"]} if CHANNEL.get("id") else {"forHandle": CHANNEL.get("handle", "")}
-                items = self.call("GET", "channels", {"part": "contentDetails", **q}).get("items", [])
-                up = items[0]["contentDetails"]["relatedPlaylists"]["uploads"] if items else None
+            up = self.uploads_id()
             if not up:
                 return None
-            data = {"list": videos_only_list(up), "token": None, "found": {}, "seen": 0}
-        self.log(L("VIDEOS ONLY // READING THE CHANNEL'S VIDEO LIST (WITHOUT SHORTS/LIVESTREAMS) ...",
-                   "NUR VIDEOS // LESE DIE VIDEOLISTE DES KANALS (OHNE SHORTS/LIVESTREAMS) ..."))
-        pages = 0
+            data = {"list": shorts_list(up), "token": None, "ids": []}
+        self.log(L("SHORTS // READING THE CHANNEL'S SHORTS LIST ...", "SHORTS // LESE DIE SHORTS-LISTE DES KANALS ..."))
         try:
             while True:
                 self.check()
                 params = {"part": "contentDetails", "playlistId": data["list"], "maxResults": 50}
                 if data["token"]:
                     params["pageToken"] = data["token"]
-                d = self.call("GET", "playlistItems", params)
-                for it in d.get("items", []):
-                    data["seen"] += 1
-                    pub = it["contentDetails"].get("videoPublishedAt")
-                    if pub:
-                        data["found"][it["contentDetails"]["videoId"]] = pub
+                try:
+                    d = self.call("GET", "playlistItems", params)
+                except ApiError as e:
+                    if e.reasons & {"playlistNotFound"} or "404" in str(e):
+                        d = {"items": []}       # Kanal ohne Shorts
+                    else:
+                        raise
+                data["ids"] += [it["contentDetails"]["videoId"] for it in d.get("items", [])]
                 data["token"] = d.get("nextPageToken")
-                pages += 1
-                if pages % 10 == 0:
-                    save(lf_file(), data)
-                    self.act(L(f"VIDEOS ONLY // {data['seen']} READ", f"NUR VIDEOS // {data['seen']} GELESEN"))
+                self.act(L(f"SHORTS // {len(data['ids'])} FOUND", f"SHORTS // {len(data['ids'])} GEFUNDEN"))
                 if not data["token"]:
                     break
         except QuotaExceeded:
-            save(lf_file(), data)
+            save(shorts_file(), data)
             self.act()
             raise
         data["done"] = True
-        data["oldest"] = min((p[:4] for p in data["found"].values()), default=None)
-        data["capped"] = data["seen"] >= CAP_SEEN
-        save(lf_file(), data)
+        save(shorts_file(), data)
         self.act()
-        self.log(L(f"VIDEOS ONLY // {len(data['found'])} VIDEOS", f"NUR VIDEOS // {len(data['found'])} VIDEOS"), "ok")
-        return data
+        self.log(L(f"SHORTS // {len(data['ids'])} SHORTS ON THE CHANNEL", f"SHORTS // {len(data['ids'])} SHORTS AUF DEM KANAL"), "ok")
+        return set(data["ids"])
+
+    def get_shorts(self):
+        """Shorts-IDs oder None (dann ist noch kein Kontingent dafür da)."""
+        sh = known_shorts()
+        if sh is not None:
+            return sh
+        if quota_blocked("units"):
+            return None
+        try:
+            return self.shorts_scan()
+        except QuotaExceeded:
+            return None
 
     def restore_wrongly_removed(self, year, videos):
-        """Build 75–79 haben Videos aussortiert, die auf der Kanalseite fehlten – das waren oft normale
-        Videos. Einmalig alles zurückholen; danach prüft nur noch die API-Liste."""
+        """Builds 75–82 haben auch Livestreams (und wegen der Kanalseite teils normale Videos) aussortiert.
+        Einmalig alles zurückholen, was in den gespeicherten API-Daten für dieses Jahr steht – außer Shorts."""
         cf = collect_file(year)
         prog = load(cf, {})
-        if prog.get("restored_v80"):
+        if prog.get("restored_v83"):
             return videos
-        # Was gehört rein? Nur-Videos-Liste der API, wenn vorhanden; für alte Jahre (vor dieser Liste) alles
-        allowed = None
-        lf = load(lf_file(), {})
-        cut = archive_cutoff()
-        old_year = (lf.get("done") and lf.get("capped") and year <= int(lf.get("oldest") or 0)) or \
-                   (not lf.get("done") and cut is not None and year < cut)
-        if not old_year:
-            if not lf.get("done"):
-                if quota_blocked("units"):
-                    return videos               # erst mit Kontingent zuverlässig möglich
-                try:
-                    lf = self.lf_scan() or {}
-                except QuotaExceeded:
-                    return videos
-            allowed = {v for v, p in (lf.get("found") or {}).items() if p[:4] == str(year)}
-            if not allowed:
-                return videos
-        prog["restored_v80"] = True
-        prog.pop("videos_only", None)
         dates = known_dates()
         have = {v["id"] for v in videos}
-        extra = [(v, p) for v, p in dates.items()
-                 if p[:4] == str(year) and v not in have and (allowed is None or v in allowed)]
+        extra = [(v, p) for v, p in dates.items() if p[:4] == str(year) and v not in have]
+        shorts = set()
+        if extra and year >= 2020:              # Shorts gibt es erst seit 2020
+            shorts = self.get_shorts()
+            if shorts is None:
+                return videos                   # erst mit Kontingent unterscheidbar
+        extra = [(v, p) for v, p in extra if v not in shorts]
+        prog["restored_v83"] = True
+        for k in ("videos_only", "lf_checked", "restored_v80"):
+            prog.pop(k, None)
         if extra:
             videos = insert_by_date(videos, extra, dates)
             save(videos_file(year), videos)
-            st = load(state_file(year), {})
-            if st.get("playlist_id"):
-                st["repair"] = True
-                save(state_file(year), st)
             self.log(L(f"{year} // {len(extra)} VIDEO(S) RESTORED TO THE LIST (WRONGLY LEFT OUT BEFORE)",
                        f"{year} // {len(extra)} VIDEO(S) WIEDER IN DIE LISTE (VORHER FÄLSCHLICH AUSSORTIERT)"), "warn")
             self.emit("progress", year)
+        st = load(state_file(year), {})
+        if st.get("playlist_id"):
+            st["repair"] = True                 # einmal komplett nachtragen/prüfen
+            save(state_file(year), st)
         save(cf, prog)
         return videos
 
     def videos_only(self, year, videos):
-        """Shorts und Livestreams entfernen – nur anhand der Nur-Videos-Liste der API (zuverlässig).
-        Ohne Kontingent wird verschoben, nicht geraten."""
+        """Shorts aus der Liste entfernen (Livestreams bleiben drin)."""
         videos = self.restore_wrongly_removed(year, videos)
         cf = collect_file(year)
         prog = load(cf, {})
-        if prog.get("videos_only"):
+        if prog.get("shorts_checked"):
             return videos
-        if quota_blocked("units"):
-            if not getattr(self, "_lf_postponed", False):
-                self._lf_postponed = True
-                self.log(L("SHORTS/LIVESTREAMS CHECK POSTPONED // NEEDS API QUOTA (ABOUT 1 UNIT PER 50 VIDEOS, ONCE)",
-                           "PRÜFUNG AUF SHORTS/LIVESTREAMS VERSCHOBEN // BRAUCHT API-KONTINGENT (EINMALIG CA. 1 EINHEIT PRO 50 VIDEOS)"), "warn")
-            return videos
-        try:
-            data = self.lf_scan()
-        except QuotaExceeded:
-            return videos
-        if not data or not data.get("done"):
-            return videos
-        oldest = int(data.get("oldest") or 0)
-        if data.get("capped") and year <= oldest:
-            prog["videos_only"] = True          # zu alt für die API-Liste; Shorts gab es damals ohnehin nicht
+        if year < 2020:
+            prog["shorts_checked"] = True
             save(cf, prog)
             return videos
-        self.log(L(f"{year} // CHECKING FOR SHORTS/LIVESTREAMS ...", f"{year} // PRÜFE AUF SHORTS/LIVESTREAMS ..."))
-        allowed = {v for v, p in data["found"].items() if p[:4] == str(year)}
-        if not allowed:
+        shorts = self.get_shorts()
+        if shorts is None:
+            if not getattr(self, "_shorts_postponed", False):
+                self._shorts_postponed = True
+                self.log(L("SHORTS CHECK POSTPONED // NEEDS A LITTLE API QUOTA",
+                           "PRÜFUNG AUF SHORTS VERSCHOBEN // BRAUCHT ETWAS API-KONTINGENT"), "warn")
             return videos
-        cleaned = [v for v in videos if v["id"] in allowed]
-        prog["videos_only"] = True
-        prog["lf_checked"] = True
+        cleaned = [v for v in videos if v["id"] not in shorts]
+        prog["shorts_checked"] = True
         save(cf, prog)
         removed = len(videos) - len(cleaned)
         if not removed:
-            self.log(L(f"{year} // NO SHORTS/LIVESTREAMS FOUND", f"{year} // KEINE SHORTS/LIVESTREAMS GEFUNDEN"), "ok")
             return videos
         save(videos_file(year), cleaned)
         st = load(state_file(year), {})
         if st.get("playlist_id"):
             st["repair"] = True
             save(state_file(year), st)
-        self.log(L(f"{year} // {removed} SHORTS/LIVESTREAMS REMOVED FROM THE LIST",
-                   f"{year} // {removed} SHORTS/LIVESTREAMS AUS DER LISTE ENTFERNT"), "warn")
+        self.log(L(f"{year} // {removed} SHORTS REMOVED FROM THE LIST", f"{year} // {removed} SHORTS AUS DER LISTE ENTFERNT"), "warn")
         self.emit("progress", year)
         return cleaned
 
@@ -1797,11 +1798,11 @@ class Worker(threading.Thread):
         new = []          # (id, published) neueste zuerst
         try:
             if not quota_blocked("units"):
-                up = videos_only_list(load(archive_file(), {}).get("uploads") or load(collect_file(year), {}).get("uploads"))
+                up = full_uploads(load(archive_file(), {}).get("uploads") or load(collect_file(year), {}).get("uploads"))
                 if not up:
                     q = {"id": CHANNEL["id"]} if CHANNEL.get("id") else {"forHandle": CHANNEL.get("handle", "")}
                     items = self.call("GET", "channels", {"part": "contentDetails", **q}).get("items", [])
-                    up = videos_only_list(items[0]["contentDetails"]["relatedPlaylists"]["uploads"]) if items else None
+                    up = full_uploads(items[0]["contentDetails"]["relatedPlaylists"]["uploads"]) if items else None
                 token, done = None, False
                 while up and not done:
                     params = {"part": "contentDetails", "playlistId": up, "maxResults": 50}
@@ -1887,8 +1888,7 @@ class Worker(threading.Thread):
             ch = items[0]
             prog = {
                 "channel_id": ch["id"],
-                "uploads": videos_only_list(ch["contentDetails"]["relatedPlaylists"]["uploads"]),
-                "videos_only": True,
+                "uploads": full_uploads(ch["contentDetails"]["relatedPlaylists"]["uploads"]),
                 "total": int(ch["statistics"]["videoCount"]),
                 "found": {}, "method": "uploads", "page_token": None,
                 "seen": 0, "done_months": [],
@@ -2311,20 +2311,26 @@ class Worker(threading.Thread):
                 self.log(L(f"REPAIR {tag} // PLAYLIST HAS {len(items)} VIDEOS", f"NACHTRAG {tag} // PLAYLIST HAT {len(items)} VIDEOS"))
                 wanted = set(order_all)
                 extras = [it for it in items if it["vid"] not in wanted]
-                if extras and not (REMOVE_EXTRAS and load(collect_file(year), {}).get("lf_checked")):
+                shorts = known_shorts() or set()
+                keep = [it for it in extras if it["vid"] not in shorts]
+                extras = [it for it in extras if it["vid"] in shorts]     # nur Shorts werden entfernt
+                if keep:
+                    self.log(L(f"REPAIR {tag} // {len(keep)} VIDEO(S) NOT IN THE LIST // LEFT IN THE PLAYLIST",
+                               f"NACHTRAG {tag} // {len(keep)} VIDEO(S) NICHT IN DER LISTE // BLEIBEN IN DER PLAYLIST"), "info")
+                if extras and not REMOVE_EXTRAS:
                     self.log(L(f"REPAIR {tag} // {len(extras)} VIDEO(S) NOT IN THE LIST // LEFT IN THE PLAYLIST FOR NOW",
                                f"NACHTRAG {tag} // {len(extras)} VIDEO(S) NICHT IN DER LISTE // BLEIBEN VORERST IN DER PLAYLIST"), "warn")
                     extras = []
                 if extras:
-                    self.log(L(f"REPAIR {tag} // REMOVING {len(extras)} VIDEO(S) THAT DON'T BELONG (SHORTS/LIVESTREAMS)",
-                               f"NACHTRAG {tag} // ENTFERNE {len(extras)} VIDEO(S), DIE NICHT HINGEHÖREN (SHORTS/LIVESTREAMS)"), "warn")
+                    self.log(L(f"REPAIR {tag} // REMOVING {len(extras)} SHORT(S)",
+                               f"NACHTRAG {tag} // ENTFERNE {len(extras)} SHORT(S)"), "warn")
                     for i in range(0, len(extras), BATCH_SIZE):
                         self.check()
                         self.browser.remove_many(pid, extras[i:i + BATCH_SIZE])
                         self.act(L(f"REPAIR // {min(i + BATCH_SIZE, len(extras))}/{len(extras)} REMOVED",
                                    f"NACHTRAG // {min(i + BATCH_SIZE, len(extras))}/{len(extras)} ENTFERNT"), year)
                         self.sleep(random.uniform(*BATCH_PAUSE), "NEXT BATCH")
-                    items = [it for it in items if it["vid"] in wanted]
+                    items = [it for it in items if it["vid"] not in {x["vid"] for x in extras}]
                 present = {it["vid"] for it in items}
                 last = max((i for i, v in enumerate(order) if v in present), default=-1)
                 missing = [v for v in order[:last + 1] if v not in present]
@@ -3732,11 +3738,10 @@ HELP_TEXT_DE = [
             "Chronolist merkt sich deshalb das Paket, das gerade unterwegs ist, und prüft nach STOPP oder beim "
             "nächsten Start nur dieses. Das geht in Sekunden. Die ganze Playlist liest es nur am Ende eines Jahres "
             "und beim Knopf PRÜFEN: Doppelte werden entfernt und der Fortschritt wird abgeglichen.\n"
-            "Shorts und Livestreams kommen nicht in die Playlists. Erkannt werden sie zuverlässig nur über die "
-            "Nur-Videos-Liste der API. Sie wird einmal gelesen (ca. 1 Einheit pro 50 Videos), sobald Kontingent da "
-            "ist. Danach werden ältere Listen beim nächsten Durchlauf des Jahres bereinigt, mit FALLBACK auch die "
-            "Playlist selbst. Die Kanalseite ergänzt nur fehlende Videos, entfernt aber nie welche, weil sie nicht "
-            "alle Videos zeigt."),
+            "Shorts kommen nicht in die Playlists, Livestreams schon (manche Kanäle haben darüber z. B. mehrere "
+            "Perspektiven veröffentlicht). Shorts erkennt Chronolist über die Shorts-Liste des Kanals. Die wird "
+            "einmal über die API gelesen, sobald etwas Kontingent da ist. Mit FALLBACK werden Shorts auch aus "
+            "bestehenden Playlists entfernt. Die Kanalseite ergänzt nur fehlende Videos, entfernt aber nie welche."),
     ("num", "7.  Nächstes Jahr. Ist ein Jahr fertig, geht es mit dem nächsten markierten Jahr in der Reihenfolge der "
             "Liste weiter. Wurden dessen Videos noch nicht gefunden und ist das Kontingent leer, hält Chronolist an. "
             "Mit VORZIEHEN nimmt es stattdessen das nächste markierte Jahr, das schon bereit ist, und holt das "
@@ -3953,10 +3958,10 @@ HELP_TEXT_EN = [
             "remembers the batch in flight and after STOP or on the next start checks only that one, which takes "
             "seconds. It reads the whole playlist only at the end of a year and with the CHECK button: duplicates "
             "are removed and the progress is synced.\n"
-            "Shorts and livestreams are not added to the playlists. They are only detected reliably through the API's "
-            "videos-only list, which is read once (about 1 unit per 50 videos) when quota is available. After that, "
-            "older lists are cleaned the next time the year runs, with FALLBACK also the playlist itself. The "
-            "channel page only adds missing videos and never removes any, because it doesn't show every video."),
+            "Shorts are not added to the playlists, livestreams are (some channels used them to publish several "
+            "perspectives, for example). Shorts are detected through the channel's shorts list, which is read once "
+            "through the API when a little quota is available. With FALLBACK shorts are also removed from existing "
+            "playlists. The channel page only adds missing videos and never removes any."),
     ("num", "7.  Next year. When a year is done, Chronolist moves on to the next selected year in the order of the "
             "list. If that year's videos haven't been found yet and the quota is used up, it stops. With SKIP AHEAD it "
             "takes the next selected year that is already ready instead and catches up later."),
@@ -4280,10 +4285,10 @@ class RemovedWindow(tk.Toplevel):
         data = removed_by_year()
         self.titles = load(titles_file(), {})
         txt.insert("end", L("Left out videos", "Nicht übernommene Videos") + "\n", "h1")
-        txt.insert("end", L("Videos that were found but are not in the playlists: shorts, livestreams and wrong hits of "
-                            "the old search. Click a title to open it on YouTube.",
-                            "Videos, die gefunden wurden, aber nicht in den Playlists sind: Shorts, Livestreams und "
-                            "Fehltreffer der alten Suche. Klick auf einen Titel öffnet ihn auf YouTube.") + "\n", "p")
+        txt.insert("end", L("Videos that were found but are left out of the playlists (shorts). "
+                            "Click a title to open it on YouTube.",
+                            "Videos, die gefunden, aber nicht in die Playlists übernommen wurden (Shorts). "
+                            "Klick auf einen Titel öffnet ihn auf YouTube.") + "\n", "p")
         if not data:
             txt.insert("end", L("Nothing left out so far.", "Bisher wurde nichts aussortiert.") + "\n", "p")
         self.pending = []
@@ -5506,7 +5511,7 @@ class App(tk.Tk):
         self.logbox.config(state="normal")
         self.logbox.insert("end", f"[{stamp}] ", "ts")
         m = re.match(r"^((?:REPAIR|NACHTRAG) \d+ // )(420)(/\d+ (?:MOVED|VERSCHOBEN))$", text)
-        r = re.match(r"^(\d{4}) // .*SHORTS/LIVESTREAMS.*(?:REMOVED|ENTFERNT)", text)
+        r = re.match(r"^(\d{4}) // .*SHORTS.*(?:REMOVED|ENTFERNT)", text)
         if r:
             y = int(r.group(1))
             tag = f"rm{y}_{self.logbox.index('end')}"
