@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 66
+BUILD = 67
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -655,6 +655,16 @@ OLDEST_WORDS = ("oldest", "älteste", "ältest", "plus anciennes", "más antiguo
 
 
 def web_index_file(): return CHAN_DIR / "web_index.json"
+
+
+def fmt_day(iso):
+    """'2014-03-12...' -> '12.03.2014' (DE) bzw. '12 MAR 2014' (EN)."""
+    try:
+        d = datetime.date.fromisoformat((iso or "")[:10])
+    except ValueError:
+        return "?"
+    months = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+    return L(f"{d.day} {months[d.month - 1]} {d.year}", d.strftime("%d.%m.%Y"))
 
 
 def known_channel_id():
@@ -1436,12 +1446,12 @@ class Worker(threading.Thread):
             if not tok:
                 idx["end"] = True
             save(web_index_file(), idx)
-            self.act(L(f"CHANNEL PAGE // {len(idx['ids'])} READ // {(idx['last'] or '?')[:10]}",
-                       f"KANALSEITE // {len(idx['ids'])} GELESEN // {(idx['last'] or '?')[:10]}"), year)
+            self.act(L(f"CHANNEL PAGE // {len(idx['ids'])} READ // {fmt_day(idx['last'])}",
+                       f"KANALSEITE // {len(idx['ids'])} GELESEN // {fmt_day(idx['last'])}"), year)
             pages += 1
             if pages % 10 == 0:
-                self.log(L(f"CHANNEL PAGE // {len(idx['ids'])} VIDEOS READ // NOW AT {(idx['last'] or '?')[:10]}",
-                           f"KANALSEITE // {len(idx['ids'])} VIDEOS GELESEN // STAND {(idx['last'] or '?')[:10]}"))
+                self.log(L(f"CHANNEL PAGE // {len(idx['ids'])} VIDEOS READ // NOW AT {fmt_day(idx['last'])}",
+                           f"KANALSEITE // {len(idx['ids'])} VIDEOS GELESEN // STAND {fmt_day(idx['last'])}"))
             time.sleep(random.uniform(0.8, 1.6))
         return [v for v in idx["ids"] if idx["year"].get(v) == year]
 
