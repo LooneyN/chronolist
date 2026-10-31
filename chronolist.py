@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 59
+BUILD = 60
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1024,9 +1024,10 @@ class Worker(threading.Thread):
             self.current_year = msg[1]
         self.out.put(msg)
 
-    def act(self, text=None):
-        """Was gerade passiert, für die Statuszeile der laufenden Jahreskarte (None = nichts Besonderes)."""
-        self.emit("activity", text)
+    def act(self, text=None, year=None):
+        """Was gerade passiert, für die Statuszeile der Jahreskarte, um die es geht
+        (Standard: das laufende Jahr). None = nichts Besonderes."""
+        self.emit("activity", year or getattr(self, "current_year", None), text)
 
     def log(self, text, level="info"):
         self.emit("log", text, level)
@@ -1435,10 +1436,8 @@ class Worker(threading.Thread):
             if not tok:
                 idx["end"] = True
             save(web_index_file(), idx)
-            pre = (L(f"PRE-SCAN {year} // ", f"VORAB {year} // ")
-                   if year != getattr(self, "current_year", year) else "")
-            self.act(pre + L(f"CHANNEL PAGE // {len(idx['ids'])} READ // {(idx['last'] or '?')[:7]}",
-                             f"KANALSEITE // {len(idx['ids'])} GELESEN // {(idx['last'] or '?')[:7]}"))
+            self.act(L(f"CHANNEL PAGE // {len(idx['ids'])} READ // {(idx['last'] or '?')[:7]}",
+                       f"KANALSEITE // {len(idx['ids'])} GELESEN // {(idx['last'] or '?')[:7]}"), year)
             pages += 1
             if pages % 10 == 0:
                 self.log(L(f"CHANNEL PAGE // {len(idx['ids'])} VIDEOS READ // NOW AT {(idx['last'] or '?')[:7]}",
@@ -1452,7 +1451,7 @@ class Worker(threading.Thread):
         self.scanning = year
         self.log(L(f"{year} // READING THE CHANNEL PAGE (NO API QUOTA NEEDED) ...",
                    f"{year} // LESE DIE KANALSEITE (OHNE API-KONTINGENT) ..."))
-        self.act(L("CHANNEL PAGE // OPENING ...", "KANALSEITE // WIRD GEÖFFNET ..."))
+        self.act(L("CHANNEL PAGE // OPENING ...", "KANALSEITE // WIRD GEÖFFNET ..."), year)
         web = self.web_index(year)
         if not web:
             raise BrowserFailed(L(f"{year} // NO VIDEOS FOUND ON THE CHANNEL PAGE", f"{year} // KEINE VIDEOS AUF DER KANALSEITE GEFUNDEN"))
@@ -1482,7 +1481,7 @@ class Worker(threading.Thread):
         else:
             self.log(L(f"{len(videos)} VIDEOS FROM {year} FOUND", f"{len(videos)} VIDEOS AUS {year} GEFUNDEN"), "ok")
         self.emit("progress", year)
-        self.act()
+        self.act(None, year)
         return videos
 
     def collect(self, year):
@@ -1566,9 +1565,7 @@ class Worker(threading.Thread):
                 start = f"{year}-{m:02d}-01T00:00:00Z"
                 end = f"{year + 1}-01-01T00:00:00Z" if m == 12 else f"{year}-{m + 1:02d}-01T00:00:00Z"
                 token, count = None, 0
-                self.act((L(f"PRE-SCAN {year} // ", f"VORAB {year} // ")
-                          if year != getattr(self, "current_year", year) else "")
-                         + L(f"DATE SEARCH // {m:02d}/{year}", f"DATUMSSUCHE // {m:02d}/{year}"))
+                self.act(L(f"DATE SEARCH // {m:02d}/{year}", f"DATUMSSUCHE // {m:02d}/{year}"), year)
                 while True:
                     params = {
                         "part": "snippet", "channelId": prog["channel_id"], "type": "video",
@@ -1591,6 +1588,7 @@ class Worker(threading.Thread):
                 self.log(f"{m:02d}/{year} // {count} VIDEOS")
             prog["method"] = "done"
             save(cf, prog)
+            self.act(None, year)
 
         videos = sorted(
             ({"id": vid, "published": pub} for vid, pub in prog["found"].items()),
@@ -1626,6 +1624,8 @@ class Worker(threading.Thread):
         except Exception as e:  # noqa: BLE001
             self.scanning = None
             self.log(L(f"PRE-SCAN {year} INTERRUPTED // {e} // PROGRESS SAVED, CONTINUES NEXT RUN", f"VORAB-SUCHE {year} UNTERBROCHEN // {e} // GESPEICHERT, GEHT BEIM NÄCHSTEN MAL WEITER"), "warn")
+        finally:
+            self.act(None, year)
 
     def ensure_playlist(self, year):
         sf = state_file(year)
@@ -1899,7 +1899,7 @@ class Worker(threading.Thread):
                 n_done = min(i + len(chunk), len(missing))
                 self.log(L(f"REPAIR {year} // {n_done}/{len(missing)} ADDED",
                            f"NACHTRAG {year} // {n_done}/{len(missing)} EINGEFÜGT"))
-                self.act(L(f"REPAIR // {n_done}/{len(missing)} ADDED", f"NACHTRAG // {n_done}/{len(missing)} EINGEFÜGT"))
+                self.act(L(f"REPAIR // {n_done}/{len(missing)} ADDED", f"NACHTRAG // {n_done}/{len(missing)} EINGEFÜGT"), year)
                 if i + BATCH_SIZE < len(missing):
                     self.sleep(random.uniform(*BATCH_PAUSE), "NEXT BATCH")
             if added:
@@ -1912,21 +1912,21 @@ class Worker(threading.Thread):
             if moves:
                 self.log(L(f"REPAIR {year} // MOVING {len(moves)} VIDEO(S) TO THE RIGHT SPOT ...",
                            f"NACHTRAG {year} // VERSCHIEBE {len(moves)} VIDEO(S) AN DIE RICHTIGE STELLE ..."))
-                self.act(L(f"SORTING // 0/{len(moves)}", f"SORTIERE // 0/{len(moves)}"))
+                self.act(L(f"SORTING // 0/{len(moves)}", f"SORTIERE // 0/{len(moves)}"), year)
 
                 def moved(n):
                     self.log(L(f"REPAIR {year} // {n}/{len(moves)} MOVED", f"NACHTRAG {year} // {n}/{len(moves)} VERSCHOBEN"))
-                    self.act(L(f"SORTING // {n}/{len(moves)}", f"SORTIERE // {n}/{len(moves)}"))
+                    self.act(L(f"SORTING // {n}/{len(moves)}", f"SORTIERE // {n}/{len(moves)}"), year)
                 self.browser.move_before(pid, moves, moved)
                 self.log(L(f"REPAIR {year} // ORDER FIXED", f"NACHTRAG {year} // REIHENFOLGE KORRIGIERT"), "ok")
-            self.act()
+            self.act(None, year)
             state["next"] = last + 1
             state.pop("repair", None)
             save(state_file(year), state)
             self.emit("progress", year)
         finally:
             self.emit("checking", year, False)
-            self.act()
+            self.act(None, year)
         return state
 
     def final_check(self):
@@ -2314,7 +2314,7 @@ class YearRow(Panel):
         code, run = self.info["code"], self.running
         if run and self.pause:
             return pause_label(self.pause, time.time()), False
-        if run and self.activity:
+        if self.activity:
             return self.activity, True
         if self.checking:
             return L("CHECKING PLAYLIST...", "PLAYLIST WIRD GEPRÜFT..."), True
@@ -2370,7 +2370,8 @@ class YearRow(Panel):
         self.create_text(nx, y0 + h * 0.32, text=str(self.year), anchor="w", font=F("ui", 16),
                          fill=TEXT if on else mix(TEXT_DIM, BG, 0.5) if faded else mix(TEXT_DIM, BG, 0.75))
         text, blinking = self.status_text()
-        scol = ((RED if on else mix(RED, BG, 0.55)) if (self.blocked and not self.running) else role if on
+        scol = (CYAN if self.activity else
+                (RED if on else mix(RED, BG, 0.55)) if (self.blocked and not self.running) else role if on
                 else mix(role, BG, 0.55) if faded else mix(TEXT_MUTED, BG, 0.65))
         item = self.create_text(nx, y0 + h * 0.62, text=text, anchor="w", font=F("mono", 11), fill=scol,
                                 tags="stat")
@@ -3255,7 +3256,7 @@ HELP_TEXT_DE = [
           "steht dahinter. Das betrifft Jahre, deren Videos noch gesucht werden müssen, denn das geht nur über die "
           "API. Bei angefangenen und bereiten Jahren nur, wenn FALLBACK aus ist."),
     ("dt", "Was unter dem Jahr stehen kann"),
-    ("dd", "Beim laufenden Jahr steht hier, was gerade passiert, mit Fortschritt, z. B. KANALSEITE // 1400 GELESEN, "
+    ("dd", "Läuft für ein Jahr gerade etwas, steht hier in Cyan, was passiert, mit Fortschritt, z. B. KANALSEITE // 1400 GELESEN, "
            "NACHTRAG // 40/102 EINGEFÜGT, SORTIERE // 20/102 oder PRÜFE PLAYLIST // 600 GELESEN.\n"
            "NICHT GESUCHT: Die Videos wurden noch nicht gesucht.\n"
            "SUCHE PAUSIERT: Die Suche wurde angefangen, ist aber noch nicht fertig.\n"
@@ -3461,7 +3462,7 @@ HELP_TEXT_EN = [
           "next to it. This applies to years whose videos still have to be searched, which only works through the "
           "API. For started and ready years only when FALLBACK is off."),
     ("dt", "What can appear under a year"),
-    ("dd", "On the running year this line shows what is happening right now, with progress, e.g. CHANNEL PAGE // "
+    ("dd", "While something is happening for a year, this line shows it in cyan, with progress, e.g. CHANNEL PAGE // "
            "1400 READ, REPAIR // 40/102 ADDED, SORTING // 20/102 or CHECKING PLAYLIST // 600 READ.\n"
            "NOT SCANNED: the videos haven't been searched yet.\n"
            "SCAN PAUSED: the search was started but isn't finished.\n"
@@ -4863,9 +4864,8 @@ class App(tk.Tk):
                         self.rows[msg[2]].refresh(selected=False)
                     self.save_settings()
                 elif kind == "activity":
-                    for r in self.rows.values():
-                        if r.running:
-                            r.set_activity(msg[1])
+                    if msg[1] in self.rows:
+                        self.rows[msg[1]].set_activity(msg[2])
                 elif kind == "current":
                     for y, r in self.rows.items():
                         if r.running != (y == msg[1]):
