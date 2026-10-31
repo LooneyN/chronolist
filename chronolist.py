@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 65
+BUILD = 66
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1436,12 +1436,12 @@ class Worker(threading.Thread):
             if not tok:
                 idx["end"] = True
             save(web_index_file(), idx)
-            self.act(L(f"CHANNEL PAGE // {len(idx['ids'])} READ // {(idx['last'] or '?')[:7]}",
-                       f"KANALSEITE // {len(idx['ids'])} GELESEN // {(idx['last'] or '?')[:7]}"), year)
+            self.act(L(f"CHANNEL PAGE // {len(idx['ids'])} READ // {(idx['last'] or '?')[:10]}",
+                       f"KANALSEITE // {len(idx['ids'])} GELESEN // {(idx['last'] or '?')[:10]}"), year)
             pages += 1
             if pages % 10 == 0:
-                self.log(L(f"CHANNEL PAGE // {len(idx['ids'])} VIDEOS READ // NOW AT {(idx['last'] or '?')[:7]}",
-                           f"KANALSEITE // {len(idx['ids'])} VIDEOS GELESEN // STAND {(idx['last'] or '?')[:7]}"))
+                self.log(L(f"CHANNEL PAGE // {len(idx['ids'])} VIDEOS READ // NOW AT {(idx['last'] or '?')[:10]}",
+                           f"KANALSEITE // {len(idx['ids'])} VIDEOS GELESEN // STAND {(idx['last'] or '?')[:10]}"))
             time.sleep(random.uniform(0.8, 1.6))
         return [v for v in idx["ids"] if idx["year"].get(v) == year]
 
