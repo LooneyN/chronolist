@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 52
+BUILD = 53
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -291,9 +291,11 @@ def year_blocked(info):
     code = info["code"]
     if code == "done":
         return None
+    if FALLBACK_ON:
+        return None          # mit FALLBACK geht Suchen (Kanalseite) und Füllen ohne API
     if code in ("none", "scanning"):
         return quota_blocked("units") or quota_blocked("search")
-    return None if FALLBACK_ON else quota_blocked("units")
+    return quota_blocked("units")
 
 
 def status_role(code, running=False):
@@ -576,6 +578,85 @@ def walk_json(node, found_items, found_tokens):
             walk_json(v, found_items, found_tokens)
 
 
+def first_token(node):
+    """Erstes continuationCommand-Token irgendwo unterhalb von node."""
+    if isinstance(node, dict):
+        cc = node.get("continuationCommand")
+        if isinstance(cc, dict) and cc.get("token"):
+            return cc["token"]
+        for v in node.values():
+            t = first_token(v)
+            if t:
+                return t
+    elif isinstance(node, list):
+        for v in node:
+            t = first_token(v)
+            if t:
+                return t
+    return None
+
+
+def text_of(node):
+    if isinstance(node, str):
+        return node
+    if isinstance(node, dict):
+        if "simpleText" in node:
+            return node["simpleText"]
+        if "runs" in node:
+            return "".join(r.get("text", "") for r in node["runs"])
+        if "content" in node and isinstance(node["content"], str):
+            return node["content"]
+    return ""
+
+
+def find_chips(node, out):
+    """Sortier-Chips der Videoseite (Neueste / Beliebt / Älteste) als [(text, token)]."""
+    if isinstance(node, dict):
+        for key in ("chipCloudChipRenderer", "chipViewModel"):
+            c = node.get(key)
+            if isinstance(c, dict):
+                tok = first_token(c)
+                if tok:
+                    out.append((text_of(c.get("text")).strip().lower(), tok))
+                return
+        for v in node.values():
+            find_chips(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            find_chips(v, out)
+
+
+def find_channel_videos(node, ids, tokens):
+    """Video-IDs (in Seitenreihenfolge) und das Fortsetzungs-Token einer Kanal-Videoseite."""
+    if isinstance(node, dict):
+        for key in ("videoRenderer", "gridVideoRenderer"):
+            r = node.get(key)
+            if isinstance(r, dict) and r.get("videoId"):
+                ids.append(r["videoId"])
+                return
+        lv = node.get("lockupViewModel")
+        if isinstance(lv, dict) and lv.get("contentId") and "VIDEO" in str(lv.get("contentType", "VIDEO")):
+            ids.append(lv["contentId"])
+            return
+        ci = node.get("continuationItemRenderer")
+        if isinstance(ci, dict):
+            t = first_token(ci)
+            if t:
+                tokens.append(t)
+            return
+        for v in node.values():
+            find_channel_videos(v, ids, tokens)
+    elif isinstance(node, list):
+        for v in node:
+            find_channel_videos(v, ids, tokens)
+
+
+OLDEST_WORDS = ("oldest", "älteste", "ältest", "plus anciennes", "más antiguos", "più vecchi", "oudste")
+
+
+def web_index_file(): return CHAN_DIR / "web_index.json"
+
+
 class RelistNeeded(Exception):
     pass
 
@@ -780,6 +861,51 @@ class BrowserUplink:
             tokens += new_tokens
             time.sleep(1)
         return items
+
+    def oldest_token(self, channel_id):
+        """Token für die Videoseite des Kanals, sortiert nach 'Älteste'."""
+        j = self.yt_call("browse", {"browseId": channel_id, "params": "EgZ2aWRlb3PyBgQKAjoA"})
+        chips = []
+        find_chips(j, chips)
+        for text, tok in chips:
+            if any(w in text for w in OLDEST_WORDS):
+                return tok
+        if len(chips) >= 3:
+            return chips[2][1]       # Reihenfolge: Neueste, Beliebt, Älteste
+        raise BrowserFailed(L("CHANNEL PAGE // NO 'OLDEST' SORTING FOUND", "KANALSEITE // KEINE SORTIERUNG 'ÄLTESTE' GEFUNDEN"))
+
+    def video_page(self, token):
+        ids, tokens = [], []
+        find_channel_videos(self.yt_call("browse", {"continuation": token}), ids, tokens)
+        return ids, (tokens[-1] if tokens else None)
+
+    def video_date(self, vid):
+        """Veröffentlichungsdatum als ISO-String in UTC, oder None."""
+        try:
+            j = self.yt_call("player", {"videoId": vid})
+        except BrowserFailed:
+            return None
+        mf = (j.get("microformat") or {}).get("playerMicroformatRenderer") or {}
+        raw = mf.get("publishDate") or mf.get("uploadDate")
+        if not raw:
+            return None
+        try:
+            d = datetime.datetime.fromisoformat(raw)
+            if d.tzinfo is None:
+                return d.strftime("%Y-%m-%dT%H:%M:%SZ")
+            return d.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            return raw[:10] + "T00:00:00Z" if re.match(r"\d{4}-\d{2}-\d{2}", raw) else None
+
+    def move_before(self, playlist_id, moves):
+        """moves: [(setVideoId, setVideoId des Nachfolgers)], in Paketen."""
+        for i in range(0, len(moves), 20):
+            acts = [{"action": "ACTION_MOVE_VIDEO_BEFORE", "setVideoId": a, "movedSetVideoIdSuccessor": b}
+                    for a, b in moves[i:i + 20]]
+            j = self.yt_call("browse/edit_playlist", {"playlistId": playlist_id, "actions": acts})
+            if j.get("status") != "STATUS_SUCCEEDED":
+                raise BrowserFailed(L(f"REORDER FAILED // {j.get('status')}", f"SORTIEREN FEHLGESCHLAGEN // {j.get('status')}"))
+            time.sleep(random.uniform(2, 4))
 
     def remove(self, playlist_id, item):
         j = self.yt_call("browse/edit_playlist", {"playlistId": playlist_id, "actions": [
@@ -1159,10 +1285,118 @@ class Worker(threading.Thread):
         if not complete:
             self.log(L(f"UPLOAD LIST CAPPED BY YOUTUBE // {oldest} AND OLDER USE THE SLOWER DATE SEARCH", f"YOUTUBE KAPPT DIE UPLOAD-LISTE // {oldest} UND ÄLTER ÜBER DIE LANGSAMERE DATUMSSUCHE"), "warn")
 
+    def use_web(self, year):
+        """Videoliste über die Kanalseite holen? Nur mit FALLBACK. Für Jahre hinter der 20.000er-Grenze
+        immer (die API-Suche ist lückenhaft), sonst nur, wenn das Kontingent leer ist."""
+        if not self.fallback or not CHANNEL.get("id"):
+            return False
+        cut = archive_cutoff()
+        if cut is not None and year <= cut:
+            return True
+        return bool(quota_blocked("units") or quota_blocked("search"))
+
+    def ensure_browser(self):
+        if not self.browser:
+            self.browser = BrowserUplink(self)
+            self.browser.start()
+
+    def web_index(self, year):
+        """Liest die Videoseite des Kanals (älteste zuerst), bis das Jahr komplett abgedeckt ist.
+        Speichert Reihenfolge und Jahr jedes Videos in web_index.json (wird fortgesetzt)."""
+        self.ensure_browser()
+        idx = load(web_index_file(), {})
+        if idx.get("channel") != CHANNEL.get("id"):
+            idx = {"channel": CHANNEL["id"], "ids": [], "year": {}, "token": None, "last": None, "end": False}
+        if not idx["ids"] and not idx.get("token"):
+            self.log(L("CHANNEL PAGE // OPENING VIDEOS SORTED BY OLDEST ...", "KANALSEITE // ÖFFNE VIDEOS, ÄLTESTE ZUERST ..."))
+            idx["token"] = self.browser.oldest_token(CHANNEL["id"])
+        pages = 0
+        while not idx["end"] and (idx["last"] is None or int(idx["last"][:4]) <= year):
+            self.check()
+            ids, tok = self.browser.video_page(idx["token"])
+            ids = [v for v in ids if v not in idx["year"]]
+            if ids:
+                last = self.browser.video_date(ids[-1]) or idx["last"]
+                prev = idx["last"]
+                if prev is None:
+                    first = self.browser.video_date(ids[0])
+                    prev = first
+                if prev and last and prev[:4] == last[:4]:
+                    for v in ids:
+                        idx["year"][v] = int(last[:4])
+                else:
+                    # Jahreswechsel auf dieser Seite: jedes Video einzeln datieren
+                    cur = prev
+                    for v in ids:
+                        d = self.browser.video_date(v) or cur
+                        cur = d
+                        if d:
+                            idx["year"][v] = int(d[:4])
+                idx["ids"] += ids
+                idx["last"] = last
+            idx["token"] = tok
+            if not tok:
+                idx["end"] = True
+            save(web_index_file(), idx)
+            pages += 1
+            if pages % 10 == 0:
+                self.log(L(f"CHANNEL PAGE // {len(idx['ids'])} VIDEOS READ // NOW AT {(idx['last'] or '?')[:7]}",
+                           f"KANALSEITE // {len(idx['ids'])} VIDEOS GELESEN // STAND {(idx['last'] or '?')[:7]}"))
+            time.sleep(random.uniform(0.8, 1.6))
+        return [v for v in idx["ids"] if idx["year"].get(v) == year]
+
+    def collect_web(self, year, old=None):
+        """Videoliste eines Jahres über die Kanalseite. Videos aus einer alten Liste (Suche), die dort
+        fehlen, bleiben an ihrer bisherigen Stelle erhalten."""
+        self.scanning = year
+        self.log(L(f"{year} // READING THE CHANNEL PAGE (NO API QUOTA NEEDED) ...",
+                   f"{year} // LESE DIE KANALSEITE (OHNE API-KONTINGENT) ..."))
+        web = self.web_index(year)
+        if not web:
+            raise BrowserFailed(L(f"{year} // NO VIDEOS FOUND ON THE CHANNEL PAGE", f"{year} // KEINE VIDEOS AUF DER KANALSEITE GEFUNDEN"))
+        merged = list(web)
+        if old:
+            have = set(merged)
+            prev = None
+            for v in old:
+                if v["id"] in have:
+                    prev = v["id"]
+                    continue
+                pos = merged.index(prev) + 1 if prev in merged else 0
+                merged.insert(pos, v["id"])
+                have.add(v["id"])
+                prev = v["id"]
+        videos = [{"id": v, "published": None} for v in merged]
+        save(videos_file(year), videos)
+        cf = collect_file(year)
+        prog = load(cf, {})
+        prog.update(method="done", source="web")
+        save(cf, prog)
+        self.scanning = None
+        added = len(merged) - len(old or [])
+        if old:
+            self.log(L(f"{year} // {len(merged)} VIDEOS // {added} MORE THAN BEFORE",
+                       f"{year} // {len(merged)} VIDEOS // {added} MEHR ALS VORHER"), "ok" if added else "info")
+        else:
+            self.log(L(f"{len(videos)} VIDEOS FROM {year} FOUND", f"{len(videos)} VIDEOS AUS {year} GEFUNDEN"), "ok")
+        self.emit("progress", year)
+        return videos
+
     def collect(self, year):
         cached = load(videos_file(year), None)
         if cached is not None:
+            if self.use_web(year) and load(collect_file(year), {}).get("source") != "web":
+                # bisher über die lückenhafte Suche gefunden -> mit der Kanalseite abgleichen
+                videos = self.collect_web(year, cached)
+                if len(videos) > len(cached):
+                    st = load(state_file(year), {})
+                    if st.get("playlist_id"):
+                        st["repair"] = True
+                        save(state_file(year), st)
+                return videos
             return cached
+        if self.use_web(year):
+            return self.collect_web(year)
         self.scanning = year
 
         cf = collect_file(year)
@@ -1527,6 +1761,58 @@ class Worker(threading.Thread):
             self.emit("checking", year, False)
         return state
 
+    def repair(self, year, videos, state):
+        """Fehlende Videos in eine schon (teilweise) gefüllte Playlist nachtragen und an die
+        richtige Stelle schieben. Danach geht es mit dem normalen Füllen weiter."""
+        pid = state["playlist_id"]
+        self.ensure_browser()
+        self.emit("checking", year, True)
+        try:
+            items = self.browser.list_items(pid)
+            present = {it["vid"] for it in items}
+            order = [v["id"] for v in videos]
+            last = max((i for i, v in enumerate(order) if v in present), default=-1)
+            missing = [v for v in order[:last + 1] if v not in present]
+            self.log(L(f"REPAIR {year} // {len(missing)} MISSING VIDEO(S) INSIDE THE PLAYLIST",
+                       f"NACHTRAG {year} // {len(missing)} FEHLENDE(S) VIDEO(S) MITTEN IN DER PLAYLIST"),
+                     "warn" if missing else "info")
+            added = []
+            for i in range(0, len(missing), BATCH_SIZE):
+                self.check()
+                chunk = missing[i:i + BATCH_SIZE]
+                if self.browser.add_many(pid, chunk):
+                    added += chunk
+                else:
+                    for v in chunk:
+                        if self.browser.add(pid, v):
+                            added.append(v)
+                time.sleep(random.uniform(*BATCH_PAUSE))
+            if added:
+                items = self.browser.list_items(pid)
+                set_of = {}
+                for it in items:
+                    set_of.setdefault(it["vid"], it["set"])
+                added_set = set(added)
+                moves = []
+                # von hinten nach vorne: jedes nachgetragene Video vor seinen Nachfolger schieben
+                for i in range(len(order) - 1, -1, -1):
+                    v = order[i]
+                    if v not in added_set or v not in set_of:
+                        continue
+                    succ = next((order[k] for k in range(i + 1, len(order)) if order[k] in set_of), None)
+                    if succ:
+                        moves.append((set_of[v], set_of[succ]))
+                self.browser.move_before(pid, moves)
+                self.log(L(f"REPAIR {year} // {len(added)} VIDEO(S) ADDED AND SORTED IN",
+                           f"NACHTRAG {year} // {len(added)} VIDEO(S) EINGEFÜGT UND EINSORTIERT"), "ok")
+            state["next"] = last + 1
+            state.pop("repair", None)
+            save(state_file(year), state)
+            self.emit("progress", year)
+        finally:
+            self.emit("checking", year, False)
+        return state
+
     def final_check(self):
         """Nach STOP: aktuelles Jahr noch einmal prüfen (nicht durch STOP unterbrechbar)."""
         if not self.cur:
@@ -1560,6 +1846,8 @@ class Worker(threading.Thread):
         sf = state_file(year)
         state = self.ensure_playlist(year)
         self.cur = (year, videos)
+        if state.get("repair"):
+            state = self.repair(year, videos, state)
         if 0 < state.get("next", 0) < len(videos):
             state = self.verify(year, videos, state, L("SYNC ON START", "ABGLEICH BEIM START"))
         i, added = state["next"], 0
@@ -2761,7 +3049,13 @@ HELP_TEXT_DE = [
             "einmal. Dafür braucht es nur sehr wenige Einheiten.\n"
             "• Datumssuche: In dieser Liste stehen aber nur die neuesten 20.000 Uploads. Ältere Jahre sucht "
             "Chronolist deshalb Monat für Monat. Das verbraucht viele Einheiten und ist auf etwa 100 Suchen am Tag "
-            "begrenzt. Bei großen Kanälen schafft man so ungefähr ein altes Jahr pro Tag.\n"
+            "begrenzt. Bei großen Kanälen schafft man so ungefähr ein altes Jahr pro Tag. Außerdem lässt diese Suche "
+            "von YouTube manchmal einzelne Videos aus.\n"
+            "• Kanalseite (nur mit FALLBACK): Chronolist liest im Edge-Fenster die Videoseite des Kanals, sortiert nach "
+            "\"Älteste\". Das ist vollständig und braucht kein Kontingent. Mit FALLBACK wird das für alte Jahre immer "
+            "genommen und für alle anderen, sobald das Kontingent leer ist. Jahre, die vorher über die Suche gefunden "
+            "wurden, werden damit abgeglichen: fehlende Videos werden in die Playlist nachgetragen und an die "
+            "richtige Stelle geschoben. Dafür das Jahr einfach markieren und START drücken.\n"
             "Was einmal gefunden wurde, wird gespeichert und nicht noch einmal gesucht."),
     ("num", "3.  Playlist anlegen. Für jedes Jahr legt Chronolist eine Playlist an. Standardmäßig heißt sie zum "
             "Beispiel \"MeinKanal 2012 in Upload-Reihenfolge\" und ist öffentlich. Name, Beschreibung, Sichtbarkeit "
@@ -2863,7 +3157,8 @@ HELP_TEXT_DE = [
     ("h2", "Optionen"),
     ("dt", "FALLBACK"),
     ("dd", "Wenn das Tageskontingent aufgebraucht ist, macht Chronolist über ein eigenes Edge-Fenster weiter, in dem "
-           "du bei YouTube angemeldet bist. Das Fenster muss offen bleiben, minimieren geht aber.\n"
+           "du bei YouTube angemeldet bist. Das Fenster muss offen bleiben, minimieren geht aber. Alte Jahre werden "
+           "darüber außerdem vollständig über die Kanalseite gesucht, auch ohne Kontingent.\n"
            "Wichtig: Das ist eine automatische Nutzung der YouTube-Webseite und laut den Nutzungsbedingungen von "
            "YouTube nicht erlaubt. Im schlimmsten Fall kann dein Konto gesperrt werden. Deshalb ist der Schalter am "
            "Anfang aus."),
@@ -2961,7 +3256,12 @@ HELP_TEXT_EN = [
             "This needs very few units.\n"
             "• Date search: that list only contains the newest 20,000 uploads, so older years are searched month by "
             "month. This uses many units and is limited to about 100 searches per day. For large channels that is "
-            "roughly one old year per day.\n"
+            "roughly one old year per day. On top of that, YouTube's search sometimes leaves out single videos.\n"
+            "• Channel page (only with FALLBACK): Chronolist reads the channel's videos page in the Edge window, sorted "
+            "by \"Oldest\". This is complete and needs no quota. With FALLBACK it is always used for old years and for "
+            "all other years once the quota is used up. Years found earlier through the search are checked against it: "
+            "missing videos are added to the playlist and moved to the right spot. Just select the year and press "
+            "START.\n"
             "Whatever has been found is saved and never searched again."),
     ("num", "3.  Create the playlist. Chronolist creates one playlist per year. By default it is called, for "
             "example, \"MyChannel 2012 in upload order\" and is public. Title, description, visibility and a custom "
@@ -3060,7 +3360,8 @@ HELP_TEXT_EN = [
     ("h2", "Options"),
     ("dt", "FALLBACK"),
     ("dd", "When the daily quota is used up, Chronolist continues in a separate Edge window where you are signed in "
-           "to YouTube. The window has to stay open, minimizing is fine.\n"
+           "to YouTube. The window has to stay open, minimizing is fine. Old years are also searched completely "
+           "through the channel page there, even without quota.\n"
            "Important: this is automated use of the YouTube website and is not allowed by YouTube's Terms of "
            "Service. In the worst case your account can be restricted. That's why the switch is off by default."),
     ("dt", "SKIP AHEAD"),
