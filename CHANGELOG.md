@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-10-31
+
 ### Added
 - Playlist settings in the app (no more editing `settings.json`): title and optional description with placeholders `{channel}`, `{handle}`, `{year}` and `{count}`, insert buttons and a live preview.
 - Playlist visibility: public, unlisted or private.
@@ -37,5 +39,6 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v2.7.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v2.8.0...HEAD
+[2.8.0]: https://github.com/LooneyN/chronolist/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/LooneyN/chronolist/releases/tag/v2.7.0
