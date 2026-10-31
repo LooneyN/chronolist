@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 70
+BUILD = 71
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -114,7 +114,7 @@ BATCH_SIZE = 25                 # Browser-Fallback: Videos pro Anfrage
 BATCH_PAUSE = (5, 15)          # Sekunden zwischen zwei Paketen
 COOLDOWN_EVERY = 200            # nach so vielen Videos ein kurzer Cooldown
 COOLDOWN_PAUSE = (27, 33)       # Sekunden (~30 s)
-LONG_BREAK_EVERY = 750          # nach so vielen Videos eine lange Pause
+LONG_BREAK_EVERY = 1000         # nach so vielen Videos eine lange Pause
 CHECK_EVERY = 750               # Zwischenprüfung der Playlist während eines Laufs
 LONG_BREAK_PAUSE = (270, 330)   # Sekunden (~5 min)
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -3355,7 +3355,7 @@ HELP_TEXT_DE = [
           "aussieht. Die Pausen siehst du mit Countdown auf der Jahreskarte und oben in der Statusanzeige."),
     ("dd", "NÄCHSTES PAKET: kurze Pause zwischen zwei Paketen mit je 25 Videos, 5 bis 15 Sekunden.\n"
            "KURZE PAUSE: etwa 30 Sekunden nach jeweils 200 Videos.\n"
-           "LANGE PAUSE: etwa fünf Minuten nach jeweils 750 Videos.\n"
+           "LANGE PAUSE: etwa fünf Minuten nach jeweils 1000 Videos.\n"
            "YOUTUBE BREMST: YouTube bremst kurz, Chronolist wartet zehn Minuten.\n"
            "NEUER VERSUCH oder KEINE VERBINDUNG: kurzer Fehler oder keine Verbindung. Chronolist versucht es gleich "
            "noch einmal."),
@@ -3558,7 +3558,7 @@ HELP_TEXT_EN = [
           "You see the pauses with a countdown on the year card and in the status display at the top."),
     ("dd", "NEXT BATCH: short pause between two batches of 25 videos, 5 to 15 seconds.\n"
            "COOLDOWN: about 30 seconds after every 200 videos.\n"
-           "BREAK: about five minutes after every 750 videos.\n"
+           "BREAK: about five minutes after every 1000 videos.\n"
            "RATE LIMIT: YouTube slows things down briefly, Chronolist waits ten minutes.\n"
            "RETRY or NO SIGNAL: a short error or no connection. Chronolist tries again shortly."),
 
