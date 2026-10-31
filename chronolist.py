@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 56
+BUILD = 57
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -965,15 +965,18 @@ class BrowserUplink:
         except ValueError:
             return raw[:10] + "T00:00:00Z" if re.match(r"\d{4}-\d{2}-\d{2}", raw) else None
 
-    def move_before(self, playlist_id, moves):
+    def move_before(self, playlist_id, moves, progress=None):
         """moves: [(setVideoId, setVideoId des Nachfolgers)], in Paketen."""
         for i in range(0, len(moves), 20):
+            self.w.check()
             acts = [{"action": "ACTION_MOVE_VIDEO_BEFORE", "setVideoId": a, "movedSetVideoIdSuccessor": b}
                     for a, b in moves[i:i + 20]]
             j = self.yt_call("browse/edit_playlist", {"playlistId": playlist_id, "actions": acts})
             if j.get("status") != "STATUS_SUCCEEDED":
                 raise BrowserFailed(L(f"REORDER FAILED // {j.get('status')}", f"SORTIEREN FEHLGESCHLAGEN // {j.get('status')}"))
-            time.sleep(random.uniform(2, 4))
+            if progress:
+                progress(min(i + 20, len(moves)))
+            self.w.sleep(random.uniform(2, 4))
 
     def remove(self, playlist_id, item):
         j = self.yt_call("browse/edit_playlist", {"playlistId": playlist_id, "actions": [
@@ -1859,6 +1862,7 @@ class Worker(threading.Thread):
             self.log(L(f"REPAIR {year} // {len(missing)} MISSING VIDEO(S) INSIDE THE PLAYLIST",
                        f"NACHTRAG {year} // {len(missing)} FEHLENDE(S) VIDEO(S) MITTEN IN DER PLAYLIST"),
                      "warn" if missing else "info")
+            self.emit("checking", year, False)      # ab hier: Einfügen mit sichtbarem Fortschritt
             added = []
             for i in range(0, len(missing), BATCH_SIZE):
                 self.check()
@@ -1869,16 +1873,22 @@ class Worker(threading.Thread):
                     for v in chunk:
                         if self.browser.add(pid, v):
                             added.append(v)
-                time.sleep(random.uniform(*BATCH_PAUSE))
+                self.log(L(f"REPAIR {year} // {min(i + len(chunk), len(missing))}/{len(missing)} ADDED",
+                           f"NACHTRAG {year} // {min(i + len(chunk), len(missing))}/{len(missing)} EINGEFÜGT"))
+                if i + BATCH_SIZE < len(missing):
+                    self.sleep(random.uniform(*BATCH_PAUSE), "NEXT BATCH")
             if added:
                 self.log(L(f"REPAIR {year} // {len(added)} VIDEO(S) ADDED", f"NACHTRAG {year} // {len(added)} VIDEO(S) EINGEFÜGT"), "ok")
             # Reihenfolge prüfen und alles verschieben, was falsch steht (auch nach einem Abbruch)
+            self.emit("checking", year, True)
             items = self.browser.list_items(pid)
+            self.emit("checking", year, False)
             moves = plan_moves(order, items)
             if moves:
                 self.log(L(f"REPAIR {year} // MOVING {len(moves)} VIDEO(S) TO THE RIGHT SPOT ...",
                            f"NACHTRAG {year} // VERSCHIEBE {len(moves)} VIDEO(S) AN DIE RICHTIGE STELLE ..."))
-                self.browser.move_before(pid, moves)
+                self.browser.move_before(pid, moves, lambda n: self.log(
+                    L(f"REPAIR {year} // {n}/{len(moves)} MOVED", f"NACHTRAG {year} // {n}/{len(moves)} VERSCHOBEN")))
                 self.log(L(f"REPAIR {year} // ORDER FIXED", f"NACHTRAG {year} // REIHENFOLGE KORRIGIERT"), "ok")
             state["next"] = last + 1
             state.pop("repair", None)
