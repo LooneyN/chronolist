@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 78
+BUILD = 79
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -3583,7 +3583,11 @@ class AppSettingsDialog(tk.Toplevel):
         self.app.app_card.redraw()
         self.destroy()
         if lang_changed:
-            self.app.restart()
+            if self.app.worker and self.app.worker.is_alive():
+                self.app.write_log(L("NEW LANGUAGE APPLIES AFTER THE NEXT START OF CHRONOLIST",
+                                     "NEUE SPRACHE GILT AB DEM NÄCHSTEN START VON CHRONOLIST"), "info")
+            else:
+                self.app.restart()
 
 
 def help_text():
@@ -4856,14 +4860,10 @@ class App(tk.Tk):
         self.save_settings()
 
     def edit_app_settings(self):
-        if self.busy():
-            return
-        AppSettingsDialog(self)
+        AppSettingsDialog(self)          # auch während eines Laufs (Sprachwechsel startet erst danach neu)
 
     def edit_settings(self):
-        if self.busy():
-            return
-        SettingsDialog(self)
+        SettingsDialog(self)             # auch während eines Laufs (gilt für ab dann angelegte Playlists)
 
     def toggle_skip(self):
         self.skip_ahead = not self.skip_ahead

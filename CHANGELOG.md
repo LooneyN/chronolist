@@ -17,6 +17,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - After an in-app update, the changelog of the new version is shown once in the log.
 
 ### Changed
+- PROGRAM and PLAYLISTS settings can be opened during a run. Playlist changes apply to playlists created from then on; a language change restarts Chronolist only after the run.
 - Much faster duplicate check: Chronolist remembers the batch in flight and after STOP or on the next start checks only that batch instead of reading the whole playlist. The full check runs at the end of a year and with CHECK; the interval check during a run is gone. Reading a playlist is also faster.
 - Browser fallback is faster: 30 videos per batch (was 20), 4 to 12 seconds between batches (was 10 to 25), a short break of about 20 seconds every 250 videos (was about 1 minute every 150) and a long break of about 4 minutes every 1500 videos (was about 10 minutes every 750).
 - A new release is shown as a green UPDATE button next to HELP instead of a small text tag. In narrow windows HELP shrinks to "?" so the button always fits.
