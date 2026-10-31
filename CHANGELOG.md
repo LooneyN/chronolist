@@ -9,7 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Playlist settings in the app (no more editing `settings.json`): title and optional description with placeholders `{channel}`, `{handle}`, `{year}` and `{count}`, insert buttons and a live preview.
 - Playlist visibility: public, unlisted or private.
 - Optional thumbnail per year (JPG/PNG, max 2 MB). Can be picked before the playlist exists and is uploaded via the API as soon as the playlist exists (experimental).
-- Program settings, separate from the playlist settings: language selection (English / German) and the update check on/off. Interface, tooltips, help and log switch completely; After a language change Chronolist restarts. The default follows the system language.
+- Program settings, separate from the playlist settings: language (English / German) and update check on/off. A language change switches interface, tooltips, help and log completely and restarts Chronolist. The default follows the system language.
 
 ### Changed
 - All action buttons are yellow and, like the panels, have a single cut corner at the bottom right.
