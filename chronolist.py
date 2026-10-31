@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 57
+BUILD = 58
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -732,6 +732,7 @@ class BrowserUplink:
         except ImportError:
             raise BrowserFailed(L("PLAYWRIGHT NOT INSTALLED // RUN: pip install playwright", "PLAYWRIGHT FEHLT // AUSFÜHREN: pip install playwright"))
         self.w.log(L("BROWSER UPLINK // LAUNCHING EDGE ...", "BROWSER-MODUS // EDGE WIRD GESTARTET ..."))
+        self.w.act(L("STARTING EDGE ...", "STARTE EDGE ..."))
         self.pw = sync_playwright().start()
         opts = dict(user_data_dir=str(BROWSER_PROFILE), headless=False,
                     args=["--disable-blink-features=AutomationControlled"],
@@ -747,6 +748,7 @@ class BrowserUplink:
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
         self.open_youtube()
         self.wait_login()
+        self.w.act()
 
     def open_youtube(self):
         self.page.goto("https://www.youtube.com/", wait_until="domcontentloaded", timeout=60000)
@@ -901,9 +903,11 @@ class BrowserUplink:
             self.w.log(L("PLAYLIST DESCRIPTION NOT SET // ADD IT MANUALLY IF NEEDED", "BESCHREIBUNG NICHT GESETZT // BEI BEDARF VON HAND EINTRAGEN"), "warn")
         return pid
 
-    def list_items(self, playlist_id):
+    def list_items(self, playlist_id, progress=None):
         items, tokens = [], []
         walk_json(self.yt_call("browse", {"browseId": "VL" + playlist_id}), items, tokens)
+        if progress:
+            progress(len(items))
         seen_tokens = set()
         while tokens:
             tok = tokens.pop(0)
@@ -914,6 +918,8 @@ class BrowserUplink:
             walk_json(self.yt_call("browse", {"continuation": tok}), new_items, new_tokens)
             items += new_items
             tokens += new_tokens
+            if progress:
+                progress(len(items))
             time.sleep(1)
         return items
 
@@ -1015,6 +1021,10 @@ class Worker(threading.Thread):
     # --- Hilfen
     def emit(self, *msg):
         self.out.put(msg)
+
+    def act(self, text=None):
+        """Was gerade passiert, für die Statuszeile der laufenden Jahreskarte (None = nichts Besonderes)."""
+        self.emit("activity", text)
 
     def log(self, text, level="info"):
         self.emit("log", text, level)
@@ -1423,6 +1433,8 @@ class Worker(threading.Thread):
             if not tok:
                 idx["end"] = True
             save(web_index_file(), idx)
+            self.act(L(f"CHANNEL PAGE // {len(idx['ids'])} READ // {(idx['last'] or '?')[:7]}",
+                       f"KANALSEITE // {len(idx['ids'])} GELESEN // {(idx['last'] or '?')[:7]}"))
             pages += 1
             if pages % 10 == 0:
                 self.log(L(f"CHANNEL PAGE // {len(idx['ids'])} VIDEOS READ // NOW AT {(idx['last'] or '?')[:7]}",
@@ -1436,6 +1448,7 @@ class Worker(threading.Thread):
         self.scanning = year
         self.log(L(f"{year} // READING THE CHANNEL PAGE (NO API QUOTA NEEDED) ...",
                    f"{year} // LESE DIE KANALSEITE (OHNE API-KONTINGENT) ..."))
+        self.act(L("CHANNEL PAGE // OPENING ...", "KANALSEITE // WIRD GEÖFFNET ..."))
         web = self.web_index(year)
         if not web:
             raise BrowserFailed(L(f"{year} // NO VIDEOS FOUND ON THE CHANNEL PAGE", f"{year} // KEINE VIDEOS AUF DER KANALSEITE GEFUNDEN"))
@@ -1465,6 +1478,7 @@ class Worker(threading.Thread):
         else:
             self.log(L(f"{len(videos)} VIDEOS FROM {year} FOUND", f"{len(videos)} VIDEOS AUS {year} GEFUNDEN"), "ok")
         self.emit("progress", year)
+        self.act()
         return videos
 
     def collect(self, year):
@@ -1548,6 +1562,7 @@ class Worker(threading.Thread):
                 start = f"{year}-{m:02d}-01T00:00:00Z"
                 end = f"{year + 1}-01-01T00:00:00Z" if m == 12 else f"{year}-{m + 1:02d}-01T00:00:00Z"
                 token, count = None, 0
+                self.act(L(f"DATE SEARCH // {m:02d}/{year}", f"DATUMSSUCHE // {m:02d}/{year}"))
                 while True:
                     params = {
                         "part": "snippet", "channelId": prog["channel_id"], "type": "video",
@@ -1779,6 +1794,7 @@ class Worker(threading.Thread):
                     d = self.call("GET", "playlistItems", params)
                     for it in d.get("items", []):
                         items.append({"vid": it["contentDetails"]["videoId"], "item": it["id"]})
+                    self.act(L(f"CHECKING PLAYLIST // {len(items)} READ", f"PRÜFE PLAYLIST // {len(items)} GELESEN"))
                     token = d.get("nextPageToken")
                     if not token:
                         return items
@@ -1786,7 +1802,8 @@ class Worker(threading.Thread):
                 if not self.fallback:
                     raise
                 self.switch_to_browser()
-        return self.browser.list_items(pid)
+        return self.browser.list_items(pid, lambda n: self.act(
+            L(f"CHECKING PLAYLIST // {n} READ", f"PRÜFE PLAYLIST // {n} GELESEN")))
 
     def remove_item(self, pid, item):
         if self.mode == "api" and item.get("item"):
@@ -1873,8 +1890,10 @@ class Worker(threading.Thread):
                     for v in chunk:
                         if self.browser.add(pid, v):
                             added.append(v)
-                self.log(L(f"REPAIR {year} // {min(i + len(chunk), len(missing))}/{len(missing)} ADDED",
-                           f"NACHTRAG {year} // {min(i + len(chunk), len(missing))}/{len(missing)} EINGEFÜGT"))
+                n_done = min(i + len(chunk), len(missing))
+                self.log(L(f"REPAIR {year} // {n_done}/{len(missing)} ADDED",
+                           f"NACHTRAG {year} // {n_done}/{len(missing)} EINGEFÜGT"))
+                self.act(L(f"REPAIR // {n_done}/{len(missing)} ADDED", f"NACHTRAG // {n_done}/{len(missing)} EINGEFÜGT"))
                 if i + BATCH_SIZE < len(missing):
                     self.sleep(random.uniform(*BATCH_PAUSE), "NEXT BATCH")
             if added:
@@ -1887,15 +1906,21 @@ class Worker(threading.Thread):
             if moves:
                 self.log(L(f"REPAIR {year} // MOVING {len(moves)} VIDEO(S) TO THE RIGHT SPOT ...",
                            f"NACHTRAG {year} // VERSCHIEBE {len(moves)} VIDEO(S) AN DIE RICHTIGE STELLE ..."))
-                self.browser.move_before(pid, moves, lambda n: self.log(
-                    L(f"REPAIR {year} // {n}/{len(moves)} MOVED", f"NACHTRAG {year} // {n}/{len(moves)} VERSCHOBEN")))
+                self.act(L(f"SORTING // 0/{len(moves)}", f"SORTIERE // 0/{len(moves)}"))
+
+                def moved(n):
+                    self.log(L(f"REPAIR {year} // {n}/{len(moves)} MOVED", f"NACHTRAG {year} // {n}/{len(moves)} VERSCHOBEN"))
+                    self.act(L(f"SORTING // {n}/{len(moves)}", f"SORTIERE // {n}/{len(moves)}"))
+                self.browser.move_before(pid, moves, moved)
                 self.log(L(f"REPAIR {year} // ORDER FIXED", f"NACHTRAG {year} // REIHENFOLGE KORRIGIERT"), "ok")
+            self.act()
             state["next"] = last + 1
             state.pop("repair", None)
             save(state_file(year), state)
             self.emit("progress", year)
         finally:
             self.emit("checking", year, False)
+            self.act()
         return state
 
     def final_check(self):
@@ -2269,6 +2294,7 @@ class YearRow(Panel):
         self.pause = None          # None | {"kind": "manual", "t": start} | {"kind": "wait", "t": ende, "label": ..}
         self.info = year_info(year)
         self.blocked = None        # Reset-Zeit, wenn das Jahr erst nach dem API-Reset weitergeht
+        self.activity = None       # was gerade passiert (nur auf der laufenden Karte)
         self.role = status_role(self.info["code"])
         self.geo = None
         self.last_label = None
@@ -2280,10 +2306,12 @@ class YearRow(Panel):
 
     def status_text(self):
         code, run = self.info["code"], self.running
-        if self.checking:
-            return L("CHECKING PLAYLIST...", "PLAYLIST WIRD GEPRÜFT..."), True
         if run and self.pause:
             return pause_label(self.pause, time.time()), False
+        if run and self.activity:
+            return self.activity, True
+        if self.checking:
+            return L("CHECKING PLAYLIST...", "PLAYLIST WIRD GEPRÜFT..."), True
         if self.blocked and not run:
             t = self.blocked.astimezone().strftime("%H:%M")
             return L(f"NEEDS API // FROM {t}", f"BRAUCHT API // AB {t}"), False
@@ -2420,6 +2448,11 @@ class YearRow(Panel):
         self.checking = on
         self.redraw()
 
+    def set_activity(self, text):
+        if text != self.activity:
+            self.activity = text
+            self.redraw()
+
     def refresh_blocked(self):
         b = None if self.running else year_blocked(self.info)
         if b != self.blocked:
@@ -2436,6 +2469,7 @@ class YearRow(Panel):
             self.running = running
             if not running:
                 self.pause = None
+                self.activity = None
         if info is not None:
             old = self.info
             self.info = info
@@ -3215,7 +3249,9 @@ HELP_TEXT_DE = [
           "steht dahinter. Das betrifft Jahre, deren Videos noch gesucht werden müssen, denn das geht nur über die "
           "API. Bei angefangenen und bereiten Jahren nur, wenn FALLBACK aus ist."),
     ("dt", "Was unter dem Jahr stehen kann"),
-    ("dd", "NICHT GESUCHT: Die Videos wurden noch nicht gesucht.\n"
+    ("dd", "Beim laufenden Jahr steht hier, was gerade passiert, mit Fortschritt, z. B. KANALSEITE // 1400 GELESEN, "
+           "NACHTRAG // 40/102 EINGEFÜGT, SORTIERE // 20/102 oder PRÜFE PLAYLIST // 600 GELESEN.\n"
+           "NICHT GESUCHT: Die Videos wurden noch nicht gesucht.\n"
            "SUCHE PAUSIERT: Die Suche wurde angefangen, ist aber noch nicht fertig.\n"
            "BEREIT: Alle Videos sind gefunden, die Playlist kann gefüllt werden.\n"
            "IN ARBEIT: Die Playlist ist schon teilweise gefüllt.\n"
@@ -3419,7 +3455,9 @@ HELP_TEXT_EN = [
           "next to it. This applies to years whose videos still have to be searched, which only works through the "
           "API. For started and ready years only when FALLBACK is off."),
     ("dt", "What can appear under a year"),
-    ("dd", "NOT SCANNED: the videos haven't been searched yet.\n"
+    ("dd", "On the running year this line shows what is happening right now, with progress, e.g. CHANNEL PAGE // "
+           "1400 READ, REPAIR // 40/102 ADDED, SORTING // 20/102 or CHECKING PLAYLIST // 600 READ.\n"
+           "NOT SCANNED: the videos haven't been searched yet.\n"
            "SCAN PAUSED: the search was started but isn't finished.\n"
            "READY: all videos found, the playlist can be filled.\n"
            "IN PROGRESS: the playlist is partly filled.\n"
@@ -4818,6 +4856,10 @@ class App(tk.Tk):
                     if msg[2] is not None and msg[2] in self.rows:
                         self.rows[msg[2]].refresh(selected=False)
                     self.save_settings()
+                elif kind == "activity":
+                    for r in self.rows.values():
+                        if r.running:
+                            r.set_activity(msg[1])
                 elif kind == "current":
                     for y, r in self.rows.items():
                         if r.running != (y == msg[1]):
