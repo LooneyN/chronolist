@@ -46,9 +46,9 @@ except ImportError:  # nicht unter Windows
 # ---------------------------------------------------------------- Einstellungen
 # Zugangsdaten stehen NICHT im Code, sondern in credentials.json (wird über API SETUP angelegt).
 # Kanal wird im Programm eingegeben und in settings.json gespeichert.
-# Standard-Vorlagen; im Programm unter PLAYLIST SETTINGS änderbar (gespeichert in settings.json).
+# Standard-Vorlagen; im Programm unter PLAYLISTS änderbar (gespeichert in settings.json).
 # Platzhalter: {channel} {handle} {year} {count}
-# --- Sprache der Oberfläche: "en" oder "de" (in settings.json "language", im Programm unter den Einstellungen)
+# --- Sprache der Oberfläche: "en" oder "de" (in settings.json "language", im Programm unter PROGRAMM)
 LANGUAGES = {"en": "ENGLISH", "de": "DEUTSCH"}
 LANG = "en"
 
@@ -91,7 +91,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.8.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 39
+BUILD = 40
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2183,7 +2183,7 @@ class SettingsDialog(tk.Toplevel):
     def __init__(self, app):
         super().__init__(app, bg=BG)
         self.app = app
-        self.title(L("Settings", "Einstellungen"))
+        self.title(L("Playlist settings", "Playlist-Einstellungen"))
         self.transient(app)
         self.minsize(px(640), px(560))
         self.geometry(f"{px(720)}x{px(800)}")
@@ -2201,18 +2201,6 @@ class SettingsDialog(tk.Toplevel):
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
 
-        Section(body, L("LANGUAGE", "SPRACHE"), "UI // HELP // LOG").pack(fill="x", pady=(0, px(6)))
-        lang_row = tk.Frame(body, bg=BG)
-        lang_row.pack(fill="x", pady=(0, px(12)))
-        self.language = LANG
-        self.lang_btns = {}
-        for code, name in LANGUAGES.items():
-            b = CutButton(lang_row, name, lambda c=code: self.set_language(c), width=130)
-            b.pack(side="left", padx=(0, px(6)))
-            self.lang_btns[code] = b
-        Tooltip(lang_row, L("Language of the interface, tooltips, help and log. Chronolist restarts when you save.",
-                            "Sprache der Oberfläche, Tooltips, Hilfe und Protokoll. Chronolist startet beim Speichern neu."))
-        self.set_language(LANG)
         Section(body, L("PLAYLIST SETTINGS", "PLAYLIST-EINSTELLUNGEN"), "TEMPLATE // VISIBILITY").pack(fill="x", pady=(0, px(10)))
         self.lbl(body, L("TITLE", "TITEL"))
         self.title_var = tk.StringVar(value=st.get("playlist_template") or default_playlist_template())
@@ -2312,12 +2300,6 @@ class SettingsDialog(tk.Toplevel):
         w.focus_set()
         self.preview()
 
-    def set_language(self, code):
-        self.language = code
-        for c, b in self.lang_btns.items():
-            b.set_color(GREEN if c == code else YELLOW)
-            b.set_text(("● " if c == code else "") + LANGUAGES[c])
-
     def set_privacy(self, opt):
         self.privacy = opt
         for o, b in self.vis_btns.items():
@@ -2410,14 +2392,6 @@ class SettingsDialog(tk.Toplevel):
         st["playlist_template"] = self.title_var.get().strip() or default_playlist_template()
         st["description_template"] = self.desc.get("1.0", "end").strip()
         st["privacy"] = self.privacy
-        lang_changed = self.language != LANG
-        if lang_changed:
-            # Standard-Vorlagen mit der Sprache wechseln, eigene Vorlagen bleiben
-            for key, fn in (("playlist_template", default_playlist_template),
-                            ("description_template", default_description_template)):
-                if st.get(key) == fn():
-                    st.pop(key, None)
-            st["language"] = self.language
         save(SETTINGS_FILE, st)
         apply_templates(st)
         # Thumbnails übernehmen (Kopie im Kanal-Ordner)
@@ -2435,11 +2409,9 @@ class SettingsDialog(tk.Toplevel):
                     shutil.copyfile(src, thumbs_dir() / name)
                     self.thumbs[str(y)] = {"file": name, "status": "queued", "error": ""}
             save(thumbs_file(), self.thumbs)
-        self.app.write_log(L("SETTINGS SAVED", "EINSTELLUNGEN GESPEICHERT"), "ok")
+        self.app.write_log(L("PLAYLIST SETTINGS SAVED", "PLAYLIST-EINSTELLUNGEN GESPEICHERT"), "ok")
         self.app.settings_card.redraw()
         self.destroy()
-        if lang_changed:
-            self.app.restart()
 
 
 def privacy_label(opt):
@@ -2448,10 +2420,11 @@ def privacy_label(opt):
 
 
 class SettingsCard(Panel):
-    """Karte unter den Optionen: zeigt die aktuelle Titel-Vorlage, Klick öffnet die Einstellungen."""
+    """Kompakte Karte unter den Optionen. name/sub sind Funktionen, damit sie immer aktuell sind."""
 
-    def __init__(self, master, command):
+    def __init__(self, master, command, name, sub, icon="lines"):
         super().__init__(master, 54, command=command)
+        self.name_fn, self.sub_fn, self.icon = name, sub, icon
 
     def draw_content(self, x0, y0, x1, y1, c, role):
         h = y1 - y0
@@ -2460,19 +2433,109 @@ class SettingsCard(Panel):
         ix = x0 + px(8)
         self.icon_box(ix, cy, isz, role, False)
         u = isz / 24
-        for k, yy in enumerate((8, 12, 16)):
-            self.create_line(ix + 6 * u, cy - isz / 2 + yy * u, ix + 18 * u, cy - isz / 2 + yy * u,
-                             fill=mix(role, BG, 0.8), width=max(1, px(1.5)))
-        tx = self.right_tag(x0, y0, x1, y1, c, px(66), YELLOW, False)
+        top = cy - isz / 2
+        col = mix(role, BG, 0.8)
+        if self.icon == "gear":
+            r = 5 * u
+            self.create_oval(ix + 12 * u - r, top + 12 * u - r, ix + 12 * u + r, top + 12 * u + r,
+                             outline=col, width=max(1, px(1.5)))
+            for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+                self.create_line(ix + (12 + dx * 6) * u, top + (12 + dy * 6) * u,
+                                 ix + (12 + dx * 9) * u, top + (12 + dy * 9) * u, fill=col, width=max(1, px(2)))
+        else:
+            for yy in (8, 12, 16):
+                self.create_line(ix + 6 * u, top + yy * u, ix + 18 * u, top + yy * u, fill=col, width=max(1, px(1.5)))
+        tx = self.right_tag(x0, y0, x1, y1, c, px(46), YELLOW, False)
         nx = ix + isz + px(10)
         maxw = tx - nx - px(6)
-        self.create_text(nx, y0 + h * 0.34, text=L("PLAYLIST SETTINGS", "PLAYLIST-EINSTELLUNGEN"), anchor="w", font=F("ui", 14), fill=TEXT_DIM)
-        y = (YEARS[0] if YEARS else datetime.date.today().year - 1)
-        sub = f"{privacy_label(PRIVACY)} // {LANGUAGES[LANG]} // " + fill_template(PLAYLIST_TEMPLATE, y)
-        self.create_text(nx, y0 + h * 0.66, text=fit_text(sub, F("mono", 10), maxw), anchor="w",
+        self.create_text(nx, y0 + h * 0.34, text=fit_text(self.name_fn(), F("ui", 14), maxw), anchor="w",
+                         font=F("ui", 14), fill=TEXT_DIM)
+        self.create_text(nx, y0 + h * 0.66, text=fit_text(self.sub_fn(), F("mono", 10), maxw), anchor="w",
                          font=F("mono", 10), fill=TEXT_MUTED)
-        self.create_text((tx + x1) / 2, (y0 + y1 - c / 2) / 2, text=L("EDIT ›", "ÄNDERN ›"), font=F("mono", 12), fill=YELLOW)
+        self.create_text((tx + x1) / 2, (y0 + y1 - c / 2) / 2, text="›", font=F("mono", 18), fill=YELLOW)
 
+
+class AppSettingsDialog(tk.Toplevel):
+    """Programm-Einstellungen: Sprache und Update-Check."""
+
+    def __init__(self, app):
+        super().__init__(app, bg=BG)
+        self.app = app
+        self.title(L("Program settings", "Programm-Einstellungen"))
+        self.transient(app)
+        self.resizable(False, False)
+        pad = px(18)
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
+
+        Section(body, L("LANGUAGE", "SPRACHE"), "UI // HELP // LOG").pack(fill="x", pady=(0, px(6)))
+        lang_row = tk.Frame(body, bg=BG)
+        lang_row.pack(fill="x", pady=(0, px(4)))
+        self.language = LANG
+        self.lang_btns = {}
+        for code, name in LANGUAGES.items():
+            b = CutButton(lang_row, name, lambda c=code: self.set_language(c), width=140)
+            b.pack(side="left", padx=(0, px(6)))
+            self.lang_btns[code] = b
+        tk.Label(body, text=L("INTERFACE, TOOLTIPS, HELP AND LOG. CHRONOLIST RESTARTS WHEN THE LANGUAGE CHANGES.",
+                              "OBERFLÄCHE, TOOLTIPS, HILFE UND PROTOKOLL. CHRONOLIST STARTET BEIM SPRACHWECHSEL NEU."),
+                 bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w", justify="left",
+                 wraplength=px(460)).pack(fill="x", pady=(px(2), px(14)))
+        self.set_language(LANG)
+
+        Section(body, "UPDATES", "GITHUB // RELEASES").pack(fill="x", pady=(0, px(6)))
+        self.updates = bool(app.settings.get("check_updates", True))
+        self.upd_card = ToggleCard(body, L("UPDATE CHECK", "UPDATE-PRÜFUNG"),
+                                   L("ASK GITHUB ON START", "BEIM START BEI GITHUB FRAGEN"),
+                                   self.updates, self.toggle_updates, compact=True)
+        self.upd_card.pack(fill="x", pady=(0, px(4)))
+        Tooltip(self.upd_card, L("On start, Chronolist asks GitHub once whether a newer version exists. Nothing else "
+                                 "is sent.",
+                                 "Beim Start fragt Chronolist einmal bei GitHub, ob es eine neuere Version gibt. "
+                                 "Sonst wird nichts übertragen."))
+
+        row = tk.Frame(self, bg=BG)
+        row.pack(fill="x", padx=pad, pady=pad)
+        CutButton(row, L("SAVE", "SPEICHERN"), self.save, width=120).pack(side="left")
+        CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Return>", lambda e: self.save())
+        self.geometry(f"{px(500)}x{px(300)}")
+        style_window(self)
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - self.winfo_height()) // 3)
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.grab_set()
+        self.focus_force()
+
+    def set_language(self, code):
+        self.language = code
+        for c, b in self.lang_btns.items():
+            b.set_color(GREEN if c == code else YELLOW)
+            b.set_text(("● " if c == code else "") + LANGUAGES[c])
+
+    def toggle_updates(self):
+        self.updates = not self.updates
+        self.upd_card.update_value(self.updates)
+
+    def save(self):
+        st = self.app.settings
+        st["check_updates"] = self.updates
+        lang_changed = self.language != LANG
+        if lang_changed:
+            # Standard-Vorlagen wechseln mit der Sprache, eigene Vorlagen bleiben
+            for key, fn in (("playlist_template", default_playlist_template),
+                            ("description_template", default_description_template)):
+                if st.get(key) == fn():
+                    st.pop(key, None)
+            st["language"] = self.language
+        save(SETTINGS_FILE, st)
+        self.app.write_log(L("SETTINGS SAVED", "EINSTELLUNGEN GESPEICHERT"), "ok")
+        self.app.app_card.redraw()
+        self.destroy()
+        if lang_changed:
+            self.app.restart()
 
 
 def help_text():
@@ -2506,7 +2569,7 @@ HELP_TEXT_DE = [
             "Was einmal gefunden wurde, wird gespeichert und nicht noch einmal gesucht."),
     ("num", "3.  Playlist anlegen. Für jedes Jahr legt Chronolist eine Playlist an. Standardmäßig heißt sie zum "
             "Beispiel \"MeinKanal 2012 in Upload-Reihenfolge\" und ist öffentlich. Name, Beschreibung, Sichtbarkeit "
-            "und ein eigenes Bild stellst du unter PLAYLIST-EINSTELLUNGEN ein."),
+            "und ein eigenes Bild stellst du unter PLAYLISTS ein."),
     ("num", "4.  Füllen. Die Videos werden der Reihe nach eingefügt. Jedes Video verbraucht 50 von 10.000 Einheiten, "
             "die man pro Tag hat. Das reicht für ungefähr 200 Videos am Tag."),
     ("num", "5.  Wenn das Tageskontingent leer ist:\n"
@@ -2603,10 +2666,13 @@ HELP_TEXT_DE = [
     ("dd", "Startet automatisch, sobald du das Programm öffnest."),
     ("dt", "BOOT"),
     ("dd", "Startet Chronolist zusammen mit Windows. Zusammen mit AUTOSTART läuft dann alles von allein."),
-    ("dt", "PLAYLIST-EINSTELLUNGEN"),
-    ("dd", "Sprache: Englisch oder Deutsch. Das gilt für die ganze Oberfläche, die Tooltips, diese Hilfe und das "
+    ("dt", "PROGRAMM"),
+    ("dd", "Einstellungen für das Programm selbst.\n"
+           "Sprache: Englisch oder Deutsch. Das gilt für die ganze Oberfläche, die Tooltips, diese Hilfe und das "
            "Protokoll. Nach dem Speichern startet Chronolist kurz neu.\n"
-           "Titel und Beschreibung: Du kannst Platzhalter verwenden, die beim Anlegen ersetzt werden. {channel} wird "
+           "Update-Prüfung: ob Chronolist beim Start bei GitHub nach einer neuen Version fragt."),
+    ("dt", "PLAYLISTS"),
+    ("dd", "Titel und Beschreibung: Du kannst Platzhalter verwenden, die beim Anlegen ersetzt werden. {channel} wird "
            "zum Kanalnamen, {handle} zum @Handle, {year} zum Jahr und {count} zur Anzahl der Videos in diesem Jahr. "
            "Die Knöpfe unter dem Titelfeld fügen sie an der Stelle ein, an der der Cursor steht. Darunter siehst du "
            "eine Vorschau. Lässt du die Beschreibung leer, bekommt die Playlist keine.\n"
@@ -2648,7 +2714,7 @@ HELP_TEXT_DE = [
     ("h2", "Updates"),
     ("p", "Beim Start fragt Chronolist einmal bei GitHub nach, ob es eine neuere Version gibt. Wenn ja, erscheint oben "
           "neben der Versionsnummer ein grüner Hinweis, der zur Download-Seite führt. Dabei wird nichts außer dieser "
-          "einen Anfrage übertragen. Abschalten: in settings.json \"check_updates\": false eintragen."),
+          "einen Anfrage übertragen. Abschalten kannst du das unter PROGRAMM."),
 
     ("h2", "Über Chronolist"),
     ("p", f"Version {VERSION}, Build {BUILD:04d}. Open Source unter der MIT-Lizenz: {REPO_URL}"),
@@ -2686,7 +2752,7 @@ HELP_TEXT_EN = [
             "Whatever has been found is saved and never searched again."),
     ("num", "3.  Create the playlist. Chronolist creates one playlist per year. By default it is called, for "
             "example, \"MyChannel 2012 in upload order\" and is public. Title, description, visibility and a custom "
-            "image are set under PLAYLIST SETTINGS."),
+            "image are set under PLAYLISTS."),
     ("num", "4.  Fill it. The videos are added in order. Each video uses 50 of the 10,000 units you get per day, "
             "which is enough for about 200 videos a day."),
     ("num", "5.  When the daily quota is used up:\n"
@@ -2781,10 +2847,13 @@ HELP_TEXT_EN = [
     ("dd", "Starts automatically as soon as you open the program."),
     ("dt", "BOOT"),
     ("dd", "Starts Chronolist together with Windows. Together with AUTO-RUN everything runs by itself."),
-    ("dt", "PLAYLIST SETTINGS"),
-    ("dd", "Language: English or German. This applies to the whole interface, the tooltips, this help and the log. "
+    ("dt", "PROGRAM"),
+    ("dd", "Settings for the program itself.\n"
+           "Language: English or German. This applies to the whole interface, the tooltips, this help and the log. "
            "Chronolist restarts briefly after saving.\n"
-           "Title and description: you can use placeholders that are filled in when the playlist is created. "
+           "Update check: whether Chronolist asks GitHub for a new version on start."),
+    ("dt", "PLAYLISTS"),
+    ("dd", "Title and description: you can use placeholders that are filled in when the playlist is created. "
            "{channel} becomes the channel name, {handle} the @handle, {year} the year and {count} the number of "
            "videos in that year. The buttons below the title field insert them at the cursor. Below you see a "
            "preview. Leave the description empty for no description.\n"
@@ -2824,7 +2893,7 @@ HELP_TEXT_EN = [
     ("h2", "Updates"),
     ("p", "On start, Chronolist asks GitHub once whether there is a newer version. If so, a green note appears next "
           "to the version number at the top, linking to the download page. Nothing but this one request is sent. "
-          "To turn it off, set \"check_updates\": false in settings.json."),
+          "You can turn it off under PROGRAM."),
 
     ("h2", "About Chronolist"),
     ("p", f"Version {VERSION}, build {BUILD:04d}. Open source under the MIT license: {REPO_URL}"),
@@ -3408,8 +3477,16 @@ class App(tk.Tk):
         self.win_card = ToggleCard(opts, "BOOT", L("WITH WINDOWS", "MIT WINDOWS"), self.win_on,
                                    self.toggle_windows, available=winreg is not None, compact=True)
         self.win_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
-        self.settings_card = SettingsCard(opts, self.edit_settings)
-        self.settings_card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(px(4), 0))
+        self.app_card = SettingsCard(opts, self.edit_app_settings, lambda: L("PROGRAM", "PROGRAMM"),
+                                     lambda: f"{LANGUAGES[LANG]} // UPDATES "
+                                             + (L("ON", "AN") if self.settings.get("check_updates", True)
+                                                else L("OFF", "AUS")), icon="gear")
+        self.app_card.grid(row=2, column=0, sticky="ew", padx=(0, px(3)), pady=(px(4), 0))
+        self.settings_card = SettingsCard(opts, self.edit_settings, lambda: "PLAYLISTS",
+                                          lambda: f"{privacy_label(PRIVACY)} // "
+                                                  + fill_template(PLAYLIST_TEMPLATE, YEARS[0] if YEARS
+                                                                  else datetime.date.today().year - 1))
+        self.settings_card.grid(row=2, column=1, sticky="ew", padx=(px(3), 0), pady=(px(4), 0))
 
         self.login = tk.Frame(right, bg=BG)
         self.login.columnconfigure(0, weight=1)
@@ -3506,6 +3583,11 @@ class App(tk.Tk):
         self.autorun = not self.autorun
         self.autorun_card.update_value(self.autorun)
         self.save_settings()
+
+    def edit_app_settings(self):
+        if self.busy():
+            return
+        AppSettingsDialog(self)
 
     def edit_settings(self):
         if self.busy():
@@ -3670,10 +3752,12 @@ class App(tk.Tk):
                                      "Beim Öffnen von Chronolist automatisch starten."))
         Tooltip(self.win_card, L("Start Chronolist automatically with Windows.",
                                  "Chronolist automatisch mit Windows starten."))
-        Tooltip(self.settings_card, L("Language, playlist title and description with placeholders, visibility and "
-                                      "custom thumbnails per year.",
-                                      "Sprache, Playlist-Titel und Beschreibung mit Platzhaltern, Sichtbarkeit und "
-                                      "eigene Thumbnails pro Jahr."))
+        Tooltip(self.app_card, L("Program settings: language and update check.",
+                                 "Programm-Einstellungen: Sprache und Update-Prüfung."))
+        Tooltip(self.settings_card, L("Playlist title and description with placeholders, visibility and custom "
+                                      "thumbnails per year.",
+                                      "Playlist-Titel und Beschreibung mit Platzhaltern, Sichtbarkeit und eigene "
+                                      "Thumbnails pro Jahr."))
         Tooltip(self.login_panel, L("Google sign-in: open the link, enter the code, confirm. Clicking the code copies it.",
                                     "Google-Anmeldung: Link öffnen, Code eingeben, bestätigen. Klick auf den Code "
                                     "kopiert ihn."))

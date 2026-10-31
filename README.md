@@ -79,18 +79,18 @@ When the daily quota is used up, the optional **FALLBACK** continues in a separa
 
 ## Configuration
 
-Under **PLAYLIST SETTINGS** in the app you can set:
+Under **PROGRAM** in the app you can set:
 
-- The **language** of the app: English or German (interface, tooltips, help and log)
+- The **language**: English or German (interface, tooltips, help and log)
+- The **update check** on launch
+
+Under **PLAYLISTS** you can set:
+
 - **Title** and optional **description** of new playlists, with placeholders `{channel}`, `{handle}`, `{year}` and `{count}` (number of videos in that year) and a live preview
 - **Visibility**: public, unlisted or private
 - An optional **thumbnail per year** (JPG/PNG, max 2 MB, ideally 1280×720). You can pick it before the playlist exists; it is uploaded via the API (50 units) as soon as the playlist exists. Experimental.
 
-Changes apply to playlists created from then on. All of this is stored in `settings.json` next to the program, which also has one option without a UI:
-
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `check_updates` | `true` | Check GitHub for a newer release on launch |
+Playlist changes apply to playlists created from then on. Everything is stored in `settings.json` next to the program.
 
 ## Your data
 
