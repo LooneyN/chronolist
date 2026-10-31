@@ -12,6 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - After an in-app update, the changelog of the new version is shown once in the log.
 
 ### Changed
+- The playlist check during a run happens every 1000 videos (was 750).
 - Browser fallback: the long break comes after every 1000 videos (was 750) and lasts about 5 minutes (was about 10).
 - Browser fallback: short cooldown of about 30 seconds every 200 videos (was about 1 minute every 150).
 - Browser fallback: 25 videos per batch (was 20), 5 to 15 seconds between batches (was 10 to 25).
