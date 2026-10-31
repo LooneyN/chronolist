@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 53
+BUILD = 54
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1621,8 +1621,9 @@ class Worker(threading.Thread):
         self.log(L("DAILY API QUOTA REACHED // SWITCHING TO BROWSER FALLBACK", "TAGESKONTINGENT ERREICHT // WECHSEL ZUM FALLBACK"), "warn")
         self.mode = "browser"
         self.emit("mode", "browser")
-        self.browser = BrowserUplink(self)
-        self.browser.start()
+        if not self.browser:          # evtl. schon offen (Kanalseite)
+            self.browser = BrowserUplink(self)
+            self.browser.start()
 
     def add_video(self, playlist_id, video_id):
         """True = hinzugefügt, False = übersprungen."""
