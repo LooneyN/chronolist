@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Added
 - Year order by drag & drop. Selected years are processed from top to bottom in that order.
 - The icon of the running year is a pause/resume button.
-- Year cards show their state by color: green with a check mark when done, yellow when in progress, cyan when not started.
+- Year cards show their state by color: cyan when running right now, yellow when started and waiting, blue-gray when not started, dimmed green with a check mark when done.
 - Years that can only continue after the daily API reset are marked "NEEDS API" in red, with the reset time.
 
 ### Changed

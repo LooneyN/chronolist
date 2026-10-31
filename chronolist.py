@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.10.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 46
+BUILD = 47
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -296,9 +296,12 @@ def year_blocked(info):
     return None if FALLBACK_ON else quota_blocked("units")
 
 
-def status_role(code):
-    """Farbe nach Zustand, wie eine Ampel: Grün fertig, Gelb in Arbeit, Cyan (Grundfarbe) alles andere."""
-    return GREEN if code == "done" else YELLOW if code == "progress" else CYAN
+def status_role(code, running=False):
+    """Farbe nach Zustand: Cyan läuft gerade, Gelb angefangen und wartet, Grün fertig,
+    Blaugrau noch nicht angefangen. (Rot für 'braucht API' kommt als Text dazu.)"""
+    if running:
+        return CYAN
+    return GREEN if code == "done" else YELLOW if code == "progress" else NEUTRAL
 
 
 # ------------------------------------------------------------ Windows-Autostart
@@ -1604,6 +1607,7 @@ class Worker(threading.Thread):
 RED, RED_MILD, RED_DARK = "#FF6159", "#AE3B36", "#431618"
 CYAN, CYAN_HOT, CYAN_FAINT = "#5EF6FF", "#28FFFF", "#172C2E"
 YELLOW, GREEN = "#FFD741", "#1DED83"
+NEUTRAL = "#7F92AE"   # gedämpftes Blaugrau für "noch nicht angefangen"
 BG, BG2 = "#0E0E17", "#121221"
 TEXT, TEXT_DIM, TEXT_MUTED = "#FFFFFF", "#B4ECF2", "#94B8C2"
 FLUFF = None  # wird nach mix() gesetzt
@@ -1770,6 +1774,7 @@ class Panel(tk.Canvas):
         "inactive": (0.50, 0.12, False),
         "frame": (0.85, 0.10, False),
         "unavailable": (0.45, 0.04, False),
+        "faded": (0.28, 0.05, False),     # fertige Jahre: in den Hintergrund
     }
 
     def __init__(self, master, height, role=CYAN, state="inactive", cut=16, command=None):
@@ -1922,13 +1927,14 @@ class YearRow(Panel):
 
     def draw_content(self, x0, y0, x1, y1, c, role):
         on = self.selected or self.running
+        faded = self.st == "faded"
         h = y1 - y0
         cy = (y0 + y1) / 2
         isz = px(32)
         ix = x0 + px(10)
         self.icon_box(ix, cy, isz, role, on)
         u = isz / 32
-        icol = role if on else mix(role, BG, 0.8)
+        icol = role if on else mix(role, BG, 0.5 if faded else 0.8)
         top = cy - isz / 2
         self.icon_geo = (ix - px(4), top - px(4), ix + isz + px(4), top + isz + px(4))
         manual = bool(self.pause and self.pause.get("kind") == "manual")
@@ -1955,9 +1961,10 @@ class YearRow(Panel):
         tx = self.right_tag(x0, y0, x1, y1, c, px(116), role, on)
         nx = ix + isz + px(12)
         self.create_text(nx, y0 + h * 0.32, text=str(self.year), anchor="w", font=F("ui", 16),
-                         fill=TEXT if on else TEXT_DIM)
+                         fill=TEXT if on else mix(TEXT_DIM, BG, 0.5) if faded else TEXT_DIM)
         text, blinking = self.status_text()
-        scol = RED if (self.blocked and not self.running) else role if on else TEXT_MUTED
+        scol = (RED if (self.blocked and not self.running) else role if on
+                else mix(role, BG, 0.55) if faded else TEXT_MUTED)
         item = self.create_text(nx, y0 + h * 0.62, text=text, anchor="w", font=F("mono", 11), fill=scol,
                                 tags="stat")
         self.last_label = text
@@ -1972,15 +1979,16 @@ class YearRow(Panel):
             bx0, bx1, by = nx, tx - px(14), y1 - px(8)
             self.create_rectangle(bx0, by, bx1, by + px(3), fill=mix(role, BG, 0.25), outline="")
             fx = bx0 + (bx1 - bx0) * done / total
-            self.create_rectangle(bx0, by, max(bx0, fx), by + px(3), fill=role if on else mix(role, BG, 0.75),
+            self.create_rectangle(bx0, by, max(bx0, fx), by + px(3),
+                                  fill=role if on else mix(role, BG, 0.4 if faded else 0.75),
                                   outline="", tags="bar", state="normal" if done else "hidden")
             self.geo.update(bx0=bx0, bx1=bx1, by=by, fx=fx)
             pct = done * 100 / total
             ptxt = "100 %" if done >= total else f"{pct:.1f} %"
             self.create_text(cx, mid - px(9), text=ptxt, font=F("mono", 17),
-                             fill=role if on else TEXT_DIM, tags="pct")
+                             fill=role if on else mix(role, BG, 0.5) if faded else TEXT_DIM, tags="pct")
             self.create_text(cx, mid + px(11), text=f"{done} / {total}", font=F("mono", 12),
-                             fill=TEXT if on else TEXT_MUTED, tags="cnt")
+                             fill=TEXT if on else mix(TEXT_MUTED, BG, 0.45) if faded else TEXT_MUTED, tags="cnt")
         elif self.blocked and not self.running:
             self.create_text(cx, mid, text="API", font=F("mono", 15), fill=RED)
         else:
@@ -2070,8 +2078,12 @@ class YearRow(Panel):
                 return
         manual = self.running and self.pause and self.pause["kind"] == "manual"
         self.blocked = None if self.running else year_blocked(self.info)
-        self.role = YELLOW if manual else status_role(self.info["code"])
-        self.st = "active" if manual else "running" if self.running else "active" if self.selected else "inactive"
+        self.role = status_role(self.info["code"], self.running)
+        faded = self.info["code"] == "done" and not self.selected and not self.running
+        self.st = ("active" if manual else "running" if self.running else "active" if self.selected
+                   else "faded" if faded else "inactive")
+        if faded:
+            self.role = mix(self.role, BG, 0.6)
         self.redraw()
 
 
@@ -2814,9 +2826,10 @@ HELP_TEXT_DE = [
           "Prozent und wie viele Videos schon drin sind. Während ein Jahr läuft, ist sein Symbol links ein "
           "Pause-Knopf, beim Pausieren ein Play-Knopf. Das funktioniert wie PAUSE und WEITER."),
     ("dt", "Farben"),
-    ("p", "Grün mit Haken: fertig, alle Videos sind drin. Fertige Jahre werden automatisch abgewählt.\n"
-          "Gelb: angefangen, aber noch nicht fertig.\n"
-          "Cyan: noch nicht angefangen.\n"
+    ("p", "Cyan, leuchtend: läuft gerade. Es ist immer nur ein Jahr cyan.\n"
+          "Gelb: angefangen, wartet darauf, weiterzumachen.\n"
+          "Blaugrau: noch nicht angefangen.\n"
+          "Grün mit Haken, abgedunkelt: fertig, alle Videos sind drin. Fertige Jahre werden automatisch abgewählt.\n"
           "Roter Text \"BRAUCHT API\": Hier geht es erst nach dem Reset des Tageskontingents weiter, die Uhrzeit "
           "steht dahinter. Das betrifft Jahre, deren Videos noch gesucht werden müssen, denn das geht nur über die "
           "API. Bei angefangenen und bereiten Jahren nur, wenn FALLBACK aus ist."),
@@ -3010,9 +3023,10 @@ HELP_TEXT_EN = [
           "are already in. While a year is running, its icon on the left is a pause button, and a play button while "
           "paused. It works like PAUSE and RESUME."),
     ("dt", "Colors"),
-    ("p", "Green with a check mark: done, all videos are in. Finished years are deselected automatically.\n"
-          "Yellow: started but not finished.\n"
-          "Cyan: not started yet.\n"
+    ("p", "Cyan, glowing: running right now. Only one year is ever cyan.\n"
+          "Yellow: started, waiting to continue.\n"
+          "Blue-gray: not started yet.\n"
+          "Green with a check mark, dimmed: done, all videos are in. Finished years are deselected automatically.\n"
           "Red text \"NEEDS API\": this year can only continue after the daily quota resets, the time is shown "
           "next to it. This applies to years whose videos still have to be searched, which only works through the "
           "API. For started and ready years only when FALLBACK is off."),
