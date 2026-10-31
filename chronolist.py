@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 60
+BUILD = 61
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2315,7 +2315,7 @@ class YearRow(Panel):
         if run and self.pause:
             return pause_label(self.pause, time.time()), False
         if self.activity:
-            return self.activity, True
+            return self.activity, False      # ruhig, kein Blinken (ändert sich ohnehin laufend)
         if self.checking:
             return L("CHECKING PLAYLIST...", "PLAYLIST WIRD GEPRÜFT..."), True
         if self.blocked and not run:
@@ -2456,8 +2456,15 @@ class YearRow(Panel):
         self.redraw()
 
     def set_activity(self, text):
-        if text != self.activity:
-            self.activity = text
+        if text == self.activity:
+            return
+        had = self.activity
+        self.activity = text
+        if had and text and self.find_withtag("stat") and not (self.running and self.pause):
+            # nur den Text tauschen statt alles neu zu zeichnen (sonst flackert es)
+            self.itemconfigure("stat", text=text)
+            self.last_label = text
+        else:
             self.redraw()
 
     def refresh_blocked(self):
