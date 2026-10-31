@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 76
+BUILD = 77
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1556,7 +1556,7 @@ class Worker(threading.Thread):
         save(videos_file(year), videos)
         cf = collect_file(year)
         prog = load(cf, {})
-        prog.update(method="done", source="web")
+        prog.update(method="done", source="web", videos_only=True)
         save(cf, prog)
         self.scanning = None
         if old:
@@ -1626,11 +1626,19 @@ class Worker(threading.Thread):
         hat sich etwas geändert, wird die Playlist beim Füllen nachgetragen/bereinigt."""
         cf = collect_file(year)
         prog = load(cf, {})
-        if prog.get("videos_only") or prog.get("source") == "web":
+        if prog.get("videos_only"):
             return videos
+        self.log(L(f"{year} // CHECKING FOR SHORTS/LIVESTREAMS ...", f"{year} // PRÜFE AUF SHORTS/LIVESTREAMS ..."))
         allowed = None
         try:
-            if not quota_blocked("units"):
+            if prog.get("source") == "web":
+                # über die Kanalseite abgeglichen, aber evtl. mit alten Einträgen (Shorts/Livestreams) gemischt
+                idx = load(web_index_file(), {})
+                if idx.get("year") and (idx.get("end") or (idx.get("last") and int(idx["last"][:4]) > year)):
+                    allowed = {v for v, yy in idx["year"].items() if yy == year}
+                elif self.fallback:
+                    allowed = set(self.web_index(year))
+            elif not quota_blocked("units"):
                 data = self.lf_scan()
                 if data and data.get("done"):
                     if not (data.get("capped") and year <= int(data.get("oldest") or 0)):
@@ -1641,11 +1649,17 @@ class Worker(threading.Thread):
             if self.fallback:
                 allowed = set(self.web_index(year))
         if allowed is None:
+            self.log(L(f"{year} // SHORTS/LIVESTREAMS CHECK POSTPONED // NEEDS API QUOTA OR FALLBACK",
+                       f"{year} // PRÜFUNG AUF SHORTS/LIVESTREAMS VERSCHOBEN // BRAUCHT API-KONTINGENT ODER FALLBACK"), "warn")
             return videos          # später noch einmal versuchen
+        if not allowed:
+            return videos          # nichts Verlässliches zum Vergleichen
         cleaned = [v for v in videos if v["id"] in allowed]
         prog["videos_only"] = True
         save(cf, prog)
         removed = len(videos) - len(cleaned)
+        if not removed:
+            self.log(L(f"{year} // NO SHORTS/LIVESTREAMS FOUND", f"{year} // KEINE SHORTS/LIVESTREAMS GEFUNDEN"), "ok")
         if removed:
             save(videos_file(year), cleaned)
             st = load(state_file(year), {})
