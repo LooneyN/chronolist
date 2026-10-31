@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.10.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 48
+BUILD = 49
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1961,10 +1961,10 @@ class YearRow(Panel):
         tx = self.right_tag(x0, y0, x1, y1, c, px(116), role, on)
         nx = ix + isz + px(12)
         self.create_text(nx, y0 + h * 0.32, text=str(self.year), anchor="w", font=F("ui", 16),
-                         fill=TEXT if on else mix(TEXT_DIM, BG, 0.5) if faded else TEXT_DIM)
+                         fill=TEXT if on else mix(TEXT_DIM, BG, 0.5) if faded else mix(TEXT_DIM, BG, 0.75))
         text, blinking = self.status_text()
         scol = (RED if (self.blocked and not self.running) else role if on
-                else mix(role, BG, 0.55) if faded else TEXT_MUTED)
+                else mix(role, BG, 0.55) if faded else mix(TEXT_MUTED, BG, 0.65))
         item = self.create_text(nx, y0 + h * 0.62, text=text, anchor="w", font=F("mono", 11), fill=scol,
                                 tags="stat")
         self.last_label = text
@@ -1986,9 +1986,11 @@ class YearRow(Panel):
             pct = done * 100 / total
             ptxt = "100 %" if done >= total else f"{pct:.1f} %"
             self.create_text(cx, mid - px(9), text=ptxt, font=F("mono", 17),
-                             fill=role if on else mix(role, BG, 0.5) if faded else TEXT_DIM, tags="pct")
+                             fill=(TEXT_DIM if role == NEUTRAL else role) if on else mix(role, BG, 0.5) if faded
+                             else mix(TEXT_MUTED, BG, 0.6), tags="pct")
             self.create_text(cx, mid + px(11), text=f"{done} / {total}", font=F("mono", 12),
-                             fill=TEXT if on else mix(TEXT_MUTED, BG, 0.45) if faded else TEXT_MUTED, tags="cnt")
+                             fill=TEXT if on else mix(TEXT_MUTED, BG, 0.45) if faded else mix(TEXT_MUTED, BG, 0.6),
+                             tags="cnt")
         elif self.blocked and not self.running:
             self.create_text(cx, mid, text="API", font=F("mono", 15), fill=RED)
         else:
