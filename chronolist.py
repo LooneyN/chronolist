@@ -30,6 +30,7 @@ import shutil
 import sys
 import threading
 import time
+import zipfile
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
@@ -91,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.9.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 40
+BUILD = 41
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -339,7 +340,7 @@ def version_tuple(v):
 
 
 def check_for_update(out):
-    """Fragt einmal die neueste GitHub-Release ab. Sendet ('update', version, url), wenn sie neuer ist.
+    """Fragt einmal die neueste GitHub-Release ab. Sendet ('update', version, url, zip_url), wenn sie neuer ist.
     Es wird nichts übertragen außer der normalen Anfrage an die GitHub-API."""
     try:
         r = requests.get(f"https://api.github.com/repos/{REPO}/releases/latest", timeout=10,
@@ -350,9 +351,102 @@ def check_for_update(out):
         j = r.json()
         tag = (j.get("tag_name") or "").lstrip("vV")
         if tag and version_tuple(tag) > version_tuple(VERSION):
-            out.put(("update", tag, j.get("html_url") or f"{REPO_URL}/releases/latest"))
+            zip_url = next((a.get("browser_download_url") for a in j.get("assets") or []
+                            if (a.get("name") or "").lower().endswith("-windows.zip")), None)
+            out.put(("update", tag, j.get("html_url") or f"{REPO_URL}/releases/latest", zip_url))
     except (requests.RequestException, ValueError):
         pass
+
+
+# --------------------------------------------------------------- Selbst-Update
+# Nur für die exe: ZIP aus der Release laden, neue exe daneben ablegen, laufende exe umbenennen
+# (Windows erlaubt das, überschreiben nicht), neue exe an ihren Platz, neu starten.
+def update_paths():
+    exe = Path(sys.executable).resolve()
+    return exe, exe.with_name(exe.stem + ".new.exe"), exe.with_name(exe.stem + ".old.exe"), HERE / "update.zip"
+
+
+def can_self_update():
+    return getattr(sys, "frozen", False) and os.name == "nt"
+
+
+def download_update(zip_url, out):
+    """Läuft im Thread. Meldet ('upd_progress', prozent) und am Ende ('upd_ready', None) oder ('upd_failed', text)."""
+    exe, new, old, tmp = update_paths()
+    try:
+        with requests.get(zip_url, stream=True, timeout=30,
+                          headers={"User-Agent": f"{APP_NAME}/{VERSION}"}) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("Content-Length") or 0)
+            done, last = 0, -1
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(256 * 1024):
+                    f.write(chunk)
+                    done += len(chunk)
+                    if total:
+                        pct = done * 100 // total
+                        if pct // 10 != last // 10:
+                            out.put(("upd_progress", pct))
+                            last = pct
+        with zipfile.ZipFile(tmp) as z:
+            name = next((n for n in z.namelist() if n.lower().endswith(".exe")), None)
+            if not name:
+                raise ValueError("no .exe in the zip")
+            with z.open(name) as src, open(new, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+        with open(new, "rb") as f:
+            if f.read(2) != b"MZ":
+                raise ValueError("downloaded file is not a Windows program")
+        out.put(("upd_ready", None))
+    except (requests.RequestException, OSError, ValueError, zipfile.BadZipFile) as e:
+        try:
+            new.unlink()
+        except OSError:
+            pass
+        out.put(("upd_failed", str(e)[:200]))
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def install_update():
+    """Tauscht die exe aus. Gibt bei Fehler den Text zurück, sonst None. Bei Fehler bleibt die alte exe."""
+    exe, new, old, _ = update_paths()
+    try:
+        if old.exists():
+            old.unlink()
+    except OSError:
+        pass
+    try:
+        exe.rename(old)
+    except OSError as e:
+        return str(e)
+    try:
+        new.rename(exe)
+    except OSError as e:
+        try:
+            old.rename(exe)
+        except OSError:
+            pass
+        return str(e)
+    return None
+
+
+def cleanup_update(tries=10):
+    """Alte exe und Reste eines Updates entfernen. Die alte exe kann noch kurz gesperrt sein."""
+    if not can_self_update():
+        return True
+    exe, new, old, tmp = update_paths()
+    ok = True
+    for f in (old, new, tmp):
+        try:
+            if f.exists():
+                f.unlink()
+        except OSError:
+            ok = False
+    return ok
 
 
 # ------------------------------------------------------------------- Worker
@@ -2455,6 +2549,45 @@ class SettingsCard(Panel):
         self.create_text((tx + x1) / 2, (y0 + y1 - c / 2) / 2, text="›", font=F("mono", 18), fill=YELLOW)
 
 
+class UpdateDialog(tk.Toplevel):
+    """Rückfrage vor dem Update."""
+
+    def __init__(self, app, version, url):
+        super().__init__(app, bg=BG)
+        self.app = app
+        self.title("Update")
+        self.transient(app)
+        self.resizable(False, False)
+        pad = px(18)
+        Section(self, f"UPDATE // v{version}", "GITHUB // RELEASE").pack(fill="x", padx=pad, pady=(pad, px(10)))
+        tk.Label(self, text=L(f"Chronolist v{version} is available (you have v{VERSION}).\n\n"
+                              "The new version is downloaded from GitHub and replaces this program. Then Chronolist "
+                              "restarts. Settings, sign-in and progress stay as they are.",
+                              f"Chronolist v{version} ist verfügbar (du hast v{VERSION}).\n\n"
+                              "Die neue Version wird von GitHub geladen und ersetzt dieses Programm. Danach startet "
+                              "Chronolist neu. Einstellungen, Anmeldung und Fortschritt bleiben erhalten."),
+                 bg=BG, fg=TEXT_DIM, font=F("ui", 13, False), justify="left", anchor="w",
+                 wraplength=px(440)).pack(fill="x", padx=pad)
+        row = tk.Frame(self, bg=BG)
+        row.pack(fill="x", padx=pad, pady=pad)
+        CutButton(row, L("UPDATE NOW", "JETZT UPDATEN"), self.go, width=150).pack(side="left")
+        CutButton(row, L("WHAT'S NEW", "WAS IST NEU"), lambda: webbrowser.open(url), width=140).pack(
+            side="left", padx=(px(8), 0))
+        CutButton(row, L("LATER", "SPÄTER"), self.destroy, width=100).pack(side="left", padx=(px(8), 0))
+        self.bind("<Escape>", lambda e: self.destroy())
+        style_window(self)
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - self.winfo_height()) // 3)
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.grab_set()
+        self.focus_force()
+
+    def go(self):
+        self.destroy()
+        self.app.run_update()
+
+
 class AppSettingsDialog(tk.Toplevel):
     """Programm-Einstellungen: Sprache und Update-Check."""
 
@@ -2713,8 +2846,11 @@ HELP_TEXT_DE = [
 
     ("h2", "Updates"),
     ("p", "Beim Start fragt Chronolist einmal bei GitHub nach, ob es eine neuere Version gibt. Wenn ja, erscheint oben "
-          "neben der Versionsnummer ein grüner Hinweis, der zur Download-Seite führt. Dabei wird nichts außer dieser "
-          "einen Anfrage übertragen. Abschalten kannst du das unter PROGRAMM."),
+          "neben der Versionsnummer ein grüner Hinweis. Ein Klick darauf fragt, ob du jetzt updaten willst. Dann lädt "
+          "Chronolist die neue Version von GitHub, ersetzt sich selbst und startet neu. Einstellungen, Anmeldung und "
+          "Fortschritt bleiben erhalten. Während ein Durchlauf läuft, geht das nicht, erst STOPP drücken. Wenn du "
+          "Chronolist als Python-Skript startest, öffnet der Klick stattdessen die Download-Seite. Außer diesen "
+          "Anfragen an GitHub wird nichts übertragen. Die Prüfung beim Start kannst du unter PROGRAMM abschalten."),
 
     ("h2", "Über Chronolist"),
     ("p", f"Version {VERSION}, Build {BUILD:04d}. Open Source unter der MIT-Lizenz: {REPO_URL}"),
@@ -2892,8 +3028,11 @@ HELP_TEXT_EN = [
 
     ("h2", "Updates"),
     ("p", "On start, Chronolist asks GitHub once whether there is a newer version. If so, a green note appears next "
-          "to the version number at the top, linking to the download page. Nothing but this one request is sent. "
-          "You can turn it off under PROGRAM."),
+          "to the version number at the top. Clicking it asks whether you want to update now. Chronolist then "
+          "downloads the new version from GitHub, replaces itself and restarts. Settings, sign-in and progress stay "
+          "as they are. This is not possible during a run, press STOP first. If you run Chronolist as a Python "
+          "script, the click opens the download page instead. Nothing but these requests to GitHub is sent. You "
+          "can turn off the check on start under PROGRAM."),
 
     ("h2", "About Chronolist"),
     ("p", f"Version {VERSION}, build {BUILD:04d}. Open source under the MIT license: {REPO_URL}"),
@@ -3176,7 +3315,7 @@ class Header(tk.Canvas):
         if self.update:
             ut = self.create_text(self.title_end - px(6), y, text=f"UPDATE v{self.update[0]} ›", anchor="w",
                                   font=F("mono", 11), fill=GREEN, tags="upd")
-            self.tag_bind("upd", "<Button-1>", lambda e: webbrowser.open(self.update[1]))
+            self.tag_bind("upd", "<Button-1>", lambda e: self.winfo_toplevel().update_click())
             self.tag_bind("upd", "<Enter>", lambda e: self.configure(cursor="hand2"))
             self.tag_bind("upd", "<Leave>", lambda e: self.configure(cursor=""))
             self.title_end = self.bbox(ut)[2] + px(20)
@@ -3555,6 +3694,8 @@ class App(tk.Tk):
         self.after(40, self.animate)
         if self.settings.get("check_updates", True):
             threading.Thread(target=check_for_update, args=(self.out,), daemon=True).start()
+        self.cleanup_tries = 0
+        self.after(2000, self.cleanup_tick)
         if self.autorun:
             self.after(1500, self.start)
 
@@ -3910,8 +4051,45 @@ class App(tk.Tk):
             self.stop_btn.set_enabled(False)
             self.set_status("stopping")
 
+    def cleanup_tick(self):
+        # alte exe nach einem Update löschen; sie ist ggf. noch ein paar Sekunden gesperrt
+        self.cleanup_tries += 1
+        if not cleanup_update() and self.cleanup_tries < 10:
+            self.after(3000, self.cleanup_tick)
+
+    def update_click(self):
+        if not self.header.update:
+            return
+        if not (can_self_update() and getattr(self, "update_zip", None)):
+            webbrowser.open(self.header.update[1])
+            return
+        if getattr(self, "updating", False) or self.busy():
+            return
+        UpdateDialog(self, self.header.update[0], self.header.update[1])
+
+    def run_update(self):
+        self.updating = True
+        self.write_log(L(f"DOWNLOADING UPDATE v{self.header.update[0]}", f"LADE UPDATE v{self.header.update[0]}"),
+                       "info")
+        threading.Thread(target=download_update, args=(self.update_zip, self.out), daemon=True).start()
+
+    def finish_update(self):
+        if self.worker and self.worker.is_alive():
+            self.updating = False
+            self.write_log(L("UPDATE PAUSED // STOP THE RUN AND CLICK THE GREEN TAG AGAIN",
+                             "UPDATE ANGEHALTEN // DURCHLAUF STOPPEN UND NOCHMAL AUF DEN GRÜNEN HINWEIS KLICKEN"), "err")
+            return
+        err = install_update()
+        if err:
+            self.updating = False
+            self.write_log(L(f"UPDATE FAILED // {err} // THE CURRENT VERSION STAYS",
+                             f"UPDATE FEHLGESCHLAGEN // {err} // DIE AKTUELLE VERSION BLEIBT"), "err")
+            return
+        self.write_log(L("UPDATE INSTALLED // RESTARTING", "UPDATE INSTALLIERT // NEUSTART"), "ok")
+        self.after(600, self.restart)
+
     def restart(self):
-        """Programm neu starten (z. B. nach Sprachwechsel)."""
+        """Programm neu starten (z. B. nach Sprachwechsel oder Update)."""
         import subprocess
         if getattr(sys, "frozen", False):
             args = [sys.executable]
@@ -3919,8 +4097,11 @@ class App(tk.Tk):
             exe = Path(sys.executable)
             pyw = exe.with_name("pythonw.exe")
             args = [str(pyw if pyw.exists() else exe), str(Path(__file__).resolve())]
+        env = dict(os.environ)
+        # PyInstaller: neue, eigenständige Instanz statt Kindprozess der alten (entpackt sich neu)
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
         try:
-            subprocess.Popen(args, cwd=str(HERE))
+            subprocess.Popen(args, cwd=str(HERE), env=env)
         except OSError as e:
             self.write_log(L(f"RESTART FAILED // {e} // PLEASE RESTART MANUALLY",
                              f"NEUSTART FEHLGESCHLAGEN // {e} // BITTE VON HAND NEU STARTEN"), "err")
@@ -3975,8 +4156,17 @@ class App(tk.Tk):
                     self.apply_channel(msg[1])
                 elif kind == "update":
                     self.header.update = (msg[1], msg[2])
+                    self.update_zip = msg[3] if len(msg) > 3 else None
                     self.header.redraw()
                     self.write_log(L(f"UPDATE AVAILABLE // v{msg[1]} // CLICK THE GREEN TAG IN THE HEADER", f"UPDATE VERFÜGBAR // v{msg[1]} // OBEN AUF DEN GRÜNEN HINWEIS KLICKEN"), "ok")
+                elif kind == "upd_progress":
+                    self.write_log(L(f"DOWNLOADING UPDATE // {msg[1]} %", f"UPDATE WIRD GELADEN // {msg[1]} %"), "info")
+                elif kind == "upd_failed":
+                    self.updating = False
+                    self.write_log(L(f"UPDATE FAILED // {msg[1]} // THE CURRENT VERSION STAYS",
+                                     f"UPDATE FEHLGESCHLAGEN // {msg[1]} // DIE AKTUELLE VERSION BLEIBT"), "err")
+                elif kind == "upd_ready":
+                    self.finish_update()
                 elif kind == "mode":
                     self.run_mode = msg[1]
                     self.set_status(msg[1])

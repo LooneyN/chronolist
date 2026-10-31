@@ -29,7 +29,7 @@ YouTube only lets you sort a channel's uploads by "latest" or "popular". Chronol
 - **Pause, resume, stop, batch limit, skip ahead** to the next ready year.
 - **Auto-run** on launch and optional **start with Windows**.
 - **Optional browser fallback** (off by default, see the warning below).
-- **Update check**: a green tag in the header tells you when a new release is available.
+- **Updates in the app**: a green tag in the header tells you when a new release is available; one click downloads it, replaces the exe and restarts. Your settings and progress stay.
 
 ## Download
 
