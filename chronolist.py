@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 75
+BUILD = 76
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -110,12 +110,12 @@ BROWSER_PROFILE = HERE / "browser_profile"
 API = "https://www.googleapis.com/youtube/v3"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPE = "https://www.googleapis.com/auth/youtube"
-BATCH_SIZE = 25                 # Browser-Fallback: Videos pro Anfrage
-BATCH_PAUSE = (5, 15)          # Sekunden zwischen zwei Paketen
-COOLDOWN_EVERY = 200            # nach so vielen Videos ein kurzer Cooldown
-COOLDOWN_PAUSE = (27, 33)       # Sekunden (~30 s)
-LONG_BREAK_EVERY = 1000         # nach so vielen Videos eine lange Pause
-LONG_BREAK_PAUSE = (270, 330)   # Sekunden (~5 min)
+BATCH_SIZE = 30                 # Browser-Fallback: Videos pro Anfrage
+BATCH_PAUSE = (4, 12)          # Sekunden zwischen zwei Paketen
+COOLDOWN_EVERY = 250            # nach so vielen Videos ein kurzer Cooldown
+COOLDOWN_PAUSE = (17, 23)       # Sekunden (~20 s)
+LONG_BREAK_EVERY = 1500         # nach so vielen Videos eine lange Pause
+LONG_BREAK_PAUSE = (210, 270)   # Sekunden (~4 min)
 PART_MAX = 5000                 # YouTube: höchstens 5.000 Videos pro Playlist -> danach Teil 2, 3, ...
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -3580,7 +3580,7 @@ HELP_TEXT_DE = [
             "um Mitternacht kalifornischer Zeit. Chronolist rechnet das in deine Uhrzeit um.\n"
             "• FALLBACK an: Chronolist öffnet ein eigenes Edge-Fenster und fügt die restlichen Videos über die "
             "YouTube-Webseite ein, genau so, wie die Webseite es beim Speichern selbst macht. Dabei werden keine "
-            "Einheiten verbraucht. Es läuft in Paketen zu 25 Videos mit Pausen dazwischen. Neue Playlists kann das "
+            "Einheiten verbraucht. Es läuft in Paketen zu 30 Videos mit Pausen dazwischen. Neue Playlists kann das "
             "Edge-Fenster auch anlegen. Videos finden (Schritt 2) kann es aber nicht.\n"
             "Chronolist merkt sich, wenn das Kontingent oder das Suchlimit an einem Tag aufgebraucht ist. Bis zum "
             "Reset fragt es nach einem Neustart nicht noch einmal nach, sondern nimmt gleich den Fallback. In dieser "
@@ -3716,9 +3716,9 @@ HELP_TEXT_DE = [
     ("h2", "Warum macht Chronolist Pausen?"),
     ("p", "Über das Edge-Fenster arbeitet Chronolist absichtlich nicht im Höchsttempo, damit es nicht wie ein Bot "
           "aussieht. Die Pausen siehst du mit Countdown auf der Jahreskarte und oben in der Statusanzeige."),
-    ("dd", "NÄCHSTES PAKET: kurze Pause zwischen zwei Paketen mit je 25 Videos, 5 bis 15 Sekunden.\n"
-           "KURZE PAUSE: etwa 30 Sekunden nach jeweils 200 Videos.\n"
-           "LANGE PAUSE: etwa fünf Minuten nach jeweils 1000 Videos.\n"
+    ("dd", "NÄCHSTES PAKET: kurze Pause zwischen zwei Paketen mit je 30 Videos, 4 bis 12 Sekunden.\n"
+           "KURZE PAUSE: etwa 20 Sekunden nach jeweils 250 Videos.\n"
+           "LANGE PAUSE: etwa vier Minuten nach jeweils 1500 Videos.\n"
            "YOUTUBE BREMST: YouTube bremst kurz, Chronolist wartet zehn Minuten.\n"
            "NEUER VERSUCH oder KEINE VERBINDUNG: kurzer Fehler oder keine Verbindung. Chronolist versucht es gleich "
            "noch einmal."),
@@ -3798,7 +3798,7 @@ HELP_TEXT_EN = [
             "time; Chronolist converts it to your local time.\n"
             "• FALLBACK on: Chronolist opens its own Edge window and adds the remaining videos through the YouTube "
             "website, exactly the way the website does it when you save a video. This uses no units. It works in "
-            "batches of 25 videos with pauses in between. The Edge window can also create new playlists. It cannot "
+            "batches of 30 videos with pauses in between. The Edge window can also create new playlists. It cannot "
             "find videos (step 2), though.\n"
             "Chronolist remembers when the quota or the search limit was used up on a given day. Until the reset it "
             "won't ask again after a restart and goes straight to the fallback. During that time the API button is "
@@ -3929,9 +3929,9 @@ HELP_TEXT_EN = [
     ("h2", "Why does Chronolist pause?"),
     ("p", "Through the Edge window Chronolist deliberately doesn't work at full speed, so it doesn't look like a bot. "
           "You see the pauses with a countdown on the year card and in the status display at the top."),
-    ("dd", "NEXT BATCH: short pause between two batches of 25 videos, 5 to 15 seconds.\n"
-           "COOLDOWN: about 30 seconds after every 200 videos.\n"
-           "BREAK: about five minutes after every 1000 videos.\n"
+    ("dd", "NEXT BATCH: short pause between two batches of 30 videos, 4 to 12 seconds.\n"
+           "COOLDOWN: about 20 seconds after every 250 videos.\n"
+           "BREAK: about four minutes after every 1500 videos.\n"
            "RATE LIMIT: YouTube slows things down briefly, Chronolist waits ten minutes.\n"
            "RETRY or NO SIGNAL: a short error or no connection. Chronolist tries again shortly."),
 
@@ -3992,6 +3992,21 @@ def monitor_rect(x, y):
         return r.left, r.top, r.right, r.bottom
     except Exception:  # noqa: BLE001
         return None
+
+
+def point_on_screen(x, y):
+    """Liegt der Punkt auf einem angeschlossenen Monitor? (Windows; sonst immer True)"""
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        user32.MonitorFromPoint.restype = wintypes.HMONITOR
+        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        return bool(user32.MonitorFromPoint(wintypes.POINT(int(x), int(y)), 0))   # MONITOR_DEFAULTTONULL
+    except Exception:  # noqa: BLE001
+        return True
 
 
 class Tooltip:
@@ -4454,6 +4469,7 @@ class App(tk.Tk):
             self.after(ms, lambda: style_titlebar(self))
 
         self.settings = load(SETTINGS_FILE, {"years": [], "autorun": False, "limit": 0})
+        self.restore_window()
         global LANG
         lang = self.settings.get("language")
         LANG = lang if lang in LANGUAGES else detect_language()
@@ -5176,7 +5192,52 @@ class App(tk.Tk):
             return
         self.on_close()
 
+    # --- Fensterposition merken
+    def restore_window(self):
+        """Letzte Größe/Position (und maximiert) wiederherstellen, wenn der Monitor noch da ist."""
+        self._normal_geom = None
+        win = self.settings.get("window") or {}
+        g = win.get("geometry")
+        m = re.match(r"^(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)$", g or "")
+        if m:
+            w, h = int(m.group(1)), int(m.group(2))
+            x, y = int(m.group(3).replace("+-", "-")), int(m.group(4).replace("+-", "-"))
+            if point_on_screen(x + w // 2, y + 20):
+                self.geometry(g)
+                self._normal_geom = g
+        if win.get("zoomed") and (self._normal_geom or not m):
+            def zoom():
+                try:
+                    self.state("zoomed")
+                except tk.TclError:
+                    try:
+                        self.attributes("-zoomed", True)
+                    except tk.TclError:
+                        pass
+            self.after(60, zoom)
+        self.bind("<Configure>", self._track_geometry, add="+")
+
+    def _track_geometry(self, e):
+        if e.widget is self:
+            try:
+                if self.state() == "normal":
+                    self._normal_geom = self.geometry()
+            except tk.TclError:
+                pass
+
+    def save_window(self):
+        try:
+            zoomed = self.state() == "zoomed" or bool(self.attributes("-zoomed") if os.name != "nt" else False)
+        except tk.TclError:
+            zoomed = False
+        self.settings["window"] = {"geometry": self._normal_geom or self.geometry(), "zoomed": zoomed}
+        save(SETTINGS_FILE, self.settings)
+
     def on_close(self):
+        try:
+            self.save_window()
+        except Exception:  # noqa: BLE001
+            pass
         if self.worker and self.worker.is_alive():
             self.worker.stop_event.set()
             self.worker.join(timeout=5)
