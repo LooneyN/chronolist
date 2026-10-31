@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
+- ALL / NONE next to the year list selects or deselects every year with one click.
+- Overall progress of all years (percent and bar) next to the year list.
 - Overview of left-out videos (shorts) with titles and links: click the log line "… REMOVED // SHOW ›" or LEFT OUT in the playlist settings.
 - Chronolist remembers the window size and position (and whether it was maximized), as long as that monitor is still connected.
 - Shorts are left out (detected through the channel's shorts list via the API); livestreams stay in, since some channels used them for regular content such as extra perspectives. Videos wrongly left out by earlier dev builds are restored and every playlist is checked and repaired once.
@@ -17,6 +19,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - After an in-app update, the changelog of the new version is shown once in the log.
 
 ### Changed
+- The running year's glow pulses more visibly.
+- The help button just says HELP.
 - PROGRAM and PLAYLISTS settings can be opened during a run. Playlist changes apply to playlists created from then on; a language change restarts Chronolist only after the run.
 - Much faster duplicate check: Chronolist remembers the batch in flight and after STOP or on the next start checks only that batch instead of reading the whole playlist. The full check runs at the end of a year and with CHECK; the interval check during a run is gone. Reading a playlist is also faster.
 - Browser fallback is faster: 30 videos per batch (was 20), 4 to 12 seconds between batches (was 10 to 25), a short break of about 20 seconds every 250 videos (was about 1 minute every 150) and a long break of about 4 minutes every 1500 videos (was about 10 minutes every 750).

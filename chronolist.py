@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 83
+BUILD = 84
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2758,9 +2758,10 @@ class Panel(tk.Canvas):
             base = mix(role, BG, tint * (1 - t))
             self.create_line(x0 + 1, y, xr - 1, y, fill=mix("#ffffff", base, 0.035))
         if glow:
+            gw = max(1, px(2)) if self.st == "running" else 1      # laufende Karte: kräftigerer Glow
             for d, a in ((1, 0.65), (2, 0.35), (3, 0.16)):
                 o = shape(x0 - d, y0 - d, x1 + d, y1 + d, c + 0.586 * d)
-                self.create_polygon(flat(o), fill="", outline=mix(role, BG, a), tags=("glow", f"glow{d}"))
+                self.create_polygon(flat(o), fill="", outline=mix(role, BG, a), width=gw, tags=("glow", f"glow{d}"))
         self.create_polygon(flat(pts), fill="", outline=mix(role, BG, edge), tags="edge")
         self.draw_content(x0, y0, x1, y1, c, role)
         for place in self.windows:
@@ -2951,9 +2952,10 @@ class YearRow(Panel):
             return
         role = g["role"]
         # Glow: 4 s, weiches Ein- und Ausblenden
-        pulse = 0.5 - 0.5 * math.cos(now * 2 * math.pi / 4.0)
-        for d, a in ((1, 0.65), (2, 0.35), (3, 0.16)):
-            self.itemconfigure(f"glow{d}", outline=mix(role, BG, a * (0.35 + 0.65 * pulse)))
+        pulse = 0.5 - 0.5 * math.cos(now * 2 * math.pi / 3.0)
+        for d, a in ((1, 1.0), (2, 0.7), (3, 0.4)):
+            self.itemconfigure(f"glow{d}", outline=mix(role, BG, a * (0.25 + 0.75 * pulse)))
+        self.itemconfigure("edge", outline=mix("#ffffff", role, 0.35 * pulse))
         # Datenpaket: langsam (6 s pro Durchlauf), weich ein- und ausgeblendet
         if g.get("fx") and self.find_withtag("pkt"):
             bx0, fx, by = g["bx0"], g["fx"], g["by"]
@@ -3299,7 +3301,7 @@ class SettingsDialog(tk.Toplevel):
         CutButton(row, L("SAVE", "SPEICHERN"), self.save, width=120).pack(side="left")
         CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
         CutButton(row, L("RESET TO DEFAULT", "STANDARDWERTE"), self.reset, width=170).pack(side="right")
-        CutButton(row, L("LEFT OUT", "AUSSORTIERT"), lambda: app.show_removed(), width=140).pack(
+        CutButton(row, L("LEFT OUT", "AUSSORTIERT"), lambda: app.show_removed(owner=self), width=140).pack(
             side="right", padx=(0, px(8)))
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
@@ -4473,6 +4475,56 @@ class Section(tk.Canvas):
             self.create_line(x, y, right, y, fill=RED_MILD)
 
 
+class YearSection(Section):
+    """Abschnitt JAHRE mit Gesamtfortschritt und ALLE / KEINE zum Markieren."""
+
+    def __init__(self, master, text, on_all, on_none):
+        super().__init__(master, text)
+        self.on_all, self.on_none = on_all, on_none
+        self.total = (0, 0)
+
+    def set_total(self, done, total):
+        if (done, total) != self.total:
+            self.total = (done, total)
+            self.redraw()
+
+    def link(self, x, y, text, cb):
+        t = self.create_text(x, y, text=text, anchor="e", font=F("mono", 11), fill=YELLOW)
+        self.tag_bind(t, "<Button-1>", lambda e: cb())
+        self.tag_bind(t, "<Enter>", lambda e: (self.configure(cursor="hand2"), self.itemconfigure(t, fill="#ffffff")))
+        self.tag_bind(t, "<Leave>", lambda e: (self.configure(cursor=""), self.itemconfigure(t, fill=YELLOW)))
+        return self.bbox(t)[0]
+
+    def redraw(self):
+        self.delete("all")
+        w = self.winfo_width()
+        y = px(13)
+        self.create_rectangle(0, y - px(3), px(6), y + px(3), fill=RED, outline="")
+        t = self.create_text(px(14), y, text=self.text, anchor="w", font=F("mono", 12), fill=RED)
+        x = self.bbox(t)[2] + px(10)
+        right = w - px(4)
+        right = self.link(right, y, L("NONE", "KEINE"), self.on_none) - px(6)
+        sep = self.create_text(right, y, text="·", anchor="e", font=F("mono", 11), fill=FLUFF)
+        right = self.bbox(sep)[0] - px(6)
+        right = self.link(right, y, L("ALL", "ALLE"), self.on_all) - px(16)
+        done, total = self.total
+        if total:
+            pct = done * 100 / total
+            ptxt = (f"{pct:.1f}".replace(".", "," if LANG == "de" else ".")) + " %"
+            p = self.create_text(right, y, text=ptxt, anchor="e", font=F("mono", 12), fill=CYAN)
+            right = self.bbox(p)[0] - px(8)
+            bw = px(90)
+            if right - bw > x + px(60):
+                self.create_rectangle(right - bw, y - px(2), right, y + px(2), fill=mix(CYAN, BG, 0.2), outline="")
+                self.create_rectangle(right - bw, y - px(2), right - bw + bw * done / total, y + px(2),
+                                      fill=CYAN, outline="")
+                right -= bw + px(8)
+            g = self.create_text(right, y, text=L("TOTAL", "GESAMT"), anchor="e", font=F("mono", 10, False), fill=FLUFF)
+            right = self.bbox(g)[0] - px(10)
+        if right > x:
+            self.create_line(x, y, right, y, fill=RED_MILD)
+
+
 class Header(tk.Canvas):
     def __init__(self, master):
         super().__init__(master, height=px(88), bg=BG, highlightthickness=0, bd=0)
@@ -4513,7 +4565,7 @@ class Header(tk.Canvas):
         # Platz prüfen: passt alles in voller Größe? Sonst Status schmaler und HILFE nur als "?"
         upd = self.upd_btn if self.update else None
         gap = px(8)
-        full_help = L("?  HELP", "?  HILFE")
+        full_help = L("HELP", "HILFE")
 
         def need(chip_w, help_w):
             n = chip_w + px(12) + help_w + px(16)
@@ -4763,7 +4815,9 @@ class App(tk.Tk):
         self.channel_card = ChannelCard(left, self.edit_channel)
         self.channel_card.grid(row=1, column=0, sticky="ew", pady=(0, px(16)))
         self.channel_card.update_state()
-        Section(left, L("TARGET YEARS", "JAHRE"), L("CLICK // DRAG TO SORT", "KLICKEN // ZIEHEN ZUM SORTIEREN")).grid(row=2, column=0, sticky="ew", pady=(0, px(6)))
+        self.year_section = YearSection(left, L("TARGET YEARS", "JAHRE"), lambda: self.select_all(True),
+                                        lambda: self.select_all(False))
+        self.year_section.grid(row=2, column=0, sticky="ew", pady=(0, px(6)))
         self.scroll = ScrollArea(left)
         self.scroll.grid(row=3, column=0, sticky="nsew")
         self.rows = {}
@@ -4792,7 +4846,7 @@ class App(tk.Tk):
             b.set_color(YELLOW)   # Hauptsteuerung in Cyberpunk-Gelb
         self.setup_btn = CutButton(self.header, L("API // MISSING", "API // ANMELDEN"), self.edit_credentials, width=150)
         self.header.api_btn = self.setup_btn
-        self.help_btn = CutButton(self.header, L("?  HELP", "?  HILFE"), self.show_help, width=86)
+        self.help_btn = CutButton(self.header, L("HELP", "HILFE"), self.show_help, width=86)
         self.header.help_btn = self.help_btn
         self.header.redraw()
         self.api_ok = None   # None = unbekannt, True = Login/Aufruf erfolgreich, False = Fehler
@@ -4946,6 +5000,22 @@ class App(tk.Tk):
         row.refresh(selected=not row.selected)
         self.save_settings()
 
+    def select_all(self, on):
+        for r in self.rows.values():
+            if r.selected != on:
+                r.refresh(selected=on)
+        self.save_settings()
+        if self.worker and self.worker.is_alive():
+            self.write_log(L("SELECTION APPLIES FROM THE NEXT START", "AUSWAHL GILT AB DEM NÄCHSTEN START"), "info")
+
+    def update_total(self):
+        done = total = 0
+        for r in self.rows.values():
+            done += r.info.get("done", 0)
+            total += r.info.get("total", 0)
+        if hasattr(self, "year_section"):
+            self.year_section.set_total(done, total)
+
     def change_limit(self, delta):
         self.limit_val = max(0, min(5000, self.limit_val + delta))
         self.limit_panel.value = self.limit_val
@@ -5043,6 +5113,7 @@ class App(tk.Tk):
             self.bind_drag(row)
             self.rows[y] = row
         self.scroll.canvas.yview_moveto(0)
+        self.update_total()
 
     # --- Reihenfolge per Drag & Drop
     def bind_drag(self, row):
@@ -5214,11 +5285,22 @@ class App(tk.Tk):
             r.refresh_blocked()
         self.after(60000, self.api_tick)
 
-    def show_removed(self, year=None):
+    def show_removed(self, year=None, owner=None):
         w = getattr(self, "removed_win", None)
         if w is not None and w.winfo_exists():
             w.destroy()
+        if owner is not None:
+            owner.grab_release()            # sonst blockiert der offene Einstellungsdialog dieses Fenster
         self.removed_win = RemovedWindow(self, year)
+        if owner is not None:
+            def back(e, o=owner):
+                if e.widget is self.removed_win:
+                    try:
+                        if o.winfo_exists():
+                            o.grab_set()
+                    except tk.TclError:
+                        pass
+            self.removed_win.bind("<Destroy>", back, add="+")
 
     def show_help(self):
         w = getattr(self, "help_win", None)
@@ -5542,6 +5624,7 @@ class App(tk.Tk):
                     y = int(msg[1])
                     if y in self.rows:
                         self.rows[y].refresh(info=year_info(y))
+                    self.update_total()
                 elif kind == "checking":
                     if msg[1] in self.rows:
                         self.rows[msg[1]].set_checking(msg[2])
