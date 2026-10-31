@@ -1,0 +1,29 @@
+# Changelog
+
+All notable changes to Chronolist are documented here.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+## [2.7.0] - 2026-10-31
+
+First public release.
+
+### Added
+- Update check: on launch, Chronolist asks GitHub once for the latest release and shows a green `UPDATE` tag in the header when a newer version exists. Can be turned off with `"check_updates": false` in `settings.json`.
+- Configurable playlist title and description via `playlist_template` and `description_template` in `settings.json` (placeholders `{channel}` and `{year}`).
+- "Updates" and "About" sections in the in-app help, including license, repository link and a note that the tool was written entirely with Claude (Anthropic).
+- Windows icon (`assets/chronolist.ico`) and automated Windows builds via GitHub Actions.
+
+### Changed
+- Neutral UI texts and examples; no personal names or channel-specific defaults.
+
+### Removed
+- Migration code for the private predecessor (old file layout and old autostart entry).
+
+## Earlier versions
+
+Versions before 2.7.0 were developed privately and are not published.
+
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v2.7.0...HEAD
+[2.7.0]: https://github.com/LooneyN/chronolist/releases/tag/v2.7.0

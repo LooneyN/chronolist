@@ -1,0 +1,55 @@
+name: Release
+
+# Runs when a version tag like v2.7.0 is pushed:
+# checks that the tag matches VERSION in chronolist.py, builds Chronolist.exe
+# and publishes a GitHub release with the notes from CHANGELOG.md.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check tag matches VERSION
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CODE=$(python -c "import re;print(re.search(r'^VERSION = \"(.+?)\"', open('chronolist.py', encoding='utf-8').read(), re.M).group(1))")
+          echo "Tag: $TAG  Code: $CODE"
+          if [ "$TAG" != "$CODE" ]; then echo "::error::Tag v$TAG does not match VERSION $CODE in chronolist.py"; exit 1; fi
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build exe
+        run: pyinstaller --onefile --windowed --name Chronolist --icon assets/chronolist.ico chronolist.py
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item dist/Chronolist.exe, README.md, LICENSE, CHANGELOG.md release/
+          Compress-Archive -Path release/* -DestinationPath "Chronolist-$env:GITHUB_REF_NAME-windows.zip"
+
+      - name: Release notes
+        shell: bash
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python scripts/release_notes.py "${{ github.ref_name }}" > notes.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" "Chronolist-${{ github.ref_name }}-windows.zip" --title "Chronolist ${{ github.ref_name }}" --notes-file notes.md

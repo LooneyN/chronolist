@@ -1,0 +1,17 @@
+name: Check
+
+# Quick sanity check on every push and pull request: the script must compile.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  compile:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m py_compile chronolist.py scripts/release_notes.py
