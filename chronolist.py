@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 72
+BUILD = 74
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -117,6 +117,7 @@ COOLDOWN_PAUSE = (27, 33)       # Sekunden (~30 s)
 LONG_BREAK_EVERY = 1000         # nach so vielen Videos eine lange Pause
 CHECK_EVERY = 1000              # Zwischenprüfung der Playlist während eines Laufs
 LONG_BREAK_PAUSE = (270, 330)   # Sekunden (~5 min)
+PART_MAX = 5000                 # YouTube: höchstens 5.000 Videos pro Playlist -> danach Teil 2, 3, ...
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 # --- aktiver Kanal (wird von der App gesetzt)
@@ -255,6 +256,25 @@ def fill_template(t, y, count=None):
 
 
 def playlist_title(y): return fill_template(PLAYLIST_TEMPLATE, y)
+
+
+def part_title(y, n, total_parts):
+    """Titel von Teil n (ab 1). Bei nur einem Teil ohne Zusatz."""
+    base = playlist_title(y)
+    return base if total_parts <= 1 else base + L(f" (Part {n})", f" (Teil {n})")
+
+
+def part_ids(state):
+    """Playlist-IDs aller Teile eines Jahres (ältere Stände kennen nur 'playlist_id')."""
+    if state.get("parts"):
+        return list(state["parts"])
+    return [state["playlist_id"]] if state.get("playlist_id") else []
+
+
+def growing(y):
+    """Kann in diesem Jahr noch etwas dazukommen? Laufendes Jahr, im Januar auch das Vorjahr."""
+    t = datetime.date.today()
+    return y >= t.year or (y == t.year - 1 and t.month == 1)
 def playlist_description(y): return fill_template(DESCRIPTION_TEMPLATE, y)
 def thumbs_dir(): return CHAN_DIR / "thumbs"
 def thumbs_file(): return CHAN_DIR / "thumbs.json"
@@ -946,6 +966,31 @@ class BrowserUplink:
         cid = be.get("browseId")
         return cid if cid and cid.startswith("UC") else None
 
+    def rename_playlist(self, playlist_id, title):
+        j = self.yt_call("browse/edit_playlist", {"playlistId": playlist_id, "actions": [
+            {"action": "ACTION_SET_PLAYLIST_NAME", "playlistName": title}]})
+        return j.get("status") == "STATUS_SUCCEEDED"
+
+    def latest_videos(self, channel_id, known, limit_pages=40):
+        """Neueste Videos der Kanalseite (neueste zuerst), bis ein bekanntes Video kommt."""
+        ids, tokens = [], []
+        find_channel_videos(self.yt_call("browse", {"browseId": channel_id, "params": "EgZ2aWRlb3PyBgQKAjoA"}),
+                            ids, tokens)
+        out = []
+        for _ in range(limit_pages):
+            for v in ids:
+                if v in known:
+                    return out
+                if v not in out:
+                    out.append(v)
+            if not tokens:
+                return out
+            ids, new_tokens = [], []
+            find_channel_videos(self.yt_call("browse", {"continuation": tokens[-1]}), ids, new_tokens)
+            tokens = new_tokens
+            time.sleep(random.uniform(0.8, 1.6))
+        return out
+
     def oldest_token(self, channel_id):
         """Token für die Videoseite des Kanals, sortiert nach 'Älteste'."""
         j = self.yt_call("browse", {"browseId": channel_id, "params": "EgZ2aWRlb3PyBgQKAjoA"})
@@ -1138,8 +1183,8 @@ class Worker(threading.Thread):
                     continue
                 if self.fallback and self.mode == "api":
                     self.prefetch(y + 1)
-                if self.fill(y, videos):
-                    self.emit("select", None, y)    # fertig -> abwählen
+                if self.fill(y, videos) and not growing(y):
+                    self.emit("select", None, y)    # fertig -> abwählen (laufendes Jahr bleibt für neue Videos)
             self.log(L("ALL TARGETS PROCESSED", "ALLE AUSGEWÄHLTEN JAHRE BEARBEITET"), "ok")
         except Stopped:
             reason = "gestoppt"
@@ -1494,10 +1539,74 @@ class Worker(threading.Thread):
         self.act(None, year)
         return videos
 
+    def refresh_new(self, year, videos):
+        """Laufendes Jahr: neue Videos hinten anhängen. Mit Kontingent über die API (Upload-Liste,
+        1 Einheit pro 50), sonst mit FALLBACK über die Kanalseite."""
+        known = {v["id"] for v in videos}
+        self.act(L("LOOKING FOR NEW VIDEOS ...", "SUCHE NEUE VIDEOS ..."), year)
+        new = []          # (id, published) neueste zuerst
+        try:
+            if not quota_blocked("units"):
+                up = load(archive_file(), {}).get("uploads") or load(collect_file(year), {}).get("uploads")
+                if not up:
+                    q = {"id": CHANNEL["id"]} if CHANNEL.get("id") else {"forHandle": CHANNEL.get("handle", "")}
+                    items = self.call("GET", "channels", {"part": "contentDetails", **q}).get("items", [])
+                    up = items[0]["contentDetails"]["relatedPlaylists"]["uploads"] if items else None
+                token, done = None, False
+                while up and not done:
+                    params = {"part": "contentDetails", "playlistId": up, "maxResults": 50}
+                    if token:
+                        params["pageToken"] = token
+                    d = self.call("GET", "playlistItems", params)
+                    for it in d.get("items", []):
+                        cd = it["contentDetails"]
+                        pub = cd.get("videoPublishedAt")
+                        if not pub:
+                            continue
+                        if cd["videoId"] in known or int(pub[:4]) < year:
+                            done = True
+                            break
+                        if int(pub[:4]) == year:
+                            new.append((cd["videoId"], pub))
+                    token = d.get("nextPageToken")
+                    if not token:
+                        break
+            elif self.fallback:
+                cid = self.channel_id()
+                self.ensure_browser()
+                ids = self.browser.latest_videos(cid, known)
+                if ids:
+                    oldest = self.browser.video_date(ids[-1]) or ""
+                    newest = self.browser.video_date(ids[0]) or ""
+                    if oldest[:4] == newest[:4] == str(year):
+                        new = [(v, None) for v in ids]
+                    else:
+                        for v in ids:
+                            d = self.browser.video_date(v) or ""
+                            if d[:4] == str(year):
+                                new.append((v, d))
+            else:
+                self.log(L(f"{year} // CHECK FOR NEW VIDEOS SKIPPED // NEEDS API QUOTA OR FALLBACK",
+                           f"{year} // NEUE VIDEOS NICHT GEPRÜFT // BRAUCHT API-KONTINGENT ODER FALLBACK"), "warn")
+        except QuotaExceeded:
+            self.log(L(f"{year} // CHECK FOR NEW VIDEOS SKIPPED // QUOTA", f"{year} // NEUE VIDEOS NICHT GEPRÜFT // KONTINGENT"), "warn")
+        finally:
+            self.act(None, year)
+        if not new:
+            self.log(L(f"{year} // NO NEW VIDEOS", f"{year} // KEINE NEUEN VIDEOS"))
+            return videos
+        videos = videos + [{"id": v, "published": p} for v, p in reversed(new)]
+        save(videos_file(year), videos)
+        self.log(L(f"{year} // {len(new)} NEW VIDEO(S) FOUND", f"{year} // {len(new)} NEUE(S) VIDEO(S) GEFUNDEN"), "ok")
+        self.emit("progress", year)
+        return videos
+
     def collect(self, year):
         cached = load(videos_file(year), None)
         if cached is not None:
-            if self.use_web(year) and load(collect_file(year), {}).get("source") != "web":
+            cut = archive_cutoff()
+            searched = cut is not None and year <= cut          # Liste stammt aus der lückenhaften Suche
+            if self.fallback and searched and load(collect_file(year), {}).get("source") != "web":
                 # bisher über die lückenhafte Suche gefunden -> mit der Kanalseite abgleichen
                 videos = self.collect_web(year, cached)
                 if len(videos) > len(cached):
@@ -1506,6 +1615,11 @@ class Worker(threading.Thread):
                         st["repair"] = True
                         save(state_file(year), st)
                 return videos
+            if growing(year):
+                done = getattr(self, "_refreshed", set())
+                if year not in done:            # pro Lauf nur einmal nachsehen
+                    self._refreshed = done | {year}
+                    return self.refresh_new(year, cached)
             return cached
         if self.use_web(year):
             return self.collect_web(year)
@@ -1637,29 +1751,68 @@ class Worker(threading.Thread):
         finally:
             self.act(None, year)
 
+    def create_playlist(self, title, description):
+        pid = None
+        if self.mode == "api":
+            try:
+                pid = self.call("POST", "playlists", {"part": "snippet,status"}, {
+                    "snippet": {"title": title, "description": description},
+                    "status": {"privacyStatus": PRIVACY},
+                })["id"]
+            except QuotaExceeded:
+                if not self.fallback:
+                    raise
+                self.switch_to_browser()
+        if pid is None:
+            if not self.browser:
+                raise QuotaExceeded()
+            pid = self.browser.create_playlist(title, description)
+        return pid
+
+    def rename_playlist(self, pid, title, description):
+        """Bestmöglich umbenennen (Browser oder API). Fehler sind nicht schlimm, nur ein Hinweis."""
+        try:
+            if self.browser and self.browser.rename_playlist(pid, title):
+                return True
+            if not quota_blocked("units"):
+                self.call("PUT", "playlists", {"part": "snippet"},
+                          {"id": pid, "snippet": {"title": title, "description": description}})
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+        self.log(L(f"COULD NOT RENAME PLAYLIST // PLEASE RENAME IT TO \"{title}\" BY HAND",
+                   f"PLAYLIST KONNTE NICHT UMBENANNT WERDEN // BITTE VON HAND IN \"{title}\" UMBENENNEN"), "warn")
+        return False
+
+    def ensure_part(self, year, state, k):
+        """Playlist für Teil k (ab 0) besorgen, bei Bedarf anlegen. Ab Teil 2 wird Teil 1 umbenannt."""
+        parts = part_ids(state)
+        if k < len(parts):
+            return parts[k]
+        while len(parts) <= k:
+            n = len(parts) + 1
+            title = part_title(year, n, n)
+            pid = self.create_playlist(title, playlist_description(year))
+            parts.append(pid)
+            state["parts"] = parts
+            state["playlist_id"] = parts[0]
+            save(state_file(year), state)
+            self.log(L(f"{year} HAS MORE THAN {PART_MAX} VIDEOS // PLAYLIST PART {n} CREATED // {title}",
+                       f"{year} HAT MEHR ALS {PART_MAX} VIDEOS // PLAYLIST TEIL {n} ANGELEGT // {title}"), "ok")
+            if n == 2:
+                self.rename_playlist(parts[0], part_title(year, 1, 2), playlist_description(year))
+        try:
+            self.apply_thumbnails(only_year=year)
+        except Exception as e:  # noqa: BLE001
+            self.log(L(f"THUMBNAIL {year} FAILED // {str(e)[:120]}", f"THUMBNAIL {year} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
+        return parts[k]
+
     def ensure_playlist(self, year):
         sf = state_file(year)
         state = load(sf, {})
         if not state.get("playlist_id"):
-            pid = None
-            if self.mode == "api":
-                try:
-                    pid = self.call("POST", "playlists", {"part": "snippet,status"}, {
-                        "snippet": {
-                            "title": playlist_title(year),
-                            "description": playlist_description(year),
-                        },
-                        "status": {"privacyStatus": PRIVACY},
-                    })["id"]
-                except QuotaExceeded:
-                    if not self.fallback:
-                        raise
-                    self.switch_to_browser()
-            if pid is None:
-                if not self.browser:
-                    raise QuotaExceeded()
-                pid = self.browser.create_playlist(playlist_title(year), playlist_description(year))
-            state = {"playlist_id": pid, "next": 0, "skipped": []}
+            pid = self.create_playlist(playlist_title(year), playlist_description(year))
+            state = {"playlist_id": pid, "parts": [pid], "next": 0, "skipped": []}
             save(sf, state)
             self.log(L(f"PLAYLIST CREATED // {playlist_title(year)}", f"PLAYLIST ANGELEGT // {playlist_title(year)}"), "ok")
             try:
@@ -1706,23 +1859,24 @@ class Worker(threading.Thread):
         todo = [(int(y), t) for y, t in info.items()
                 if t.get("status") == "queued" and (only_year is None or int(y) == only_year)]
         for y, t in sorted(todo):
-            pid = load(state_file(y), {}).get("playlist_id")
+            pids = part_ids(load(state_file(y), {}))
             path = thumbs_dir() / t.get("file", "")
-            if not pid or not path.exists():
+            if not pids or not path.exists():
                 continue
             if self.mode != "api" or quota_blocked("units"):
                 self.log(L(f"THUMBNAIL {y} WAITING // NEEDS API QUOTA", f"THUMBNAIL {y} WARTET // BRAUCHT API-KONTINGENT"), "warn")
                 return
             mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
             try:
-                existing = self.call("GET", "playlistImages", {"part": "id,snippet", "playlistId": pid}).get("items", [])
-                meta = {"snippet": {"playlistId": pid, "type": "hero"}}
-                if existing:
-                    meta["id"] = existing[0]["id"]
-                    self.upload_call("PUT", {"part": "snippet"}, meta, path.read_bytes(), mime)
-                else:
-                    self.upload_call("POST", {"part": "snippet"}, meta, path.read_bytes(), mime)
-                t.update(status="done", error="")
+                for pid in pids:
+                    existing = self.call("GET", "playlistImages", {"part": "id,snippet", "playlistId": pid}).get("items", [])
+                    meta = {"snippet": {"playlistId": pid, "type": "hero"}}
+                    if existing:
+                        meta["id"] = existing[0]["id"]
+                        self.upload_call("PUT", {"part": "snippet"}, meta, path.read_bytes(), mime)
+                    else:
+                        self.upload_call("POST", {"part": "snippet"}, meta, path.read_bytes(), mime)
+                t.update(status="done", error="", parts=len(pids))
                 self.log(L(f"THUMBNAIL {y} UPLOADED", f"THUMBNAIL {y} HOCHGELADEN"), "ok")
             except QuotaExceeded:
                 self.log(L(f"THUMBNAIL {y} WAITING // NEEDS API QUOTA", f"THUMBNAIL {y} WARTET // BRAUCHT API-KONTINGENT"), "warn")
@@ -1838,30 +1992,33 @@ class Worker(threading.Thread):
     def verify(self, year, videos, state, why):
         """Prüft die Playlist: entfernt doppelte Videos (das erste bleibt) und gleicht den
         Fortschritt mit der Playlist ab, falls ein Video schon drin, aber nicht gespeichert war."""
-        pid = state.get("playlist_id")
-        if not pid:
+        pids = part_ids(state)
+        if not pids:
             return state
         self.emit("checking", year, True)
         self.log(L(f"PLAYLIST CHECK {year} // {why} ...", f"PLAYLIST-PRÜFUNG {year} // {why} ..."))
         try:
             removed = 0
             seen = set()
-            for _ in range(3):
-                try:
-                    items = self.list_playlist(pid)
-                    seen, dups = set(), []
-                    for it in items:
-                        if it["vid"] in seen:
-                            dups.append(it)
-                        else:
-                            seen.add(it["vid"])
-                    for it in dups:
-                        self.remove_item(pid, it)
-                        removed += 1
-                        self.log(L(f"DUPLICATE REMOVED // {it['vid']}", f"DOPPELTES VIDEO ENTFERNT // {it['vid']}"), "warn")
-                    break
-                except RelistNeeded:
-                    continue
+            for pid in pids:              # Teile der Reihe nach; doppelt = schon in einem früheren Teil
+                before = set(seen)
+                for _ in range(3):
+                    try:
+                        items = self.list_playlist(pid)
+                        here, dups = set(), []
+                        for it in items:
+                            if it["vid"] in here or it["vid"] in before:
+                                dups.append(it)
+                            else:
+                                here.add(it["vid"])
+                        for it in dups:
+                            self.remove_item(pid, it)
+                            removed += 1
+                            self.log(L(f"DUPLICATE REMOVED // {it['vid']}", f"DOPPELTES VIDEO ENTFERNT // {it['vid']}"), "warn")
+                        seen = before | here
+                        break
+                    except RelistNeeded:
+                        continue
             n = state.get("next", 0)
             moved = 0
             while n < len(videos) and videos[n]["id"] in seen:
@@ -1882,72 +2039,82 @@ class Worker(threading.Thread):
 
     def repair(self, year, videos, state):
         """Fehlende Videos in eine schon (teilweise) gefüllte Playlist nachtragen und an die
-        richtige Stelle schieben. Danach geht es mit dem normalen Füllen weiter."""
-        pid = state["playlist_id"]
+        richtige Stelle schieben, Teil für Teil. Danach geht es mit dem normalen Füllen weiter."""
         self.ensure_browser()
-        self.emit("checking", year, True)
-
-        def reading(n):
-            self.act(L(f"READING PLAYLIST // {n} READ", f"LESE PLAYLIST // {n} GELESEN"), year)
+        order_all = [v["id"] for v in videos]
+        pids = part_ids(state)
+        new_next = 0
         try:
-            self.log(L(f"REPAIR {year} // READING THE PLAYLIST ...", f"NACHTRAG {year} // LESE DIE PLAYLIST ..."))
-            items = self.browser.list_items(pid, reading)
-            self.log(L(f"REPAIR {year} // PLAYLIST HAS {len(items)} VIDEOS", f"NACHTRAG {year} // PLAYLIST HAT {len(items)} VIDEOS"))
-            present = {it["vid"] for it in items}
-            order = [v["id"] for v in videos]
-            last = max((i for i, v in enumerate(order) if v in present), default=-1)
-            missing = [v for v in order[:last + 1] if v not in present]
-            # Anzeige: wie viele Videos dieses Jahres wirklich schon drin sind (zählt beim Nachtragen mit)
-            have = len(present & set(order))
+            for k, pid in enumerate(pids):
+                order = order_all[k * PART_MAX:(k + 1) * PART_MAX]
+                tag = f"{year}" + (L(f" PART {k + 1}", f" TEIL {k + 1}") if len(pids) > 1 else "")
 
-            def show(n):
-                state["next"] = n
-                save(state_file(year), state)
-                self.emit("progress", year)
-            show(have)
-            self.log(L(f"REPAIR {year} // {len(missing)} MISSING VIDEO(S) INSIDE THE PLAYLIST",
-                       f"NACHTRAG {year} // {len(missing)} FEHLENDE(S) VIDEO(S) MITTEN IN DER PLAYLIST"),
-                     "warn" if missing else "info")
-            self.emit("checking", year, False)      # ab hier: Einfügen mit sichtbarem Fortschritt
-            added = []
-            for i in range(0, len(missing), BATCH_SIZE):
-                self.check()
-                chunk = missing[i:i + BATCH_SIZE]
-                if self.browser.add_many(pid, chunk):
-                    added += chunk
+                def reading(n, tag=tag):
+                    self.act(L(f"READING PLAYLIST // {n} READ", f"LESE PLAYLIST // {n} GELESEN"), year)
+                self.emit("checking", year, True)
+                self.log(L(f"REPAIR {tag} // READING THE PLAYLIST ...", f"NACHTRAG {tag} // LESE DIE PLAYLIST ..."))
+                items = self.browser.list_items(pid, reading)
+                self.emit("checking", year, False)
+                self.log(L(f"REPAIR {tag} // PLAYLIST HAS {len(items)} VIDEOS", f"NACHTRAG {tag} // PLAYLIST HAT {len(items)} VIDEOS"))
+                present = {it["vid"] for it in items}
+                last = max((i for i, v in enumerate(order) if v in present), default=-1)
+                missing = [v for v in order[:last + 1] if v not in present]
+                if len(items) + len(missing) > PART_MAX:
+                    self.log(L(f"REPAIR {tag} // PLAYLIST WOULD EXCEED {PART_MAX} VIDEOS // SOME VIDEOS ARE LEFT OUT",
+                               f"NACHTRAG {tag} // PLAYLIST WÜRDE {PART_MAX} VIDEOS ÜBERSCHREITEN // EINIGE BLEIBEN DRAUSSEN"), "warn")
+                    missing = missing[:max(0, PART_MAX - len(items))]
+                self.log(L(f"REPAIR {tag} // {len(missing)} MISSING VIDEO(S) INSIDE THE PLAYLIST",
+                           f"NACHTRAG {tag} // {len(missing)} FEHLENDE(S) VIDEO(S) MITTEN IN DER PLAYLIST"),
+                         "warn" if missing else "info")
+                have = len(present & set(order))
+                base = k * PART_MAX
+
+                def show(n, base=base):
+                    state["next"] = base + n
+                    save(state_file(year), state)
+                    self.emit("progress", year)
+                show(have)
+                added = []
+                for i in range(0, len(missing), BATCH_SIZE):
+                    self.check()
+                    chunk = missing[i:i + BATCH_SIZE]
+                    if self.browser.add_many(pid, chunk):
+                        added += chunk
+                    else:
+                        for v in chunk:
+                            if self.browser.add(pid, v):
+                                added.append(v)
+                    n_done = min(i + len(chunk), len(missing))
+                    show(have + len(added))
+                    self.log(L(f"REPAIR {tag} // {n_done}/{len(missing)} ADDED",
+                               f"NACHTRAG {tag} // {n_done}/{len(missing)} EINGEFÜGT"))
+                    self.act(L(f"REPAIR // {n_done}/{len(missing)} ADDED", f"NACHTRAG // {n_done}/{len(missing)} EINGEFÜGT"), year)
+                    if i + BATCH_SIZE < len(missing):
+                        self.sleep(random.uniform(*BATCH_PAUSE), "NEXT BATCH")
+                if added:
+                    self.log(L(f"REPAIR {tag} // {len(added)} VIDEO(S) ADDED", f"NACHTRAG {tag} // {len(added)} VIDEO(S) EINGEFÜGT"), "ok")
+                # Reihenfolge prüfen und alles verschieben, was falsch steht (auch nach einem Abbruch)
+                self.emit("checking", year, True)
+                self.log(L(f"REPAIR {tag} // CHECKING THE ORDER ...", f"NACHTRAG {tag} // PRÜFE DIE REIHENFOLGE ..."))
+                items = self.browser.list_items(pid, reading)
+                self.emit("checking", year, False)
+                moves = plan_moves(order, items)
+                if not moves:
+                    self.log(L(f"REPAIR {tag} // ORDER IS CORRECT", f"NACHTRAG {tag} // REIHENFOLGE STIMMT"), "ok")
                 else:
-                    for v in chunk:
-                        if self.browser.add(pid, v):
-                            added.append(v)
-                n_done = min(i + len(chunk), len(missing))
-                show(have + len(added))
-                self.log(L(f"REPAIR {year} // {n_done}/{len(missing)} ADDED",
-                           f"NACHTRAG {year} // {n_done}/{len(missing)} EINGEFÜGT"))
-                self.act(L(f"REPAIR // {n_done}/{len(missing)} ADDED", f"NACHTRAG // {n_done}/{len(missing)} EINGEFÜGT"), year)
-                if i + BATCH_SIZE < len(missing):
-                    self.sleep(random.uniform(*BATCH_PAUSE), "NEXT BATCH")
-            if added:
-                self.log(L(f"REPAIR {year} // {len(added)} VIDEO(S) ADDED", f"NACHTRAG {year} // {len(added)} VIDEO(S) EINGEFÜGT"), "ok")
-            # Reihenfolge prüfen und alles verschieben, was falsch steht (auch nach einem Abbruch)
-            self.emit("checking", year, True)
-            self.log(L(f"REPAIR {year} // CHECKING THE ORDER ...", f"NACHTRAG {year} // PRÜFE DIE REIHENFOLGE ..."))
-            items = self.browser.list_items(pid, reading)
-            self.emit("checking", year, False)
-            moves = plan_moves(order, items)
-            if not moves:
-                self.log(L(f"REPAIR {year} // ORDER IS CORRECT", f"NACHTRAG {year} // REIHENFOLGE STIMMT"), "ok")
-            if moves:
-                self.log(L(f"REPAIR {year} // MOVING {len(moves)} VIDEO(S) TO THE RIGHT SPOT ...",
-                           f"NACHTRAG {year} // VERSCHIEBE {len(moves)} VIDEO(S) AN DIE RICHTIGE STELLE ..."))
-                self.act(L(f"SORTING // 0/{len(moves)}", f"SORTIERE // 0/{len(moves)}"), year)
+                    self.log(L(f"REPAIR {tag} // MOVING {len(moves)} VIDEO(S) TO THE RIGHT SPOT ...",
+                               f"NACHTRAG {tag} // VERSCHIEBE {len(moves)} VIDEO(S) AN DIE RICHTIGE STELLE ..."))
+                    self.act(L(f"SORTING // 0/{len(moves)}", f"SORTIERE // 0/{len(moves)}"), year)
 
-                def moved(n):
-                    self.log(L(f"REPAIR {year} // {n}/{len(moves)} MOVED", f"NACHTRAG {year} // {n}/{len(moves)} VERSCHOBEN"))
-                    self.act(L(f"SORTING // {n}/{len(moves)}", f"SORTIERE // {n}/{len(moves)}"), year)
-                self.browser.move_before(pid, moves, moved)
-                self.log(L(f"REPAIR {year} // ORDER FIXED", f"NACHTRAG {year} // REIHENFOLGE KORRIGIERT"), "ok")
+                    def moved(n, tag=tag, total=len(moves)):
+                        self.log(L(f"REPAIR {tag} // {n}/{total} MOVED", f"NACHTRAG {tag} // {n}/{total} VERSCHOBEN"))
+                        self.act(L(f"SORTING // {n}/{total}", f"SORTIERE // {n}/{total}"), year)
+                    self.browser.move_before(pid, moves, moved)
+                    self.log(L(f"REPAIR {tag} // ORDER FIXED", f"NACHTRAG {tag} // REIHENFOLGE KORRIGIERT"), "ok")
+                if last >= 0:
+                    new_next = base + last + 1
             self.act(None, year)
-            state["next"] = last + 1
+            state["next"] = new_next
             state.pop("repair", None)
             save(state_file(year), state)
             self.emit("progress", year)
@@ -2002,15 +2169,16 @@ class Worker(threading.Thread):
                 self.log(L(f"{year} // RUN LIMIT OF {self.limit} VIDEOS REACHED", f"{year} // LIMIT VON {self.limit} VIDEOS FÜR DIESEN LAUF ERREICHT"))
                 return False
             self.check()
+            pid = self.ensure_part(year, state, i // PART_MAX)     # ab 5.000 Videos: nächster Teil
             if self.mode == "browser":
-                n = min(BATCH_SIZE, len(videos) - i)
+                n = min(BATCH_SIZE, len(videos) - i, PART_MAX - i % PART_MAX)
                 if self.limit:
                     n = min(n, self.limit - added)
                 chunk = [v["id"] for v in videos[i:i + n]]
-                results = self.add_batch(state["playlist_id"], chunk)
+                results = self.add_batch(pid, chunk)
             else:
                 chunk = [videos[i]["id"]]
-                results = [self.add_video(state["playlist_id"], chunk[0])]   # kann auf Browser umschalten
+                results = [self.add_video(pid, chunk[0])]   # kann auf Browser umschalten
             for vid, ok in zip(chunk, results):
                 if ok:
                     added += 1
@@ -2029,7 +2197,8 @@ class Worker(threading.Thread):
             if i < len(videos):
                 self.pace()
         state = self.verify(year, videos, state, L("FINAL FULL SCAN", "ABSCHLUSSPRÜFUNG"))
-        self.log(L(f"{year} COMPLETE // https://www.youtube.com/playlist?list={state['playlist_id']}", f"{year} FERTIG // https://www.youtube.com/playlist?list={state['playlist_id']}"), "ok")
+        links = " // ".join(f"https://www.youtube.com/playlist?list={p}" for p in part_ids(state))
+        self.log(L(f"{year} COMPLETE // {links}", f"{year} FERTIG // {links}"), "ok")
         return True
 
 
@@ -3238,6 +3407,12 @@ HELP_TEXT_DE = [
             "Liste weiter. Wurden dessen Videos noch nicht gefunden und ist das Kontingent leer, hält Chronolist an. "
             "Mit VORZIEHEN nimmt es stattdessen das nächste markierte Jahr, das schon bereit ist, und holt das "
             "fehlende später nach."),
+    ("num", "8.  Laufendes Jahr. Das aktuelle Jahr bleibt markiert, auch wenn es fertig ist. Bei jedem Lauf schaut "
+            "Chronolist nach neuen Videos und hängt sie hinten an. Mit Kontingent kostet das nur ein paar Einheiten, "
+            "ohne geht es mit FALLBACK über die Kanalseite. Im Januar gilt das auch noch für das Vorjahr.\n"
+            "Mehr als 5.000 Videos: Eine YouTube-Playlist fasst höchstens 5.000 Videos. Hat ein Jahr mehr, legt "
+            "Chronolist automatisch eine zweite Playlist \"… (Teil 2)\" an und benennt die erste in \"… (Teil 1)\" "
+            "um. Prüfen und Nachtragen laufen dann für jeden Teil."),
 
     ("h2", "Was sind Einheiten?"),
     ("p", "Die Nutzung der YouTube-Schnittstelle ist kostenlos. Es fällt kein Geld an. Google gibt aber jedem Projekt "
@@ -3445,6 +3620,12 @@ HELP_TEXT_EN = [
     ("num", "7.  Next year. When a year is done, Chronolist moves on to the next selected year in the order of the "
             "list. If that year's videos haven't been found yet and the quota is used up, it stops. With SKIP AHEAD it "
             "takes the next selected year that is already ready instead and catches up later."),
+    ("num", "8.  Current year. The current year stays selected even when it is done. On every run Chronolist looks "
+            "for new videos and appends them. With quota this costs only a few units, without quota it works with "
+            "FALLBACK through the channel page. In January this also applies to the previous year.\n"
+            "More than 5,000 videos: a YouTube playlist holds at most 5,000 videos. If a year has more, Chronolist "
+            "automatically creates a second playlist \"… (Part 2)\" and renames the first one to \"… (Part 1)\". "
+            "Checking and repairing then work for each part."),
 
     ("h2", "What are units?"),
     ("p", "Using the YouTube API is free. There is no money involved. Google does give every project a fixed daily "
@@ -4648,7 +4829,7 @@ class App(tk.Tk):
         self.settings["channel"] = info
         set_channel(info)
         # neuer Kanal: alle abgeschlossenen Jahre markiert, chronologisch
-        self.settings["years"] = [y for y in YEARS if y < datetime.date.today().year]
+        self.settings["years"] = list(YEARS)
         self.settings["year_order"] = list(YEARS)
         save(SETTINGS_FILE, self.settings)
         self.build_rows()

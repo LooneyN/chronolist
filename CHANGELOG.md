@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
+- The current year (in January also the previous one) is kept up to date: on every run new uploads are appended. It stays selected when done. New channels now select the current year too.
+- Years with more than 5,000 videos are split automatically into "Part 1", "Part 2", … (YouTube's playlist limit). Checking, repairing and thumbnails work per part.
 - Year cards show what is happening right now with progress (reading the channel page, adding, sorting, checking the playlist), on the card of the year it concerns, e.g. the pre-scan of the next year.
 - With FALLBACK on, video lists come from the channel's videos page sorted by oldest (in the Edge window). This is complete, needs no API quota and replaces the gappy API date search for old years. Unscanned years can now be filled entirely without quota.
 - Years found earlier through the date search are checked against the channel page; missing videos are added to the playlist and moved to the right position. The whole order is checked each time, so an interrupted repair is completed on the next run.

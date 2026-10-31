@@ -19,4 +19,10 @@
 3. Commit, then push the tag `vX.Y.Z`. The `Release` workflow checks that the tag matches `VERSION`, builds `Chronolist.exe` and publishes the GitHub release with the changelog notes.
 4. Afterwards bump `dev` to the next `-dev` version.
 
-Version numbers: bug fixes only -> patch (2.7.1); new features -> minor (2.8.0).
+Version numbers: bug fixes only -> patch (2.7.1); new features -> minor (2.8.0). Bigger reworks or a clearly new scope -> major (3.0.0).
+
+## Suggesting releases and versions
+- The maintainer finds it hard to judge when a release or a major version is due. Proactively suggest it when it fits:
+  - a new release, once `[Unreleased]` holds a meaningful, tested set of changes (or an important fix);
+  - a major version (e.g. 3.0.0), when the changes add up to a clearly bigger step for users.
+- Only suggest; release only when the maintainer says so.
