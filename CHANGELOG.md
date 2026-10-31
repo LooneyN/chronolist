@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-10-31
+
 ### Added
 - Updates inside the app (exe only): click the green update tag in the header, confirm, and Chronolist downloads the new release, replaces itself and restarts. Settings, sign-in and progress are kept. Not possible during a run.
 
@@ -48,6 +50,7 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v2.8.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v2.9.0...HEAD
+[2.9.0]: https://github.com/LooneyN/chronolist/compare/v2.8.0...v2.9.0
 [2.8.0]: https://github.com/LooneyN/chronolist/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/LooneyN/chronolist/releases/tag/v2.7.0
