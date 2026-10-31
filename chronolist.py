@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 55
+BUILD = 56
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -669,6 +669,47 @@ def known_channel_id():
         if cid:
             return cid
     return None
+
+
+def plan_moves(order, items):
+    """Welche Playlist-Einträge müssen wohin, damit sie der Reihenfolge `order` folgen?
+    Behält die längste schon richtig sortierte Folge und schiebt nur den Rest.
+    Liefert [(setVideoId, setVideoId des Nachfolgers)] in ausführbarer Reihenfolge."""
+    pos = {v: i for i, v in enumerate(order)}
+    seq = []          # (Sollposition, vid, set) in aktueller Playlist-Reihenfolge, nur erste Vorkommen
+    seen = set()
+    for it in items:
+        if it["vid"] in pos and it["vid"] not in seen:
+            seen.add(it["vid"])
+            seq.append((pos[it["vid"]], it["vid"], it["set"]))
+    if not seq:
+        return []
+    # Das letzte Soll-Video bleibt fest (es braucht keinen Nachfolger). Davor die längste schon
+    # aufsteigende Teilfolge behalten, alles andere wird verschoben.
+    z = max(range(len(seq)), key=lambda i: seq[i][0])
+    import bisect
+    tails, tails_i, prev = [], [], [-1] * len(seq)
+    for i, (p, _, _) in enumerate(seq[:z]):
+        k = bisect.bisect_left(tails, p)
+        if k == len(tails):
+            tails.append(p); tails_i.append(i)
+        else:
+            tails[k] = p; tails_i[k] = i
+        prev[i] = tails_i[k - 1] if k else -1
+    keep = {seq[z][1]}
+    i = tails_i[-1] if tails_i else -1
+    while i != -1:
+        keep.add(seq[i][1])
+        i = prev[i]
+    set_of = {v: st for _, v, st in seq}
+    present = [v for v in order if v in set_of]
+    moves = []
+    for j in range(len(present) - 1, -1, -1):
+        v = present[j]
+        if v in keep:
+            continue
+        moves.append((set_of[v], set_of[present[j + 1]]))
+    return moves
 
 
 class RelistNeeded(Exception):
@@ -1830,23 +1871,15 @@ class Worker(threading.Thread):
                             added.append(v)
                 time.sleep(random.uniform(*BATCH_PAUSE))
             if added:
-                items = self.browser.list_items(pid)
-                set_of = {}
-                for it in items:
-                    set_of.setdefault(it["vid"], it["set"])
-                added_set = set(added)
-                moves = []
-                # von hinten nach vorne: jedes nachgetragene Video vor seinen Nachfolger schieben
-                for i in range(len(order) - 1, -1, -1):
-                    v = order[i]
-                    if v not in added_set or v not in set_of:
-                        continue
-                    succ = next((order[k] for k in range(i + 1, len(order)) if order[k] in set_of), None)
-                    if succ:
-                        moves.append((set_of[v], set_of[succ]))
+                self.log(L(f"REPAIR {year} // {len(added)} VIDEO(S) ADDED", f"NACHTRAG {year} // {len(added)} VIDEO(S) EINGEFÜGT"), "ok")
+            # Reihenfolge prüfen und alles verschieben, was falsch steht (auch nach einem Abbruch)
+            items = self.browser.list_items(pid)
+            moves = plan_moves(order, items)
+            if moves:
+                self.log(L(f"REPAIR {year} // MOVING {len(moves)} VIDEO(S) TO THE RIGHT SPOT ...",
+                           f"NACHTRAG {year} // VERSCHIEBE {len(moves)} VIDEO(S) AN DIE RICHTIGE STELLE ..."))
                 self.browser.move_before(pid, moves)
-                self.log(L(f"REPAIR {year} // {len(added)} VIDEO(S) ADDED AND SORTED IN",
-                           f"NACHTRAG {year} // {len(added)} VIDEO(S) EINGEFÜGT UND EINSORTIERT"), "ok")
+                self.log(L(f"REPAIR {year} // ORDER FIXED", f"NACHTRAG {year} // REIHENFOLGE KORRIGIERT"), "ok")
             state["next"] = last + 1
             state.pop("repair", None)
             save(state_file(year), state)
