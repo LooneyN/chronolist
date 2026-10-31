@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 63
+BUILD = 64
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1887,6 +1887,14 @@ class Worker(threading.Thread):
             order = [v["id"] for v in videos]
             last = max((i for i, v in enumerate(order) if v in present), default=-1)
             missing = [v for v in order[:last + 1] if v not in present]
+            # Anzeige: wie viele Videos dieses Jahres wirklich schon drin sind (zählt beim Nachtragen mit)
+            have = len(present & set(order))
+
+            def show(n):
+                state["next"] = n
+                save(state_file(year), state)
+                self.emit("progress", year)
+            show(have)
             self.log(L(f"REPAIR {year} // {len(missing)} MISSING VIDEO(S) INSIDE THE PLAYLIST",
                        f"NACHTRAG {year} // {len(missing)} FEHLENDE(S) VIDEO(S) MITTEN IN DER PLAYLIST"),
                      "warn" if missing else "info")
@@ -1902,6 +1910,7 @@ class Worker(threading.Thread):
                         if self.browser.add(pid, v):
                             added.append(v)
                 n_done = min(i + len(chunk), len(missing))
+                show(have + len(added))
                 self.log(L(f"REPAIR {year} // {n_done}/{len(missing)} ADDED",
                            f"NACHTRAG {year} // {n_done}/{len(missing)} EINGEFÜGT"))
                 self.act(L(f"REPAIR // {n_done}/{len(missing)} ADDED", f"NACHTRAG // {n_done}/{len(missing)} EINGEFÜGT"), year)
