@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.10.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 49
+BUILD = 50
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1963,7 +1963,7 @@ class YearRow(Panel):
         self.create_text(nx, y0 + h * 0.32, text=str(self.year), anchor="w", font=F("ui", 16),
                          fill=TEXT if on else mix(TEXT_DIM, BG, 0.5) if faded else mix(TEXT_DIM, BG, 0.75))
         text, blinking = self.status_text()
-        scol = (RED if (self.blocked and not self.running) else role if on
+        scol = ((RED if on else mix(RED, BG, 0.55)) if (self.blocked and not self.running) else role if on
                 else mix(role, BG, 0.55) if faded else mix(TEXT_MUTED, BG, 0.65))
         item = self.create_text(nx, y0 + h * 0.62, text=text, anchor="w", font=F("mono", 11), fill=scol,
                                 tags="stat")
@@ -1992,7 +1992,7 @@ class YearRow(Panel):
                              fill=TEXT if on else mix(TEXT_MUTED, BG, 0.45) if faded else mix(TEXT_MUTED, BG, 0.6),
                              tags="cnt")
         elif self.blocked and not self.running:
-            self.create_text(cx, mid, text="API", font=F("mono", 15), fill=RED)
+            self.create_text(cx, mid, text="API", font=F("mono", 15), fill=RED if on else mix(RED, BG, 0.55))
         else:
             self.create_text(cx, mid, text="--", font=F("mono", 15), fill=mix(TEXT_MUTED, BG, 0.6))
 
