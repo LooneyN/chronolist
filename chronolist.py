@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 79
+BUILD = 80
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -116,6 +116,7 @@ COOLDOWN_EVERY = 250            # nach so vielen Videos ein kurzer Cooldown
 COOLDOWN_PAUSE = (17, 23)       # Sekunden (~20 s)
 LONG_BREAK_EVERY = 1500         # nach so vielen Videos eine lange Pause
 LONG_BREAK_PAUSE = (210, 270)   # Sekunden (~4 min)
+REMOVE_EXTRAS = False           # Sicherung: Videos, die nicht (mehr) in der Liste stehen, NICHT aus Playlists löschen
 PART_MAX = 5000                 # YouTube: höchstens 5.000 Videos pro Playlist -> danach Teil 2, 3, ...
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -2227,6 +2228,10 @@ class Worker(threading.Thread):
                 self.log(L(f"REPAIR {tag} // PLAYLIST HAS {len(items)} VIDEOS", f"NACHTRAG {tag} // PLAYLIST HAT {len(items)} VIDEOS"))
                 wanted = set(order_all)
                 extras = [it for it in items if it["vid"] not in wanted]
+                if extras and not REMOVE_EXTRAS:
+                    self.log(L(f"REPAIR {tag} // {len(extras)} VIDEO(S) NOT IN THE LIST // LEFT IN THE PLAYLIST FOR NOW",
+                               f"NACHTRAG {tag} // {len(extras)} VIDEO(S) NICHT IN DER LISTE // BLEIBEN VORERST IN DER PLAYLIST"), "warn")
+                    extras = []
                 if extras:
                     self.log(L(f"REPAIR {tag} // REMOVING {len(extras)} VIDEO(S) THAT DON'T BELONG (SHORTS/LIVESTREAMS)",
                                f"NACHTRAG {tag} // ENTFERNE {len(extras)} VIDEO(S), DIE NICHT HINGEHÖREN (SHORTS/LIVESTREAMS)"), "warn")
