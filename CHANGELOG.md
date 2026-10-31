@@ -5,6 +5,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+- Updates inside the app (exe only): click the green update tag in the header, confirm, and Chronolist downloads the new release, replaces itself and restarts. Settings, sign-in and progress are kept. Not possible during a run.
+
+### Changed
+- The playlist check during a run now happens every 750 videos instead of every 100. Checks on start, after STOP and at the end of a year stay.
+
+### Fixed
+- Restarting the exe (language change) now starts a fully independent new instance.
+
 ## [2.8.0] - 2026-10-31
 
 ### Added
