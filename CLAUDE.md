@@ -16,7 +16,7 @@
 ## Releasing (only when the maintainer asks for it)
 1. Merge `dev` into `main`.
 2. Set `VERSION` to the final number (no `-dev`), move the `[Unreleased]` entries to a new version section in `CHANGELOG.md` and update the compare links.
-3. Commit, then push the tag `vX.Y.Z`. The `Release` workflow checks that the tag matches `VERSION`, builds `Chronolist.exe` and publishes the GitHub release with the changelog notes.
+3. Commit and push `main`. Then either push the tag `vX.Y.Z` or (if tag pushes are blocked) have the maintainer start Actions -> Release -> Run workflow on `main`, which creates the tag itself. The `Release` workflow checks that the tag matches `VERSION`, builds `Chronolist.exe` and publishes the GitHub release with the changelog notes.
 4. Afterwards bump `dev` to the next `-dev` version.
 
 Version numbers: bug fixes only -> patch (2.7.1); new features -> minor (2.8.0). Bigger reworks or a clearly new scope -> major (3.0.0).
