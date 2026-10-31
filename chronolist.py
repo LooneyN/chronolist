@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.10.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 43
+BUILD = 44
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1879,8 +1879,10 @@ def wait_label(label):
 
 
 class YearRow(Panel):
-    def __init__(self, master, year, command):
+    def __init__(self, master, year, command, pause_command=None):
         super().__init__(master, 62, cut=10, command=command)
+        self.pause_command = pause_command
+        self.icon_geo = None       # (x0, y0, x1, y1) des Symbols, klickbar während des Laufs
         self.year = year
         self.selected = False
         self.running = False
@@ -1917,11 +1919,17 @@ class YearRow(Panel):
         u = isz / 32
         icol = role if on else mix(role, BG, 0.8)
         top = cy - isz / 2
-        if self.running and self.pause:
-            # Pause-Symbol statt Play
+        self.icon_geo = (ix - px(4), top - px(4), ix + isz + px(4), top + isz + px(4))
+        manual = bool(self.pause and self.pause.get("kind") == "manual")
+        if self.running and not manual:
+            # läuft: Pause-Symbol, Klick pausiert
             for xx in (11, 18):
                 self.create_rectangle(ix + xx * u, top + 9 * u, ix + (xx + 4) * u, top + 23 * u,
                                       fill=icol, outline="")
+        elif self.running:
+            # pausiert: Play-Symbol, Klick setzt fort
+            self.create_polygon(ix + 11 * u, top + 8 * u, ix + 11 * u, top + 24 * u, ix + 24 * u, top + 16 * u,
+                                fill=icol, outline=icol)
         else:
             for yy, xe in ((9, 20), (14, 20), (19, 15)):
                 self.create_line(ix + 7 * u, top + yy * u, ix + xe * u, top + yy * u, fill=icol,
@@ -1969,6 +1977,14 @@ class YearRow(Panel):
             self.tick(time.time())
 
     # --- Animation der aktiven Karte: nur Ladebalken + ruhiger Glow
+    def _click(self, e):
+        g = self.icon_geo
+        if (self.running and self.pause_command and g
+                and g[0] <= e.x <= g[2] and g[1] <= e.y <= g[3]):
+            self.pause_command()
+            return
+        super()._click(e)
+
     def tick(self, now):
         g = self.geo
         if not (self.running and g):
@@ -2766,7 +2782,8 @@ HELP_TEXT_DE = [
     ("h2", "Jahre"),
     ("p", "Jede Karte steht für ein Jahr. Mit einem Klick wählst du ein Jahr aus oder wieder ab. Ausgewählte Jahre "
           "sind hell umrandet und werden beim Start nacheinander bearbeitet. Rechts siehst du den Fortschritt in "
-          "Prozent und wie viele Videos schon drin sind."),
+          "Prozent und wie viele Videos schon drin sind. Während ein Jahr läuft, ist sein Symbol links ein "
+          "Pause-Knopf, beim Pausieren ein Play-Knopf. Das funktioniert wie PAUSE und WEITER."),
     ("dt", "Was unter dem Jahr stehen kann"),
     ("dd", "NICHT GESUCHT: Die Videos wurden noch nicht gesucht.\n"
            "SUCHE PAUSIERT: Die Suche wurde angefangen, ist aber noch nicht fertig.\n"
@@ -2952,7 +2969,8 @@ HELP_TEXT_EN = [
     ("h2", "Target years"),
     ("p", "Each card is one year. Click a year to select or deselect it. Selected years have a bright border and are "
           "processed one after another on START. On the right you see the progress in percent and how many videos "
-          "are already in."),
+          "are already in. While a year is running, its icon on the left is a pause button, and a play button while "
+          "paused. It works like PAUSE and RESUME."),
     ("dt", "What can appear under a year"),
     ("dd", "NOT SCANNED: the videos haven't been searched yet.\n"
            "SCAN PAUSED: the search was started but isn't finished.\n"
@@ -3810,7 +3828,7 @@ class App(tk.Tk):
         self.rows = {}
         selected = set(self.settings.get("years", []))
         for y in YEARS:
-            row = YearRow(self.scroll.inner, y, command=lambda y=y: self.toggle_year(y))
+            row = YearRow(self.scroll.inner, y, command=lambda y=y: self.toggle_year(y), pause_command=self.toggle_pause)
             Tooltip(row, lambda r=row: self.year_tip(r))
             row.pack(fill="x", pady=(0, px(4)))
             row.refresh(selected=y in selected)

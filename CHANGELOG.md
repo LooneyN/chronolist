@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+- The icon of the running year is a pause/resume button.
+
 ### Fixed
 - SKIP AHEAD now continues with the next selected year that is ready or in progress, instead of jumping to a new year behind it.
 
