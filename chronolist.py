@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 54
+BUILD = 55
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -657,6 +657,20 @@ OLDEST_WORDS = ("oldest", "älteste", "ältest", "plus anciennes", "más antiguo
 def web_index_file(): return CHAN_DIR / "web_index.json"
 
 
+def known_channel_id():
+    """Kanal-ID aus den Einstellungen oder aus schon gespeicherten Scan-Daten (ohne Netz)."""
+    if CHANNEL.get("id"):
+        return CHANNEL["id"]
+    up = load(archive_file(), {}).get("uploads", "")
+    if up.startswith("UU"):
+        return "UC" + up[2:]
+    for f in sorted(CHAN_DIR.glob("collect_*.json")) if CHAN_DIR.exists() else []:
+        cid = load(f, {}).get("channel_id")
+        if cid:
+            return cid
+    return None
+
+
 class RelistNeeded(Exception):
     pass
 
@@ -861,6 +875,19 @@ class BrowserUplink:
             tokens += new_tokens
             time.sleep(1)
         return items
+
+    def resolve_channel(self, handle):
+        """@handle -> Kanal-ID über die Webseite."""
+        if not handle:
+            return None
+        h = handle if handle.startswith("@") else "@" + handle
+        try:
+            j = self.yt_call("navigation/resolve_url", {"url": "https://www.youtube.com/" + h})
+        except BrowserFailed:
+            return None
+        be = (j.get("endpoint") or {}).get("browseEndpoint") or {}
+        cid = be.get("browseId")
+        return cid if cid and cid.startswith("UC") else None
 
     def oldest_token(self, channel_id):
         """Token für die Videoseite des Kanals, sortiert nach 'Älteste'."""
@@ -1288,7 +1315,7 @@ class Worker(threading.Thread):
     def use_web(self, year):
         """Videoliste über die Kanalseite holen? Nur mit FALLBACK. Für Jahre hinter der 20.000er-Grenze
         immer (die API-Suche ist lückenhaft), sonst nur, wenn das Kontingent leer ist."""
-        if not self.fallback or not CHANNEL.get("id"):
+        if not self.fallback:
             return False
         cut = archive_cutoff()
         if cut is not None and year <= cut:
@@ -1300,16 +1327,30 @@ class Worker(threading.Thread):
             self.browser = BrowserUplink(self)
             self.browser.start()
 
+    def channel_id(self):
+        """Kanal-ID besorgen: gespeichert, aus Scan-Daten oder über YouTube auflösen. Wird gemerkt."""
+        cid = known_channel_id()
+        if not cid:
+            self.ensure_browser()
+            cid = self.browser.resolve_channel(CHANNEL.get("handle") or "")
+        if not cid:
+            raise BrowserFailed(L("CHANNEL ID NOT FOUND // EDIT THE CHANNEL ONCE", "KANAL-ID NICHT GEFUNDEN // KANAL EINMAL NEU EINTRAGEN"))
+        if CHANNEL.get("id") != cid:
+            CHANNEL["id"] = cid
+            self.emit("channel_id", cid)
+        return cid
+
     def web_index(self, year):
         """Liest die Videoseite des Kanals (älteste zuerst), bis das Jahr komplett abgedeckt ist.
         Speichert Reihenfolge und Jahr jedes Videos in web_index.json (wird fortgesetzt)."""
+        cid = self.channel_id()
         self.ensure_browser()
         idx = load(web_index_file(), {})
-        if idx.get("channel") != CHANNEL.get("id"):
-            idx = {"channel": CHANNEL["id"], "ids": [], "year": {}, "token": None, "last": None, "end": False}
+        if idx.get("channel") != cid:
+            idx = {"channel": cid, "ids": [], "year": {}, "token": None, "last": None, "end": False}
         if not idx["ids"] and not idx.get("token"):
             self.log(L("CHANNEL PAGE // OPENING VIDEOS SORTED BY OLDEST ...", "KANALSEITE // ÖFFNE VIDEOS, ÄLTESTE ZUERST ..."))
-            idx["token"] = self.browser.oldest_token(CHANNEL["id"])
+            idx["token"] = self.browser.oldest_token(cid)
         pages = 0
         while not idx["end"] and (idx["last"] is None or int(idx["last"][:4]) <= year):
             self.check()
@@ -3930,6 +3971,11 @@ class App(tk.Tk):
             save(SETTINGS_FILE, self.settings)
         apply_templates(self.settings)
         set_channel(self.settings.get("channel"))
+        if CHANNEL and not CHANNEL.get("id") and known_channel_id():
+            # ältere Installationen: Kanal-ID aus vorhandenen Scan-Daten nachtragen
+            CHANNEL["id"] = known_channel_id()
+            self.settings["channel"]["id"] = CHANNEL["id"]
+            save(SETTINGS_FILE, self.settings)
         self.out = queue.Queue()
         self.worker = None
         self.code = ""
@@ -4683,6 +4729,11 @@ class App(tk.Tk):
                         r.refresh_blocked()
                 elif kind == "channel":
                     self.apply_channel(msg[1])
+                elif kind == "channel_id":
+                    if self.settings.get("channel"):
+                        self.settings["channel"]["id"] = msg[1]
+                        save(SETTINGS_FILE, self.settings)
+                    self.channel_card.update_state()
                 elif kind == "update":
                     self.header.update = (msg[1], msg[2])
                     self.update_zip = msg[3] if len(msg) > 3 else None
