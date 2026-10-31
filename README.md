@@ -81,6 +81,7 @@ When the daily quota is used up, the optional **FALLBACK** continues in a separa
 
 Under **PLAYLIST SETTINGS** in the app you can set:
 
+- The **language** of the app: English or German (interface, tooltips, help and log)
 - **Title** and optional **description** of new playlists, with placeholders `{channel}`, `{handle}`, `{year}` and `{count}` (number of videos in that year) and a live preview
 - **Visibility**: public, unlisted or private
 - An optional **thumbnail per year** (JPG/PNG, max 2 MB, ideally 1280×720). You can pick it before the playlist exists; it is uploaded via the API (50 units) as soon as the playlist exists. Experimental.

@@ -21,6 +21,7 @@ Fortschritt:   data/<kanal>/videos_<jahr>.json, collect_<jahr>.json, state_<jahr
 """
 import datetime
 import json
+import os
 import math
 import queue
 import random
@@ -47,17 +48,50 @@ except ImportError:  # nicht unter Windows
 # Kanal wird im Programm eingegeben und in settings.json gespeichert.
 # Standard-Vorlagen; im Programm unter PLAYLIST SETTINGS änderbar (gespeichert in settings.json).
 # Platzhalter: {channel} {handle} {year} {count}
-DEFAULT_PLAYLIST_TEMPLATE = "{channel} {year} in Upload-Reihenfolge"
-DEFAULT_DESCRIPTION_TEMPLATE = "Alle Videos von {channel} aus {year} in Upload-Reihenfolge."
-PLAYLIST_TEMPLATE = DEFAULT_PLAYLIST_TEMPLATE
-DESCRIPTION_TEMPLATE = DEFAULT_DESCRIPTION_TEMPLATE
+# --- Sprache der Oberfläche: "en" oder "de" (in settings.json "language", im Programm unter den Einstellungen)
+LANGUAGES = {"en": "ENGLISH", "de": "DEUTSCH"}
+LANG = "en"
+
+
+def L(en, de):
+    """Gibt den Text in der eingestellten Sprache zurück."""
+    return de if LANG == "de" else en
+
+
+def detect_language():
+    """Standardsprache aus dem System: Deutsch, wenn Windows/das System deutsch ist, sonst Englisch."""
+    try:
+        import ctypes
+        lid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+        return "de" if (lid & 0x3FF) == 0x07 else "en"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import locale
+        loc = (locale.getlocale()[0] or "") + (os.environ.get("LANG") or "")
+        return "de" if loc.lower().startswith(("de", "german")) or "de_" in loc.lower() else "en"
+    except Exception:  # noqa: BLE001
+        return "en"
+
+
+def default_playlist_template():
+    return L("{channel} {year} in upload order", "{channel} {year} in Upload-Reihenfolge")
+
+
+def default_description_template():
+    return L("All videos by {channel} from {year} in upload order.",
+             "Alle Videos von {channel} aus {year} in Upload-Reihenfolge.")
+
+
+PLAYLIST_TEMPLATE = "{channel} {year} in upload order"
+DESCRIPTION_TEMPLATE = "All videos by {channel} from {year} in upload order."
 PRIVACY = "public"              # public / unlisted / private
 PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.8.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 37
+BUILD = 38
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -153,7 +187,8 @@ def next_quota_reset():
 def fmt_reset(reset):
     reset_local = reset.astimezone()
     today = datetime.datetime.now().date()
-    day = "TODAY" if reset_local.date() == today else "TOMORROW" if reset_local.date() == today + datetime.timedelta(days=1) \
+    day = L("TODAY", "HEUTE") if reset_local.date() == today else L("TOMORROW", "MORGEN") \
+        if reset_local.date() == today + datetime.timedelta(days=1) \
         else reset_local.strftime("%d.%m.")
     return f"{day} {reset_local.strftime('%H:%M')}"
 
@@ -182,7 +217,8 @@ def quota_reset_local():
     reset_utc = next_quota_reset().replace(tzinfo=None)
     reset_local = reset_utc.replace(tzinfo=datetime.timezone.utc).astimezone()
     today = datetime.datetime.now().date()
-    day = "TODAY" if reset_local.date() == today else "TOMORROW" if reset_local.date() == today + datetime.timedelta(days=1) \
+    day = L("TODAY", "HEUTE") if reset_local.date() == today else L("TOMORROW", "MORGEN") \
+        if reset_local.date() == today + datetime.timedelta(days=1) \
         else reset_local.strftime("%d.%m.")
     return f"{day} {reset_local.strftime('%H:%M')}"
 
@@ -286,10 +322,10 @@ def _template_ok(t):
 def apply_templates(settings):
     """Playlist-Titel und -Beschreibung aus settings.json übernehmen (Platzhalter: {channel}, {year})."""
     global PLAYLIST_TEMPLATE, DESCRIPTION_TEMPLATE, PRIVACY
-    pt = settings.get("playlist_template") or DEFAULT_PLAYLIST_TEMPLATE
-    dt = settings.get("description_template", DEFAULT_DESCRIPTION_TEMPLATE)   # "" = keine Beschreibung
-    PLAYLIST_TEMPLATE = pt if isinstance(pt, str) and _template_ok(pt) else DEFAULT_PLAYLIST_TEMPLATE
-    DESCRIPTION_TEMPLATE = dt if isinstance(dt, str) and _template_ok(dt) else DEFAULT_DESCRIPTION_TEMPLATE
+    pt = settings.get("playlist_template") or default_playlist_template()
+    dt = settings.get("description_template", default_description_template())   # "" = keine Beschreibung
+    PLAYLIST_TEMPLATE = pt if isinstance(pt, str) and _template_ok(pt) else default_playlist_template()
+    DESCRIPTION_TEMPLATE = dt if isinstance(dt, str) and _template_ok(dt) else default_description_template()
     pv = settings.get("privacy", "public")
     PRIVACY = pv if pv in PRIVACY_OPTIONS else "public"
 
@@ -441,8 +477,8 @@ class BrowserUplink:
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            raise BrowserFailed("PLAYWRIGHT NOT INSTALLED // RUN: pip install playwright")
-        self.w.log("BROWSER UPLINK // LAUNCHING EDGE ...")
+            raise BrowserFailed(L("PLAYWRIGHT NOT INSTALLED // RUN: pip install playwright", "PLAYWRIGHT FEHLT // AUSFÜHREN: pip install playwright"))
+        self.w.log(L("BROWSER UPLINK // LAUNCHING EDGE ...", "BROWSER-MODUS // EDGE WIRD GESTARTET ..."))
         self.pw = sync_playwright().start()
         opts = dict(user_data_dir=str(BROWSER_PROFILE), headless=False,
                     args=["--disable-blink-features=AutomationControlled"],
@@ -454,7 +490,7 @@ class BrowserUplink:
                 self.ctx = self.pw.chromium.launch_persistent_context(**opts)
             except Exception as e:  # noqa: BLE001
                 self.close()
-                raise BrowserFailed(f"BROWSER LAUNCH FAILED // {e}")
+                raise BrowserFailed(L(f"BROWSER LAUNCH FAILED // {e}", f"BROWSER-START FEHLGESCHLAGEN // {e}"))
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
         self.open_youtube()
         self.wait_login()
@@ -471,18 +507,18 @@ class BrowserUplink:
 
     def wait_login(self):
         if self.logged_in():
-            self.w.log("BROWSER UPLINK // SIGNED IN", "ok")
+            self.w.log(L("BROWSER UPLINK // SIGNED IN", "BROWSER-MODUS // ANGEMELDET"), "ok")
             return
-        self.w.log("SIGN IN TO YOUTUBE IN THE EDGE WINDOW // WAITING (MAX 15 MIN)", "warn")
+        self.w.log(L("SIGN IN TO YOUTUBE IN THE EDGE WINDOW // WAITING (MAX 15 MIN)", "IM EDGE-FENSTER BEI YOUTUBE ANMELDEN // WARTE (MAX. 15 MIN)"), "warn")
         self.w.emit("browser_login")
         end = time.time() + 15 * 60
         while time.time() < end:
             self.w.sleep(4)
             if "youtube.com" in (self.page.url or "") and self.logged_in():
-                self.w.log("BROWSER UPLINK // SIGNED IN", "ok")
+                self.w.log(L("BROWSER UPLINK // SIGNED IN", "BROWSER-MODUS // ANGEMELDET"), "ok")
                 self.w.emit("mode", "browser")
                 return
-        raise BrowserFailed("NO YOUTUBE SIGN-IN WITHIN 15 MIN")
+        raise BrowserFailed(L("NO YOUTUBE SIGN-IN WITHIN 15 MIN", "KEINE YOUTUBE-ANMELDUNG INNERHALB VON 15 MIN"))
 
     def add(self, playlist_id, video_id):
         """True = drin, False = Video nicht verfügbar (überspringen)."""
@@ -497,7 +533,7 @@ class BrowserUplink:
                 raise
             except Exception as e:  # noqa: BLE001
                 if attempt == 2:
-                    raise BrowserFailed(f"BROWSER ERROR // {str(e)[:200]}")
+                    raise BrowserFailed(L(f"BROWSER ERROR // {str(e)[:200]}", f"BROWSER-FEHLER // {str(e)[:200]}"))
                 self.w.sleep(10)
                 self.open_youtube()
                 continue
@@ -506,7 +542,7 @@ class BrowserUplink:
                 continue
             if res.get("fatal"):
                 if attempt == 2:
-                    raise BrowserFailed(f"BROWSER UPLINK // {res['fatal']}")
+                    raise BrowserFailed(L(f"BROWSER UPLINK // {res['fatal']}", f"BROWSER-MODUS // {res['fatal']}"))
                 self.open_youtube()
                 continue
             if res.get("status") == "STATUS_SUCCEEDED":
@@ -514,18 +550,18 @@ class BrowserUplink:
                 return True
             http, err = res.get("http"), res.get("err") or res.get("status")
             if http in (401, 403):
-                raise BrowserFailed(f"YOUTUBE REFUSED ACCESS ({http}) // CHECK SIGNED-IN CHANNEL OWNS THE PLAYLIST")
+                raise BrowserFailed(L(f"YOUTUBE REFUSED ACCESS ({http}) // CHECK SIGNED-IN CHANNEL OWNS THE PLAYLIST", f"YOUTUBE VERWEIGERT DEN ZUGRIFF ({http}) // GEHÖRT DIE PLAYLIST DEM ANGEMELDETEN KANAL?"))
             if http == 429:
-                self.w.log("YOUTUBE RATE LIMIT // COOLING DOWN 10 MIN", "warn")
+                self.w.log(L("YOUTUBE RATE LIMIT // COOLING DOWN 10 MIN", "YOUTUBE BREMST // 10 MIN PAUSE"), "warn")
                 self.w.sleep(600, "RATE LIMIT")
                 continue
             if http == 400 or res.get("status") == "STATUS_FAILED":
-                self.w.log(f"SKIPPED {video_id} // {err}", "warn")
+                self.w.log(L(f"SKIPPED {video_id} // {err}", f"ÜBERSPRUNGEN {video_id} // {err}"), "warn")
                 return False
             if attempt == 2:
-                raise BrowserFailed(f"BROWSER UPLINK // HTTP {http} {err}")
+                raise BrowserFailed(L(f"BROWSER UPLINK // HTTP {http} {err}", f"BROWSER-MODUS // HTTP {http} {err}"))
             self.w.sleep(15)
-        raise BrowserFailed("BROWSER UPLINK // GAVE UP")
+        raise BrowserFailed(L("BROWSER UPLINK // GAVE UP", "BROWSER-MODUS // AUFGEGEBEN"))
 
     def yt_call(self, path, body):
         for attempt in range(3):
@@ -537,7 +573,7 @@ class BrowserUplink:
                 raise
             except Exception as e:  # noqa: BLE001
                 if attempt == 2:
-                    raise BrowserFailed(f"BROWSER ERROR // {str(e)[:200]}")
+                    raise BrowserFailed(L(f"BROWSER ERROR // {str(e)[:200]}", f"BROWSER-FEHLER // {str(e)[:200]}"))
                 self.open_youtube()
                 continue
             if res.get("fatal") == "NOT_LOGGED_IN":
@@ -545,15 +581,15 @@ class BrowserUplink:
                 continue
             if res.get("fatal"):
                 if attempt == 2:
-                    raise BrowserFailed(f"BROWSER UPLINK // {res['fatal']}")
+                    raise BrowserFailed(L(f"BROWSER UPLINK // {res['fatal']}", f"BROWSER-MODUS // {res['fatal']}"))
                 self.open_youtube()
                 continue
             if res.get("http") == 200 and res.get("json") is not None:
                 return res["json"]
             if attempt == 2:
-                raise BrowserFailed(f"BROWSER UPLINK // HTTP {res.get('http')} ON {path}")
+                raise BrowserFailed(L(f"BROWSER UPLINK // HTTP {res.get('http')} ON {path}", f"BROWSER-MODUS // HTTP {res.get('http')} BEI {path}"))
             time.sleep(5)
-        raise BrowserFailed("BROWSER UPLINK // GAVE UP")
+        raise BrowserFailed(L("BROWSER UPLINK // GAVE UP", "BROWSER-MODUS // AUFGEGEBEN"))
 
     def add_many(self, playlist_id, video_ids):
         """Mehrere Videos in einer Anfrage. True = alle drin, False = abgelehnt (einzeln prüfen)."""
@@ -571,7 +607,7 @@ class BrowserUplink:
                 raise
             except Exception as e:  # noqa: BLE001
                 if attempt == 2:
-                    raise BrowserFailed(f"BROWSER ERROR // {str(e)[:200]}")
+                    raise BrowserFailed(L(f"BROWSER ERROR // {str(e)[:200]}", f"BROWSER-FEHLER // {str(e)[:200]}"))
                 self.w.sleep(10)
                 self.open_youtube()
                 continue
@@ -580,7 +616,7 @@ class BrowserUplink:
                 continue
             if res.get("fatal"):
                 if attempt == 2:
-                    raise BrowserFailed(f"BROWSER UPLINK // {res['fatal']}")
+                    raise BrowserFailed(L(f"BROWSER UPLINK // {res['fatal']}", f"BROWSER-MODUS // {res['fatal']}"))
                 self.open_youtube()
                 continue
             http, j = res.get("http"), res.get("json") or {}
@@ -588,28 +624,28 @@ class BrowserUplink:
                 self.count += len(video_ids)
                 return True
             if http in (401, 403):
-                raise BrowserFailed(f"YOUTUBE REFUSED ACCESS ({http}) // CHECK SIGNED-IN CHANNEL OWNS THE PLAYLIST")
+                raise BrowserFailed(L(f"YOUTUBE REFUSED ACCESS ({http}) // CHECK SIGNED-IN CHANNEL OWNS THE PLAYLIST", f"YOUTUBE VERWEIGERT DEN ZUGRIFF ({http}) // GEHÖRT DIE PLAYLIST DEM ANGEMELDETEN KANAL?"))
             if http == 429:
-                self.w.log("YOUTUBE RATE LIMIT // COOLING DOWN 10 MIN", "warn")
+                self.w.log(L("YOUTUBE RATE LIMIT // COOLING DOWN 10 MIN", "YOUTUBE BREMST // 10 MIN PAUSE"), "warn")
                 self.w.sleep(600, "RATE LIMIT")
                 continue
             if http == 400 or j.get("status") == "STATUS_FAILED":
                 return False
             if attempt == 2:
-                raise BrowserFailed(f"BROWSER UPLINK // HTTP {http}")
+                raise BrowserFailed(L(f"BROWSER UPLINK // HTTP {http}", f"BROWSER-MODUS // HTTP {http}"))
             self.w.sleep(15)
-        raise BrowserFailed("BROWSER UPLINK // GAVE UP")
+        raise BrowserFailed(L("BROWSER UPLINK // GAVE UP", "BROWSER-MODUS // AUFGEGEBEN"))
 
     def create_playlist(self, title, description):
         j = self.yt_call("playlist/create", {"title": title, "privacyStatus": PRIVACY.upper()})
         pid = j.get("playlistId")
         if not pid:
-            raise BrowserFailed("PLAYLIST CREATE FAILED")
+            raise BrowserFailed(L("PLAYLIST CREATE FAILED", "PLAYLIST KONNTE NICHT ANGELEGT WERDEN"))
         try:
             self.yt_call("browse/edit_playlist", {"playlistId": pid, "actions": [
                 {"action": "ACTION_SET_PLAYLIST_DESCRIPTION", "playlistDescription": description}]})
         except BrowserFailed:
-            self.w.log("PLAYLIST DESCRIPTION NOT SET // ADD IT MANUALLY IF NEEDED", "warn")
+            self.w.log(L("PLAYLIST DESCRIPTION NOT SET // ADD IT MANUALLY IF NEEDED", "BESCHREIBUNG NICHT GESETZT // BEI BEDARF VON HAND EINTRAGEN"), "warn")
         return pid
 
     def list_items(self, playlist_id):
@@ -632,7 +668,7 @@ class BrowserUplink:
         j = self.yt_call("browse/edit_playlist", {"playlistId": playlist_id, "actions": [
             {"action": "ACTION_REMOVE_VIDEO", "setVideoId": item["set"], "removedVideoId": item["vid"]}]})
         if j.get("status") != "STATUS_SUCCEEDED":
-            raise BrowserFailed(f"REMOVE FAILED // {j.get('status')}")
+            raise BrowserFailed(L(f"REMOVE FAILED // {j.get('status')}", f"ENTFERNEN FEHLGESCHLAGEN // {j.get('status')}"))
         time.sleep(random.uniform(2, 4))
 
     def close(self):
@@ -698,12 +734,12 @@ class Worker(threading.Thread):
         """Manuelle Pause: hält an, bis RESUME gedrückt wird. Gibt die Pausendauer zurück."""
         t0 = time.time()
         self.emit("pause", {"kind": "manual", "t": t0})
-        self.log("PAUSED BY USER", "warn")
+        self.log(L("PAUSED BY USER", "VON HAND PAUSIERT"), "warn")
         while self.pause_event.is_set():
             if self.stop_event.wait(0.25):
                 raise Stopped()
         self.emit("pause", None)
-        self.log(f"RESUMED // PAUSED FOR {fmt_secs(time.time() - t0)}", "ok")
+        self.log(L(f"RESUMED // PAUSED FOR {fmt_secs(time.time() - t0)}", f"GEHT WEITER // PAUSE WAR {fmt_secs(time.time() - t0)}"), "ok")
         return time.time() - t0
 
     def check(self):
@@ -719,7 +755,7 @@ class Worker(threading.Thread):
         reason = "fertig"
         try:
             if not all(get_creds()):
-                raise RuntimeError("NO API CREDENTIALS // OPEN API SETUP")
+                raise RuntimeError(L("NO API CREDENTIALS // OPEN API SETUP", "KEINE API-ZUGANGSDATEN // API-KNOPF OBEN ÖFFNEN"))
             self.tok = load(TOKEN_FILE, None) or self.device_login()
             if self.resolve_target is not None:
                 reason = "resolved"
@@ -728,14 +764,14 @@ class Worker(threading.Thread):
             if self.check_only:
                 self.manual_check()
                 return
-            for kind, label in (("units", "API QUOTA"), ("search", "SEARCH LIMIT")):
+            for kind, label in (("units", L("API QUOTA", "API-KONTINGENT")), ("search", L("SEARCH LIMIT", "SUCHLIMIT"))):
                 r = quota_blocked(kind)
                 if r:
-                    self.log(f"{label} ALREADY USED UP TODAY // SKIPPING IT UNTIL RESET {fmt_reset(r)}", "warn")
+                    self.log(L(f"{label} ALREADY USED UP TODAY // SKIPPING IT UNTIL RESET {fmt_reset(r)}", f"{label} HEUTE SCHON AUFGEBRAUCHT // WIRD BIS ZUM RESET {fmt_reset(r)} ÜBERSPRUNGEN"), "warn")
             try:
                 self.apply_thumbnails()
             except Exception as e:  # noqa: BLE001
-                self.log(f"THUMBNAILS SKIPPED // {str(e)[:120]}", "warn")
+                self.log(L(f"THUMBNAILS SKIPPED // {str(e)[:120]}", f"THUMBNAILS ÜBERSPRUNGEN // {str(e)[:120]}"), "warn")
             if self.fallback:
                 self.scan_archive()
             queue_ = list(self.years)
@@ -749,7 +785,7 @@ class Worker(threading.Thread):
                 y = queue_.pop(0)
                 self.check()
                 self.emit("current", y)
-                self.log(f"// TARGET {y}", "sep")
+                self.log(L(f"// TARGET {y}", f"// JAHR {y}"), "sep")
                 try:
                     videos = self.collect(y)
                 except QuotaExceeded as e:
@@ -757,8 +793,8 @@ class Worker(threading.Thread):
                     if nxt is None or retry:
                         raise
                     self.scanning = None
-                    why = "DAILY SEARCH LIMIT" if isinstance(e, SearchLimit) else "API QUOTA"
-                    self.log(f"{y} NOT SCANNED YET ({why}) // SKIP AHEAD TO {nxt}", "warn")
+                    why = L("DAILY SEARCH LIMIT", "SUCHLIMIT") if isinstance(e, SearchLimit) else L("API QUOTA", "API-KONTINGENT")
+                    self.log(L(f"{y} NOT SCANNED YET ({why}) // SKIP AHEAD TO {nxt}", f"{y} NOCH NICHT GESUCHT ({why}) // WEITER MIT {nxt}"), "warn")
                     deferred.append(y)
                     queue_.insert(0, nxt)
                     self.emit("select", nxt, None)
@@ -775,30 +811,35 @@ class Worker(threading.Thread):
                 if nxt < datetime.date.today().year and nxt not in queue_ and nxt not in self.years:
                     queue_.append(nxt)
                     self.emit("select", nxt, y)
-                    self.log(f"{y} DONE // AUTO-ADVANCE TO {nxt}", "ok")
-            self.log("ALL TARGETS PROCESSED", "ok")
+                    self.log(L(f"{y} DONE // AUTO-ADVANCE TO {nxt}", f"{y} FERTIG // WEITER MIT {nxt}"), "ok")
+            self.log(L("ALL TARGETS PROCESSED", "ALLE AUSGEWÄHLTEN JAHRE BEARBEITET"), "ok")
         except Stopped:
             reason = "gestoppt"
-            self.log("HALTED BY USER", "warn")
+            self.log(L("HALTED BY USER", "VON HAND GESTOPPT"), "warn")
             self.final_check()
         except SearchLimit:
             reason = "quota"
-            self.log(f"{getattr(self, 'scanning', None) or ''} SCAN PAUSED // DAILY SEARCH LIMIT (~100 SEARCHES) "
-                     f"REACHED // CONTINUES AFTER RESET {quota_reset_local()}".strip(), "warn")
+            yy = getattr(self, 'scanning', None) or ''
+            self.log(L(f"{yy} SCAN PAUSED // DAILY SEARCH LIMIT (~100 SEARCHES) REACHED // "
+                       f"CONTINUES AFTER RESET {quota_reset_local()}",
+                       f"{yy} SUCHE PAUSIERT // SUCHLIMIT (~100 SUCHEN) ERREICHT // "
+                       f"GEHT NACH DEM RESET {quota_reset_local()} WEITER").strip(), "warn")
         except QuotaExceeded:
             reason = "quota"
             y = getattr(self, "scanning", None)
             if y is not None:
-                self.log(f"{y} NOT SCANNED YET // THE VIDEO SCAN NEEDS API QUOTA (THE BROWSER FALLBACK "
-                         f"CAN ONLY ADD) // CONTINUES AFTER RESET {quota_reset_local()}", "warn")
+                self.log(L(f"{y} NOT SCANNED YET // THE VIDEO SCAN NEEDS API QUOTA (THE BROWSER FALLBACK "
+                           f"CAN ONLY ADD) // CONTINUES AFTER RESET {quota_reset_local()}",
+                           f"{y} NOCH NICHT GESUCHT // DIE SUCHE BRAUCHT API-KONTINGENT (DER BROWSER KANN NUR "
+                           f"EINFÜGEN) // GEHT NACH DEM RESET {quota_reset_local()} WEITER"), "warn")
             else:
-                self.log(f"DAILY API QUOTA REACHED // PROGRESS SAVED // RESET {quota_reset_local()}", "warn")
+                self.log(L(f"DAILY API QUOTA REACHED // PROGRESS SAVED // RESET {quota_reset_local()}", f"TAGESKONTINGENT ERREICHT // FORTSCHRITT GESPEICHERT // RESET {quota_reset_local()}"), "warn")
         except BrowserFailed as e:
             reason = "fehler"
-            self.log(f"BROWSER FALLBACK FAILED // {e}", "err")
+            self.log(L(f"BROWSER FALLBACK FAILED // {e}", f"FALLBACK FEHLGESCHLAGEN // {e}"), "err")
         except Exception as e:  # noqa: BLE001
             reason = "fehler"
-            self.log(f"ERROR // {e}", "err")
+            self.log(L(f"ERROR // {e}", f"FEHLER // {e}"), "err")
         finally:
             if self.browser:
                 self.browser.close()
@@ -812,10 +853,10 @@ class Worker(threading.Thread):
                           data={"client_id": get_creds()[0], "scope": SCOPE}, timeout=30)
         if not r.ok:
             self.emit("api", False)
-            raise RuntimeError(f"GOOGLE SIGN-IN REFUSED ({r.status_code}) // CHECK CLIENT ID IN API SETUP")
+            raise RuntimeError(L(f"GOOGLE SIGN-IN REFUSED ({r.status_code}) // CHECK CLIENT ID IN API SETUP", f"GOOGLE HAT DIE ANMELDUNG ABGELEHNT ({r.status_code}) // CLIENT ID PRÜFEN"))
         d = r.json()
         self.emit("code", d["verification_url"], d["user_code"])
-        self.log("WAITING FOR GOOGLE AUTH ...")
+        self.log(L("WAITING FOR GOOGLE AUTH ...", "WARTE AUF GOOGLE-ANMELDUNG ..."))
         interval = d.get("interval", 5)
         while True:
             self.sleep(interval)
@@ -833,11 +874,11 @@ class Worker(threading.Thread):
                 continue
             if err:
                 self.emit("api", False)
-                raise RuntimeError(f"AUTH FAILED: {t}")
+                raise RuntimeError(L(f"AUTH FAILED: {t}", f"ANMELDUNG FEHLGESCHLAGEN: {t}"))
             t["expires_at"] = time.time() + t["expires_in"] - 60
             save(TOKEN_FILE, t)
             self.emit("code_done")
-            self.log("AUTH SUCCESSFUL", "ok")
+            self.log(L("AUTH SUCCESSFUL", "ANMELDUNG ERFOLGREICH"), "ok")
             return t
 
     def refresh(self):
@@ -878,7 +919,7 @@ class Worker(threading.Thread):
                     timeout=30,
                 )
             except requests.RequestException:
-                self.log("NO SIGNAL // RETRY IN 15 S", "warn")
+                self.log(L("NO SIGNAL // RETRY IN 15 S", "KEINE VERBINDUNG // NEUER VERSUCH IN 15 S"), "warn")
                 self.sleep(15, "NO SIGNAL")
                 continue
             if r.ok:
@@ -898,7 +939,7 @@ class Worker(threading.Thread):
             if r.status_code >= 500:
                 if attempt >= retries:
                     break
-                self.log(f"YOUTUBE API HICCUP // {last_fail} // RETRY {attempt + 1}/{retries}", "warn")
+                self.log(L(f"YOUTUBE API HICCUP // {last_fail} // RETRY {attempt + 1}/{retries}", f"YOUTUBE-API-AUSSETZER // {last_fail} // VERSUCH {attempt + 1}/{retries}"), "warn")
                 self.sleep(min(2 ** attempt, 60), "RETRY")
                 continue
             if reasons & {"quotaExceeded", "dailyLimitExceeded"}:
@@ -912,11 +953,13 @@ class Worker(threading.Thread):
                         mark_quota("search")
                         raise SearchLimit()   # anhaltend = Tageslimit der Suche, Warten bringt nichts
                     break
-                self.log(f"YOUTUBE API RATE LIMIT // RETRY {attempt + 1}/{limit}", "warn")
+                self.log(L(f"YOUTUBE API RATE LIMIT // RETRY {attempt + 1}/{limit}", f"YOUTUBE BREMST // VERSUCH {attempt + 1}/{limit}"), "warn")
                 self.sleep(min(2 ** attempt, 60), "RETRY")
                 continue
             raise ApiError(r.status_code, reasons, r.text)
-        raise RuntimeError(f"TOO MANY FAILED ATTEMPTS // {method} {path} // LAST: {locals().get('last_fail', 'NO SIGNAL')}")
+        last = locals().get('last_fail', 'NO SIGNAL')
+        raise RuntimeError(L(f"TOO MANY FAILED ATTEMPTS // {method} {path} // LAST: {last}",
+                             f"ZU VIELE FEHLVERSUCHE // {method} {path} // ZULETZT: {last}"))
 
     def next_ready_year(self, after, queue_):
         """Nächstes Jahr nach `after`, dessen Videoliste schon fertig ist und das noch nicht voll ist."""
@@ -931,17 +974,17 @@ class Worker(threading.Thread):
     # --- Kanal auflösen (Name, ID, Startjahr)
     def resolve_channel(self, target):
         q = {"id": target["id"]} if target.get("id") else {"forHandle": target["handle"]}
-        self.log(f"RESOLVING CHANNEL {target.get('handle') or target.get('id')} ...")
+        self.log(L(f"RESOLVING CHANNEL {target.get('handle') or target.get('id')} ...", f"SUCHE KANAL {target.get('handle') or target.get('id')} ..."))
         items = self.call("GET", "channels", {"part": "snippet", **q}).get("items", [])
         if not items:
-            raise RuntimeError(f"CHANNEL {target.get('handle') or target.get('id')} NOT FOUND")
+            raise RuntimeError(L(f"CHANNEL {target.get('handle') or target.get('id')} NOT FOUND", f"KANAL {target.get('handle') or target.get('id')} NICHT GEFUNDEN"))
         sn = items[0]["snippet"]
         handle = sn.get("customUrl") or target.get("handle") or ""
         if handle and not handle.startswith("@"):
             handle = "@" + handle
         info = {"id": items[0]["id"], "handle": handle, "title": sn.get("title", ""),
                 "first_year": int(sn.get("publishedAt", "2005")[:4])}
-        self.log(f"CHANNEL LOCKED // {info['title']} // SINCE {info['first_year']}", "ok")
+        self.log(L(f"CHANNEL LOCKED // {info['title']} // SINCE {info['first_year']}", f"KANAL ERFASST // {info['title']} // SEIT {info['first_year']}"), "ok")
         return info
 
     # --- Videos eines Jahres sammeln
@@ -963,7 +1006,7 @@ class Worker(threading.Thread):
                         "total": int(items[0]["statistics"]["videoCount"]),
                         "found": {}, "page_token": None, "seen": 0}
                 save(archive_file(), prog)
-            self.log(f"ARCHIVE SCAN // ALL YEARS IN ONE PASS // {prog['seen']}/{prog['total']} ...")
+            self.log(L(f"ARCHIVE SCAN // ALL YEARS IN ONE PASS // {prog['seen']}/{prog['total']} ...", f"ARCHIV-SCAN // ALLE JAHRE IN EINEM DURCHGANG // {prog['seen']}/{prog['total']} ..."))
             pages = 0
             while True:
                 self.check()
@@ -981,13 +1024,15 @@ class Worker(threading.Thread):
                 if pages % 10 == 0 or not prog["page_token"]:
                     save(archive_file(), prog)
                 if pages % 40 == 0:
-                    self.log(f"ARCHIVE SCAN // {prog['seen']}/{prog['total']} UPLOADS")
+                    self.log(L(f"ARCHIVE SCAN // {prog['seen']}/{prog['total']} UPLOADS", f"ARCHIV-SCAN // {prog['seen']}/{prog['total']} UPLOADS"))
                 if not prog["page_token"]:
                     break
         except QuotaExceeded:
             save(archive_file(), prog)
-            self.log(f"ARCHIVE SCAN PAUSED // QUOTA // {prog.get('seen', 0)}/{prog.get('total', '?')} "
-                     f"// CONTINUES AFTER RESET {quota_reset_local()}", "warn")
+            self.log(L(f"ARCHIVE SCAN PAUSED // QUOTA // {prog.get('seen', 0)}/{prog.get('total', '?')} "
+                       f"// CONTINUES AFTER RESET {quota_reset_local()}",
+                       f"ARCHIV-SCAN PAUSIERT // KONTINGENT // {prog.get('seen', 0)}/{prog.get('total', '?')} "
+                       f"// GEHT NACH DEM RESET {quota_reset_local()} WEITER"), "warn")
             return
         by_year = {}
         for vid, pub in prog["found"].items():
@@ -1004,9 +1049,9 @@ class Worker(threading.Thread):
                 self.emit("progress", y)
         prog["done"] = True
         save(archive_file(), prog)
-        self.log(f"ARCHIVE SCAN COMPLETE // {len(written)} YEARS READY FOR THE BROWSER FALLBACK", "ok")
+        self.log(L(f"ARCHIVE SCAN COMPLETE // {len(written)} YEARS READY FOR THE BROWSER FALLBACK", f"ARCHIV-SCAN FERTIG // {len(written)} JAHRE BEREIT FÜR DEN FALLBACK"), "ok")
         if not complete:
-            self.log(f"UPLOAD LIST CAPPED BY YOUTUBE // {oldest} AND OLDER USE THE SLOWER DATE SEARCH", "warn")
+            self.log(L(f"UPLOAD LIST CAPPED BY YOUTUBE // {oldest} AND OLDER USE THE SLOWER DATE SEARCH", f"YOUTUBE KAPPT DIE UPLOAD-LISTE // {oldest} UND ÄLTER ÜBER DIE LANGSAMERE DATUMSSUCHE"), "warn")
 
     def collect(self, year):
         cached = load(videos_file(year), None)
@@ -1020,7 +1065,7 @@ class Worker(threading.Thread):
             q = {"id": CHANNEL["id"]} if CHANNEL.get("id") else {"forHandle": CHANNEL.get("handle", "")}
             items = self.call("GET", "channels", {"part": "contentDetails,statistics", **q}).get("items", [])
             if not items:
-                raise RuntimeError(f"CHANNEL {CHANNEL.get('handle') or CHANNEL.get('id')} NOT FOUND")
+                raise RuntimeError(L(f"CHANNEL {CHANNEL.get('handle') or CHANNEL.get('id')} NOT FOUND", f"KANAL {CHANNEL.get('handle') or CHANNEL.get('id')} NICHT GEFUNDEN"))
             ch = items[0]
             prog = {
                 "channel_id": ch["id"],
@@ -1036,10 +1081,10 @@ class Worker(threading.Thread):
         if prog.get("method") == "uploads" and cut is not None and year <= cut:
             prog["method"] = "search"
             save(cf, prog)
-            self.log(f"{year} IS BEYOND YOUTUBE'S 20,000 UPLOAD LIMIT // DATE SEARCH (~100 UNITS PER 50 VIDEOS)")
+            self.log(L(f"{year} IS BEYOND YOUTUBE'S 20,000 UPLOAD LIMIT // DATE SEARCH (~100 UNITS PER 50 VIDEOS)", f"{year} LIEGT HINTER DER 20.000-UPLOAD-GRENZE // DATUMSSUCHE (~100 EINHEITEN PRO 50 VIDEOS)"))
         prefix = str(year)
         if prog["method"] == "uploads":
-            self.log(f"SCANNING CHANNEL UPLOADS FOR {year} ...")
+            self.log(L(f"SCANNING CHANNEL UPLOADS FOR {year} ...", f"DURCHSUCHE UPLOADS NACH {year} ..."))
             reached_older, pages = False, 0
             while True:
                 params = {"part": "contentDetails", "playlistId": prog["uploads"], "maxResults": 50}
@@ -1060,14 +1105,14 @@ class Worker(threading.Thread):
                 save(cf, prog)
                 pages += 1
                 if pages % 20 == 0:
-                    self.log(f"{prog['seen']}/{prog['total']} UPLOADS SCANNED // "
-                             f"{len(prog['found'])} FROM {year}")
+                    self.log(L(f"{prog['seen']}/{prog['total']} UPLOADS SCANNED // {len(prog['found'])} FROM {year}",
+                               f"{prog['seen']}/{prog['total']} UPLOADS DURCHSUCHT // {len(prog['found'])} AUS {year}"))
                 if reached_older or not prog["page_token"]:
                     break
             if reached_older or prog["seen"] >= prog["total"] - 50:
                 prog["method"] = "done"
             else:
-                self.log("UPLOAD LIST CAPPED // SWITCHING TO DATE SEARCH", "warn")
+                self.log(L("UPLOAD LIST CAPPED // SWITCHING TO DATE SEARCH", "UPLOAD-LISTE GEKAPPT // WECHSEL ZUR DATUMSSUCHE"), "warn")
                 prog["method"] = "search"
             save(cf, prog)
 
@@ -1094,7 +1139,7 @@ class Worker(threading.Thread):
                     if not token:
                         break
                 if count >= 500:
-                    self.log(f"WARNING // {m:02d}/{year} HAS 500+ HITS, MAY BE INCOMPLETE", "warn")
+                    self.log(L(f"WARNING // {m:02d}/{year} HAS 500+ HITS, MAY BE INCOMPLETE", f"WARNUNG // {m:02d}/{year} HAT ÜBER 500 TREFFER, EVTL. UNVOLLSTÄNDIG"), "warn")
                 prog["done_months"].append(m)
                 save(cf, prog)
                 self.log(f"{m:02d}/{year} // {count} VIDEOS")
@@ -1107,7 +1152,7 @@ class Worker(threading.Thread):
         )
         save(videos_file(year), videos)
         self.scanning = None
-        self.log(f"{len(videos)} VIDEOS FROM {year} FOUND", "ok")
+        self.log(L(f"{len(videos)} VIDEOS FROM {year} FOUND", f"{len(videos)} VIDEOS AUS {year} GEFUNDEN"), "ok")
         self.emit("progress", year)
         return videos
 
@@ -1118,21 +1163,23 @@ class Worker(threading.Thread):
             return
         try:
             if load(videos_file(year), None) is None:
-                self.log(f"PRE-SCAN {year} FOR BROWSER FALLBACK")
+                self.log(L(f"PRE-SCAN {year} FOR BROWSER FALLBACK", f"VORAB-SUCHE {year} FÜR DEN FALLBACK"))
             self.collect(year)
             self.ensure_playlist(year)
         except SearchLimit:
             self.scanning = None
-            self.log(f"PRE-SCAN {year} PAUSED // DAILY SEARCH LIMIT (~100 SEARCHES) REACHED // "
-                     f"CONTINUES AFTER RESET {quota_reset_local()}", "warn")
+            self.log(L(f"PRE-SCAN {year} PAUSED // DAILY SEARCH LIMIT (~100 SEARCHES) REACHED // "
+                       f"CONTINUES AFTER RESET {quota_reset_local()}",
+                       f"VORAB-SUCHE {year} PAUSIERT // SUCHLIMIT (~100 SUCHEN) ERREICHT // "
+                       f"GEHT NACH DEM RESET {quota_reset_local()} WEITER"), "warn")
         except QuotaExceeded:
             self.scanning = None
-            self.log(f"PRE-SCAN {year} SKIPPED // QUOTA", "warn")
+            self.log(L(f"PRE-SCAN {year} SKIPPED // QUOTA", f"VORAB-SUCHE {year} ÜBERSPRUNGEN // KONTINGENT"), "warn")
         except (Stopped, BrowserFailed):
             raise
         except Exception as e:  # noqa: BLE001
             self.scanning = None
-            self.log(f"PRE-SCAN {year} INTERRUPTED // {e} // PROGRESS SAVED, CONTINUES NEXT RUN", "warn")
+            self.log(L(f"PRE-SCAN {year} INTERRUPTED // {e} // PROGRESS SAVED, CONTINUES NEXT RUN", f"VORAB-SUCHE {year} UNTERBROCHEN // {e} // GESPEICHERT, GEHT BEIM NÄCHSTEN MAL WEITER"), "warn")
 
     def ensure_playlist(self, year):
         sf = state_file(year)
@@ -1158,11 +1205,11 @@ class Worker(threading.Thread):
                 pid = self.browser.create_playlist(playlist_title(year), playlist_description(year))
             state = {"playlist_id": pid, "next": 0, "skipped": []}
             save(sf, state)
-            self.log(f"PLAYLIST CREATED // {playlist_title(year)}", "ok")
+            self.log(L(f"PLAYLIST CREATED // {playlist_title(year)}", f"PLAYLIST ANGELEGT // {playlist_title(year)}"), "ok")
             try:
                 self.apply_thumbnails(only_year=year)
             except Exception as e:  # noqa: BLE001
-                self.log(f"THUMBNAIL {year} FAILED // {str(e)[:120]}", "err")
+                self.log(L(f"THUMBNAIL {year} FAILED // {str(e)[:120]}", f"THUMBNAIL {year} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
         return state
 
     # --- Playlist-Thumbnails (eigenes Bild pro Jahr)
@@ -1195,7 +1242,7 @@ class Worker(threading.Thread):
                 mark_quota("units")
                 raise QuotaExceeded()
             raise ApiError(r.status_code, reasons, errs.get("message") or r.text)
-        raise RuntimeError("THUMBNAIL UPLOAD FAILED // AUTH")
+        raise RuntimeError(L("THUMBNAIL UPLOAD FAILED // AUTH", "THUMBNAIL-UPLOAD FEHLGESCHLAGEN // ANMELDUNG"))
 
     def apply_thumbnails(self, only_year=None):
         """Wartende Thumbnails hochladen, sobald die Playlist existiert. Nur über die API (50 Einheiten pro Bild)."""
@@ -1208,7 +1255,7 @@ class Worker(threading.Thread):
             if not pid or not path.exists():
                 continue
             if self.mode != "api" or quota_blocked("units"):
-                self.log(f"THUMBNAIL {y} WAITING // NEEDS API QUOTA", "warn")
+                self.log(L(f"THUMBNAIL {y} WAITING // NEEDS API QUOTA", f"THUMBNAIL {y} WARTET // BRAUCHT API-KONTINGENT"), "warn")
                 return
             mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
             try:
@@ -1220,18 +1267,18 @@ class Worker(threading.Thread):
                 else:
                     self.upload_call("POST", {"part": "snippet"}, meta, path.read_bytes(), mime)
                 t.update(status="done", error="")
-                self.log(f"THUMBNAIL {y} UPLOADED", "ok")
+                self.log(L(f"THUMBNAIL {y} UPLOADED", f"THUMBNAIL {y} HOCHGELADEN"), "ok")
             except QuotaExceeded:
-                self.log(f"THUMBNAIL {y} WAITING // NEEDS API QUOTA", "warn")
+                self.log(L(f"THUMBNAIL {y} WAITING // NEEDS API QUOTA", f"THUMBNAIL {y} WARTET // BRAUCHT API-KONTINGENT"), "warn")
                 return
             except (ApiError, RuntimeError, requests.RequestException) as e:
                 t.update(status="error", error=str(e)[:200])
-                self.log(f"THUMBNAIL {y} FAILED // {str(e)[:120]}", "err")
+                self.log(L(f"THUMBNAIL {y} FAILED // {str(e)[:120]}", f"THUMBNAIL {y} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
             info[str(y)] = t
             save(thumbs_file(), info)
 
     def switch_to_browser(self):
-        self.log("DAILY API QUOTA REACHED // SWITCHING TO BROWSER FALLBACK", "warn")
+        self.log(L("DAILY API QUOTA REACHED // SWITCHING TO BROWSER FALLBACK", "TAGESKONTINGENT ERREICHT // WECHSEL ZUM FALLBACK"), "warn")
         self.mode = "browser"
         self.emit("mode", "browser")
         self.browser = BrowserUplink(self)
@@ -1261,7 +1308,7 @@ class Worker(threading.Thread):
         if self.browser.add_many(playlist_id, video_ids):
             return [True] * len(video_ids)
         # Abgelehnt: prüfen, was trotzdem drin ist, den Rest einzeln versuchen (verhindert Duplikate)
-        self.log(f"BATCH OF {len(video_ids)} REJECTED // CHECKING SINGLY", "warn")
+        self.log(L(f"BATCH OF {len(video_ids)} REJECTED // CHECKING SINGLY", f"PAKET MIT {len(video_ids)} ABGELEHNT // PRÜFE EINZELN"), "warn")
         present = {it["vid"] for it in self.browser.list_items(playlist_id)}
         result = []
         for v in video_ids:
@@ -1289,7 +1336,7 @@ class Worker(threading.Thread):
             pause, label = None, None
         if pause:
             resume = (datetime.datetime.now() + datetime.timedelta(seconds=pause)).strftime("%H:%M:%S")
-            self.log(f"BROWSER UPLINK // {count} ADDED // {label} {fmt_secs(pause)}, RESUME {resume}")
+            self.log(L(f"BROWSER UPLINK // {count} ADDED // {label} {fmt_secs(pause)}, RESUME {resume}", f"BROWSER-MODUS // {count} EINGEFÜGT // {wait_label(label)} {fmt_secs(pause)}, WEITER UM {resume}"))
             self.sleep(pause, label)
         else:
             self.sleep(random.uniform(*BATCH_PAUSE), "NEXT BATCH")
@@ -1336,7 +1383,7 @@ class Worker(threading.Thread):
         if not pid:
             return state
         self.emit("checking", year, True)
-        self.log(f"PLAYLIST CHECK {year} // {why} ...")
+        self.log(L(f"PLAYLIST CHECK {year} // {why} ...", f"PLAYLIST-PRÜFUNG {year} // {why} ..."))
         try:
             removed = 0
             seen = set()
@@ -1352,7 +1399,7 @@ class Worker(threading.Thread):
                     for it in dups:
                         self.remove_item(pid, it)
                         removed += 1
-                        self.log(f"DUPLICATE REMOVED // {it['vid']}", "warn")
+                        self.log(L(f"DUPLICATE REMOVED // {it['vid']}", f"DOPPELTES VIDEO ENTFERNT // {it['vid']}"), "warn")
                     break
                 except RelistNeeded:
                     continue
@@ -1365,11 +1412,11 @@ class Worker(threading.Thread):
                 state["next"] = n
                 save(state_file(year), state)
                 self.emit("progress", year)
-                self.log(f"RESYNC {year} // {moved} VIDEO(S) WERE ALREADY IN THE PLAYLIST", "warn")
-            msg = f"{removed} DUPLICATE(S) REMOVED" if removed else "NO DUPLICATES"
-            self.log(f"PLAYLIST CHECK {year} // {len(seen)} VIDEOS // {msg}", "ok")
+                self.log(L(f"RESYNC {year} // {moved} VIDEO(S) WERE ALREADY IN THE PLAYLIST", f"ABGLEICH {year} // {moved} VIDEO(S) WAREN SCHON IN DER PLAYLIST"), "warn")
+            msg = L(f"{removed} DUPLICATE(S) REMOVED", f"{removed} DOPPELTE ENTFERNT") if removed else L("NO DUPLICATES", "KEINE DOPPELTEN")
+            self.log(L(f"PLAYLIST CHECK {year} // {len(seen)} VIDEOS // {msg}", f"PLAYLIST-PRÜFUNG {year} // {len(seen)} VIDEOS // {msg}"), "ok")
         except QuotaExceeded:
-            self.log(f"PLAYLIST CHECK {year} SKIPPED // QUOTA", "warn")
+            self.log(L(f"PLAYLIST CHECK {year} SKIPPED // QUOTA", f"PLAYLIST-PRÜFUNG {year} ÜBERSPRUNGEN // KONTINGENT"), "warn")
         finally:
             self.emit("checking", year, False)
         return state
@@ -1384,9 +1431,9 @@ class Worker(threading.Thread):
             return
         self.ignore_stop = True
         try:
-            self.verify(year, videos, state, "AFTER STOP")
+            self.verify(year, videos, state, L("AFTER STOP", "NACH STOPP"))
         except Exception as e:  # noqa: BLE001
-            self.log(f"PLAYLIST CHECK FAILED // {e}", "err")
+            self.log(L(f"PLAYLIST CHECK FAILED // {e}", f"PLAYLIST-PRÜFUNG FEHLGESCHLAGEN // {e}"), "err")
         finally:
             self.ignore_stop = False
 
@@ -1396,11 +1443,11 @@ class Worker(threading.Thread):
             videos = load(videos_file(y), None)
             state = load(state_file(y), {})
             if videos is None or not state.get("playlist_id"):
-                self.log(f"{y} // NO PLAYLIST YET, NOTHING TO CHECK")
+                self.log(L(f"{y} // NO PLAYLIST YET, NOTHING TO CHECK", f"{y} // NOCH KEINE PLAYLIST, NICHTS ZU PRÜFEN"))
                 continue
             self.emit("current", y)
-            self.verify(y, videos, state, "FULL SCAN")
-        self.log("PLAYLIST CHECK COMPLETE", "ok")
+            self.verify(y, videos, state, L("FULL SCAN", "KOMPLETT"))
+        self.log(L("PLAYLIST CHECK COMPLETE", "PLAYLIST-PRÜFUNG FERTIG"), "ok")
 
     def fill(self, year, videos):
         self.scanning = None
@@ -1408,14 +1455,14 @@ class Worker(threading.Thread):
         state = self.ensure_playlist(year)
         self.cur = (year, videos)
         if 0 < state.get("next", 0) < len(videos):
-            state = self.verify(year, videos, state, "SYNC ON START")
+            state = self.verify(year, videos, state, L("SYNC ON START", "ABGLEICH BEIM START"))
         i, added = state["next"], 0
         if i >= len(videos):
-            self.log(f"{year} ALREADY COMPLETE")
+            self.log(L(f"{year} ALREADY COMPLETE", f"{year} IST SCHON FERTIG"))
             return True
         while i < len(videos):
             if self.limit and added >= self.limit:
-                self.log(f"{year} // RUN LIMIT OF {self.limit} VIDEOS REACHED")
+                self.log(L(f"{year} // RUN LIMIT OF {self.limit} VIDEOS REACHED", f"{year} // LIMIT VON {self.limit} VIDEOS FÜR DIESEN LAUF ERREICHT"))
                 return False
             self.check()
             if self.mode == "browser":
@@ -1440,12 +1487,12 @@ class Worker(threading.Thread):
             self._since_check = since_check
             if since_check >= 100 and i < len(videos):
                 self._since_check = 0
-                state = self.verify(year, videos, state, "INTERVAL")
+                state = self.verify(year, videos, state, L("INTERVAL", "ZWISCHENPRÜFUNG"))
                 i = state["next"]
             if i < len(videos):
                 self.pace()
-        state = self.verify(year, videos, state, "FINAL FULL SCAN")
-        self.log(f"{year} COMPLETE // https://www.youtube.com/playlist?list={state['playlist_id']}", "ok")
+        state = self.verify(year, videos, state, L("FINAL FULL SCAN", "ABSCHLUSSPRÜFUNG"))
+        self.log(L(f"{year} COMPLETE // https://www.youtube.com/playlist?list={state['playlist_id']}", f"{year} FERTIG // https://www.youtube.com/playlist?list={state['playlist_id']}"), "ok")
         return True
 
 
@@ -1718,8 +1765,15 @@ def pause_label(p, now):
     if not p:
         return ""
     if p["kind"] == "manual":
-        return f"PAUSED // {fmt_secs(now - p['t'])}"
-    return f"{p['label']} // {fmt_secs(p['t'] - now)}"
+        return f"{L('PAUSED', 'PAUSIERT')} // {fmt_secs(now - p['t'])}"
+    return f"{wait_label(p['label'])} // {fmt_secs(p['t'] - now)}"
+
+
+def wait_label(label):
+    """Interne Wartezeit-Namen in die Anzeigesprache übersetzen."""
+    return L(label, {"NEXT BATCH": "NÄCHSTES PAKET", "COOLDOWN": "KURZE PAUSE", "BREAK": "LANGE PAUSE",
+                     "RATE LIMIT": "YOUTUBE BREMST", "RETRY": "NEUER VERSUCH",
+                     "NO SIGNAL": "KEINE VERBINDUNG"}.get(label, label))
 
 
 class YearRow(Panel):
@@ -1737,18 +1791,19 @@ class YearRow(Panel):
     def status_text(self):
         code, run = self.info["code"], self.running
         if self.checking:
-            return "CHECKING PLAYLIST...", True
+            return L("CHECKING PLAYLIST...", "PLAYLIST WIRD GEPRÜFT..."), True
         if run and self.pause:
             return pause_label(self.pause, time.time()), False
         if code in ("none", "scanning"):
-            return ("SCANNING..." if run else "SCAN PAUSED" if code == "scanning" else "NOT SCANNED"), run
+            return (L("SCANNING...", "SUCHE LÄUFT...") if run else L("SCAN PAUSED", "SUCHE PAUSIERT")
+                    if code == "scanning" else L("NOT SCANNED", "NICHT GESUCHT")), run
         if code == "done":
-            return "COMPLETE", False
+            return L("COMPLETE", "FERTIG"), False
         if run:
-            return "UPLINK ACTIVE", False
+            return L("UPLINK ACTIVE", "WIRD GEFÜLLT"), False
         if code == "progress":
-            return "IN PROGRESS", False
-        return f"READY // {self.info['total']} VIDEOS", False
+            return L("IN PROGRESS", "IN ARBEIT"), False
+        return f"{L('READY', 'BEREIT')} // {self.info['total']} VIDEOS", False
 
     def draw_content(self, x0, y0, x1, y1, c, role):
         on = self.selected or self.running
@@ -1911,11 +1966,11 @@ class ToggleCard(Panel):
         fn, fs = F("ui", 14 if self.compact else 15), F("mono", 10 if self.compact else 11)
         self.create_text(nx, y0 + h * 0.34, text=fit_text(self.name, fn, maxw), anchor="w",
                          font=fn, fill=TEXT if on else TEXT_DIM)
-        sub = self.sub if self.available else "UNAVAILABLE"
+        sub = self.sub if self.available else L("UNAVAILABLE", "NICHT VERFÜGBAR")
         self.create_text(nx, y0 + h * 0.66, text=fit_text(sub, fs, maxw), anchor="w",
                          font=fs, fill=role if on else TEXT_MUTED)
         mid = (y0 + y1 - c / 2) / 2
-        tag = ("ON" if self.value else "OFF") if self.available else "--"
+        tag = (L("ON", "AN") if self.value else L("OFF", "AUS")) if self.available else "--"
         self.create_text((tx + x1) / 2, mid, text=tag, font=F("mono", 13),
                          fill=role if on else TEXT_MUTED)
 
@@ -1938,10 +1993,11 @@ class LimitPanel(Panel):
             xx = ix + (8 + k * 5) * u
             self.create_rectangle(xx, top + (24 - hh) * u, xx + 3 * u, top + 24 * u, fill=col, outline="")
         nx = ix + isz + px(12)
-        self.create_text(nx, y0 + h * 0.34, text="BATCH LIMIT", anchor="w", font=F("ui", 15), fill=TEXT_DIM)
-        self.create_text(nx, y0 + h * 0.66, text="VIDEOS / YEAR / RUN", anchor="w", font=F("mono", 11),
+        self.create_text(nx, y0 + h * 0.34, text=L("BATCH LIMIT", "LIMIT PRO LAUF"), anchor="w", font=F("ui", 15),
+                         fill=TEXT_DIM)
+        self.create_text(nx, y0 + h * 0.66, text=L("VIDEOS / YEAR / RUN", "VIDEOS / JAHR / LAUF"), anchor="w", font=F("mono", 11),
                          fill=TEXT_MUTED)
-        val = "UNLIMITED" if self.value == 0 else str(self.value)
+        val = L("UNLIMITED", "UNBEGRENZT") if self.value == 0 else str(self.value)
         self.create_text(x1 - px(18), y0 + h * 0.45, text=val, anchor="e", font=F("mono", 14), fill=CYAN)
 
 
@@ -1954,8 +2010,11 @@ class StatusChip(Panel):
     def show(self, text, role, state, blinking=False):
         same = (role, state, blinking) == (self.role, self.st, self.blinking) and self.find_withtag("ctext")
         self.text, self.role, self.st, self.blinking = text, role, state, blinking
-        if same:
-            self.itemconfigure("ctext", text=text)   # nur Text tauschen, kein Neuzeichnen
+        prev = getattr(self, "_last_text", "")
+        self._last_text = text
+        self._prev_len = len(prev)
+        if same and len(text) == self._prev_len:
+            self.itemconfigure("ctext", text=text)   # nur Text tauschen (z. B. Countdown), kein Neuzeichnen
         else:
             self.redraw()
 
@@ -1963,9 +2022,18 @@ class StatusChip(Panel):
         on = self.st in ("active", "running", "frame")
         col = role if on else TEXT_MUTED
         fl = self.create_text(x0 + px(12), (y0 + y1) / 2, text="SYS //", anchor="w",
-                              font=F("mono", 10, False), fill=FLUFF)
+                              font=F("mono", 10, False), fill=FLUFF, tags="fluff")
         left = self.bbox(fl)[2] + px(8)
-        item = self.create_text((left + x1 - c) / 2, (y0 + y1) / 2, text=self.text, font=F("mono", 12),
+        avail = x1 - c - left - px(4)
+        if tkfont.Font(font=F("mono", 12)).measure(self.text) > avail:
+            self.delete("fluff")             # lange Texte: "SYS //" weglassen, Platz für den Text
+            left = x0 + px(8)
+            avail = x1 - c - left - px(4)
+        size = 12
+        while size > 9 and tkfont.Font(font=F("mono", size)).measure(self.text) > avail:
+            size -= 1
+        self.fit_size = size
+        item = self.create_text((left + x1 - c) / 2, (y0 + y1) / 2, text=self.text, font=F("mono", size),
                                 fill=col, tags="ctext")
         if self.blinking:
             self.blink = (item, col)
@@ -2011,39 +2079,39 @@ class ChannelCard(Panel):
         tw = px(96)
         tx = x1 - tw
         pts = [(tx, y0 + 1), (x1 - 1, y0 + 1), (x1 - 1, y1 - c), (x1 - c, y1 - 1), (tx, y1 - 1)]
-        gradient(self, pts, tx, y0, x1, y1, CYAN, 0.30 if self.edit_hover else 0.16, steps=6)
-        self.create_polygon(flat(pts), fill="", outline=mix(CYAN, BG, 1.0 if self.edit_hover else 0.75),
+        gradient(self, pts, tx, y0, x1, y1, YELLOW, 0.30 if self.edit_hover else 0.16, steps=6)
+        self.create_polygon(flat(pts), fill="", outline=mix(YELLOW, BG, 1.0 if self.edit_hover else 0.75),
                             tags="edit")
         mid = (y0 + y1 - c / 2) / 2
-        self.create_text((tx + x1) / 2, mid, text="EDIT ›", font=F("mono", 14),
-                         fill=CYAN_HOT if self.edit_hover else CYAN, tags="edit")
+        self.create_text((tx + x1) / 2, mid, text=L("EDIT ›", "ÄNDERN ›"), font=F("mono", 14),
+                         fill=mix("#ffffff", YELLOW, 0.3) if self.edit_hover else YELLOW, tags="edit")
         self.create_rectangle(tx, y0 + 1, x1 - 1, y1 - 1, fill="", outline="", tags=("edit", "edithit"))
         self.tag_bind("edit", "<Enter>", lambda e: self._edit_hover(True))
         self.tag_bind("edit", "<Leave>", lambda e: self._edit_hover(False))
         self.tag_bind("edit", "<ButtonRelease-1>", lambda e: self.on_edit())
         # Texte
         nx = ix + isz + px(16)
-        self.create_text(nx, y0 + h * 0.22, text="TARGET LOCKED" if has else "NO TARGET", anchor="w",
+        self.create_text(nx, y0 + h * 0.22, text=L("TARGET LOCKED", "ZIEL ERFASST") if has else L("NO TARGET", "KEIN ZIEL"), anchor="w",
                          font=F("mono", 10), fill=RED)
         if tx - nx > px(260):
             self.create_text(tx - px(12), y0 + h * 0.22, text="CH.ID " + (CHANNEL.get("id", "")[-6:] or "------"),
                              anchor="e", font=F("mono", 10, False), fill=FLUFF)
         maxw = tx - nx - px(12)
-        name = channel_name().upper() if has else "SET A YOUTUBE CHANNEL"
+        name = channel_name().upper() if has else L("SET A YOUTUBE CHANNEL", "YOUTUBE-KANAL WÄHLEN")
         self.create_text(nx, y0 + h * 0.50, text=fit_text(name, F("ui", 21), maxw), anchor="w",
                          font=F("ui", 21), fill=TEXT if has else TEXT_DIM)
         if self.resolving:
-            sub = "RESOLVING..."
+            sub = L("RESOLVING...", "WIRD GESUCHT...")
         elif has:
             handle = (CHANNEL.get("handle") or CHANNEL.get("id", "")).upper()
             options = [handle]
             if YEARS:
-                options = [f"{handle} // ARCHIVE {YEARS[0]}-{YEARS[-1]} // {len(YEARS)} YEARS",
+                options = [f"{handle} // {L('ARCHIVE', 'ARCHIV')} {YEARS[0]}-{YEARS[-1]} // {len(YEARS)} {L('YEARS', 'JAHRE')}",
                            f"{handle} // {YEARS[0]}-{YEARS[-1]}", handle]
             f11 = tkfont.Font(font=F("mono", 11))
             sub = next((o for o in options if f11.measure(o) <= maxw), options[-1])
         else:
-            sub = "@HANDLE, URL OR CHANNEL ID"
+            sub = L("@HANDLE, URL OR CHANNEL ID", "@HANDLE, LINK ODER KANAL-ID")
         sub = fit_text(sub, F("mono", 11), maxw)
         item = self.create_text(nx, y0 + h * 0.78, text=sub, anchor="w", font=F("mono", 11),
                                 fill=mix(RED, TEXT, 0.35) if has else TEXT_MUTED)
@@ -2090,8 +2158,8 @@ class NCDialog(tk.Toplevel):
                      anchor="w", wraplength=px(520)).pack(fill="x", padx=pad, pady=(0, px(10)))
         row = tk.Frame(self, bg=BG)
         row.pack(fill="x", padx=pad, pady=(0, pad))
-        CutButton(row, "SAVE", self.save, width=110).pack(side="left")
-        CutButton(row, "CANCEL", self.destroy, width=110).pack(side="left", padx=(px(8), 0))
+        CutButton(row, L("SAVE", "SPEICHERN"), self.save, width=120).pack(side="left")
+        CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
         self.bind("<Return>", lambda e: self.save())
         self.bind("<Escape>", lambda e: self.destroy())
         style_titlebar(self)
@@ -2115,7 +2183,7 @@ class SettingsDialog(tk.Toplevel):
     def __init__(self, app):
         super().__init__(app, bg=BG)
         self.app = app
-        self.title("Playlist Settings")
+        self.title(L("Settings", "Einstellungen"))
         self.transient(app)
         self.minsize(px(640), px(560))
         self.geometry(f"{px(720)}x{px(800)}")
@@ -2127,35 +2195,51 @@ class SettingsDialog(tk.Toplevel):
 
         row = tk.Frame(self, bg=BG)
         row.pack(side="bottom", fill="x", padx=pad, pady=pad)
-        CutButton(row, "SAVE", self.save, width=110).pack(side="left")
-        CutButton(row, "CANCEL", self.destroy, width=110).pack(side="left", padx=(px(8), 0))
-        CutButton(row, "RESET TO DEFAULT", self.reset, width=170).pack(side="right")
+        CutButton(row, L("SAVE", "SPEICHERN"), self.save, width=120).pack(side="left")
+        CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
+        CutButton(row, L("RESET TO DEFAULT", "STANDARDWERTE"), self.reset, width=170).pack(side="right")
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
 
-        Section(body, "PLAYLIST SETTINGS", "TEMPLATE // VISIBILITY").pack(fill="x", pady=(0, px(10)))
-        self.lbl(body, "TITLE")
-        self.title_var = tk.StringVar(value=st.get("playlist_template") or DEFAULT_PLAYLIST_TEMPLATE)
+        Section(body, L("LANGUAGE", "SPRACHE"), "UI // HELP // LOG").pack(fill="x", pady=(0, px(6)))
+        lang_row = tk.Frame(body, bg=BG)
+        lang_row.pack(fill="x", pady=(0, px(12)))
+        self.language = LANG
+        self.lang_btns = {}
+        for code, name in LANGUAGES.items():
+            b = CutButton(lang_row, name, lambda c=code: self.set_language(c), width=130)
+            b.pack(side="left", padx=(0, px(6)))
+            self.lang_btns[code] = b
+        Tooltip(lang_row, L("Language of the interface, tooltips, help and log. Chronolist restarts when you save.",
+                            "Sprache der Oberfläche, Tooltips, Hilfe und Protokoll. Chronolist startet beim Speichern neu."))
+        self.set_language(LANG)
+        Section(body, L("PLAYLIST SETTINGS", "PLAYLIST-EINSTELLUNGEN"), "TEMPLATE // VISIBILITY").pack(fill="x", pady=(0, px(10)))
+        self.lbl(body, L("TITLE", "TITEL"))
+        self.title_var = tk.StringVar(value=st.get("playlist_template") or default_playlist_template())
         self.title_entry = self.entry(body, self.title_var)
         self.title_entry.bind("<FocusIn>", lambda e: setattr(self, "focus_field", self.title_entry))
         self.focus_field = self.title_entry
 
         chips = tk.Frame(body, bg=BG)
         chips.pack(fill="x", pady=(px(2), px(6)))
-        tk.Label(chips, text="INSERT:", bg=BG, fg=TEXT_MUTED, font=F("mono", 10)).pack(side="left", padx=(0, px(6)))
-        tips = {"{channel}": "Name des Kanals", "{handle}": "@Handle des Kanals", "{year}": "Jahr der Playlist",
-                "{count}": "Anzahl der Videos in diesem Jahr"}
+        tk.Label(chips, text=L("INSERT:", "EINFÜGEN:"), bg=BG, fg=TEXT_MUTED, font=F("mono", 10)).pack(side="left", padx=(0, px(6)))
+        tips = {"{channel}": L("channel name", "Name des Kanals"), "{handle}": L("@handle of the channel", "@Handle des Kanals"),
+                "{year}": L("year of the playlist", "Jahr der Playlist"),
+                "{count}": L("number of videos in that year", "Anzahl der Videos in diesem Jahr")}
+        chip_names = {"{channel}": L("CHANNEL", "KANAL"), "{handle}": "HANDLE", "{year}": L("YEAR", "JAHR"),
+                      "{count}": L("COUNT", "ANZAHL")}
         for label, tok in self.CHIPS:
+            label = chip_names[tok]
             b = CutButton(chips, label, lambda t=tok: self.insert(t))
             b.pack(side="left", padx=(0, px(6)))
-            Tooltip(b, f"Fügt {tok} ein: {tips[tok]}.")
+            Tooltip(b, L(f"Inserts {tok}: {tips[tok]}.", f"Fügt {tok} ein: {tips[tok]}."))
 
-        self.lbl(body, "DESCRIPTION (OPTIONAL, LEAVE EMPTY FOR NONE)")
+        self.lbl(body, L("DESCRIPTION (OPTIONAL, LEAVE EMPTY FOR NONE)", "BESCHREIBUNG (OPTIONAL, LEER = KEINE)"))
         self.desc = tk.Text(body, height=4, wrap="word", bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
                             font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
                             highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3),
                             padx=px(6), pady=px(6))
-        self.desc.insert("1.0", st.get("description_template", DEFAULT_DESCRIPTION_TEMPLATE))
+        self.desc.insert("1.0", st.get("description_template", default_description_template()))
         self.desc.pack(fill="x", pady=(px(4), px(8)))
         self.desc.bind("<FocusIn>", lambda e: setattr(self, "focus_field", self.desc))
         self.desc.bind("<KeyRelease>", lambda e: self.preview())
@@ -2165,26 +2249,30 @@ class SettingsDialog(tk.Toplevel):
                              wraplength=px(640))
         self.prev.pack(fill="x", pady=(0, px(8)))
 
-        self.lbl(body, "VISIBILITY")
+        self.lbl(body, L("VISIBILITY", "SICHTBARKEIT"))
         vis = tk.Frame(body, bg=BG)
         vis.pack(fill="x", pady=(px(4), px(4)))
         self.privacy = st.get("privacy", "public")
         self.vis_btns = {}
         for opt in PRIVACY_OPTIONS:
-            b = CutButton(vis, opt.upper(), lambda o=opt: self.set_privacy(o), width=110)
+            b = CutButton(vis, privacy_label(opt), lambda o=opt: self.set_privacy(o), width=150)
             b.pack(side="left", padx=(0, px(6)))
             self.vis_btns[opt] = b
-        Tooltip(self.vis_btns["public"], "Jeder kann die Playlist finden und ansehen.")
-        Tooltip(self.vis_btns["unlisted"], "Nur Leute mit dem Link können die Playlist sehen.")
-        Tooltip(self.vis_btns["private"], "Nur du kannst die Playlist sehen.")
+        Tooltip(self.vis_btns["public"], L("Anyone can find and watch the playlist.", "Jeder kann die Playlist finden und ansehen."))
+        Tooltip(self.vis_btns["unlisted"], L("Only people with the link can see the playlist.", "Nur Leute mit dem Link können die Playlist sehen."))
+        Tooltip(self.vis_btns["private"], L("Only you can see the playlist.", "Nur du kannst die Playlist sehen."))
         self.set_privacy(self.privacy)
-        tk.Label(body, text="TITLE, DESCRIPTION AND VISIBILITY APPLY TO PLAYLISTS CREATED FROM NOW ON.",
+        tk.Label(body, text=L("TITLE, DESCRIPTION AND VISIBILITY APPLY TO PLAYLISTS CREATED FROM NOW ON.",
+                              "TITEL, BESCHREIBUNG UND SICHTBARKEIT GELTEN FÜR PLAYLISTS, DIE AB JETZT ANGELEGT WERDEN."),
                  bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w").pack(fill="x", pady=(px(2), px(12)))
 
-        Section(body, "THUMBNAILS (OPTIONAL, EXPERIMENTAL)", "JPG/PNG // MAX 2 MB").pack(fill="x", pady=(0, px(6)))
-        tk.Label(body, text="PICK AN IMAGE PER YEAR, ALSO FOR PLAYLISTS THAT DON'T EXIST YET. IT IS UPLOADED VIA THE "
-                            "API (50 UNITS) AS SOON AS THE PLAYLIST EXISTS AND QUOTA IS AVAILABLE. "
-                            "RECOMMENDED: 1280×720.",
+        Section(body, L("THUMBNAILS (OPTIONAL, EXPERIMENTAL)", "THUMBNAILS (OPTIONAL, EXPERIMENTELL)"), "JPG/PNG // MAX 2 MB").pack(fill="x", pady=(0, px(6)))
+        tk.Label(body, text=L("PICK AN IMAGE PER YEAR, ALSO FOR PLAYLISTS THAT DON'T EXIST YET. IT IS UPLOADED VIA "
+                              "THE API (50 UNITS) AS SOON AS THE PLAYLIST EXISTS AND QUOTA IS AVAILABLE. "
+                              "RECOMMENDED: 1280×720.",
+                              "WÄHLE PRO JAHR EIN BILD, AUCH FÜR PLAYLISTS, DIE ES NOCH NICHT GIBT. ES WIRD ÜBER DIE "
+                              "API HOCHGELADEN (50 EINHEITEN), SOBALD DIE PLAYLIST EXISTIERT UND KONTINGENT DA IST. "
+                              "EMPFOHLEN: 1280×720."),
                  bg=BG, fg=TEXT_MUTED, font=F("mono", 10, False), justify="left", anchor="w",
                  wraplength=px(660)).pack(fill="x", pady=(0, px(6)))
         wrap = tk.Frame(body, bg=BG)
@@ -2224,22 +2312,28 @@ class SettingsDialog(tk.Toplevel):
         w.focus_set()
         self.preview()
 
+    def set_language(self, code):
+        self.language = code
+        for c, b in self.lang_btns.items():
+            b.set_color(GREEN if c == code else YELLOW)
+            b.set_text(("● " if c == code else "") + LANGUAGES[c])
+
     def set_privacy(self, opt):
         self.privacy = opt
         for o, b in self.vis_btns.items():
-            b.set_color(GREEN if o == opt else CYAN)
-            b.set_text(("● " if o == opt else "") + o.upper())
+            b.set_color(GREEN if o == opt else YELLOW)
+            b.set_text(("● " if o == opt else "") + privacy_label(o))
 
     def preview(self):
         t, d = self.title_var.get(), self.desc.get("1.0", "end").strip()
         ok_t, ok_d = _template_ok(t), _template_ok(d) if d else True
         y = self.sample_year
-        lines = [f"PREVIEW {y}: " + (fill_template(t, y) if ok_t else "INVALID PLACEHOLDER IN TITLE")]
+        lines = [f"{L('PREVIEW', 'VORSCHAU')} {y}: " + (fill_template(t, y) if ok_t else L("INVALID PLACEHOLDER IN TITLE", "UNGÜLTIGER PLATZHALTER IM TITEL"))]
         if d:
-            short = fill_template(d, y) if ok_d else "INVALID PLACEHOLDER IN DESCRIPTION"
-            lines.append("DESCRIPTION: " + (short if len(short) < 140 else short[:137] + "..."))
+            short = fill_template(d, y) if ok_d else L("INVALID PLACEHOLDER IN DESCRIPTION", "UNGÜLTIGER PLATZHALTER IN DER BESCHREIBUNG")
+            lines.append(L("DESCRIPTION: ", "BESCHREIBUNG: ") + (short if len(short) < 140 else short[:137] + "..."))
         else:
-            lines.append("DESCRIPTION: (NONE)")
+            lines.append(L("DESCRIPTION: (NONE)", "BESCHREIBUNG: (KEINE)"))
         self.prev.configure(text="\n".join(lines), fg=TEXT if ok_t and ok_d else RED)
         return ok_t and ok_d
 
@@ -2258,9 +2352,9 @@ class SettingsDialog(tk.Toplevel):
         tk.Label(fr, text=str(y), bg=BG, fg=TEXT, font=F("ui", 14), width=6, anchor="w").pack(side="left")
         info = tk.Label(fr, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w")
         info.pack(side="left", fill="x", expand=True)
-        rm = CutButton(fr, "REMOVE", lambda: self.remove_thumb(y), width=90)
+        rm = CutButton(fr, L("REMOVE", "ENTFERNEN"), lambda: self.remove_thumb(y), width=110)
         rm.pack(side="right")
-        CutButton(fr, "CHOOSE…", lambda: self.choose_thumb(y), width=100).pack(side="right", padx=(0, px(6)))
+        CutButton(fr, L("CHOOSE…", "AUSWÄHLEN…"), lambda: self.choose_thumb(y), width=120).pack(side="right", padx=(0, px(6)))
         self.thumb_area.wheel(fr)
         self.thumb_rows[y] = (info, rm)
         self.refresh_thumb_row(y)
@@ -2269,7 +2363,10 @@ class SettingsDialog(tk.Toplevel):
         info, rm = self.thumb_rows[y]
         status, name = self.thumb_state(y)
         col = {"UPLOADED": GREEN, "QUEUED": YELLOW, "NEW": CYAN, "ERROR": RED, "REMOVE": RED}.get(status, TEXT_MUTED)
-        txt = f"{status}" + (f" // {name}" if name else "")
+        shown = {"NEW": L("NEW", "NEU"), "REMOVE": L("REMOVE", "WIRD ENTFERNT"), "NONE": L("NONE", "KEINS"),
+                 "QUEUED": L("QUEUED", "WARTET"), "UPLOADED": L("UPLOADED", "HOCHGELADEN"),
+                 "ERROR": L("ERROR", "FEHLER")}.get(status, status)
+        txt = f"{shown}" + (f" // {name}" if name else "")
         t = self.thumbs.get(str(y)) or {}
         if status == "ERROR" and t.get("error"):
             txt += f" // {t['error'][:60]}"
@@ -2278,15 +2375,16 @@ class SettingsDialog(tk.Toplevel):
 
     def choose_thumb(self, y):
         f = filedialog.askopenfilename(parent=self, title=f"Thumbnail {y}",
-                                       filetypes=[("Images", "*.jpg *.jpeg *.png"), ("All files", "*.*")])
+                                       filetypes=[(L("Images", "Bilder"), "*.jpg *.jpeg *.png"),
+                                                  (L("All files", "Alle Dateien"), "*.*")])
         if not f:
             return
         p_ = Path(f)
         if p_.suffix.lower() not in (".jpg", ".jpeg", ".png"):
-            self.app.write_log(f"THUMBNAIL {y} // ONLY JPG OR PNG", "err")
+            self.app.write_log(L(f"THUMBNAIL {y} // ONLY JPG OR PNG", f"THUMBNAIL {y} // NUR JPG ODER PNG"), "err")
             return
         if p_.stat().st_size > THUMB_MAX_BYTES:
-            self.app.write_log(f"THUMBNAIL {y} // FILE TOO LARGE (MAX 2 MB)", "err")
+            self.app.write_log(L(f"THUMBNAIL {y} // FILE TOO LARGE (MAX 2 MB)", f"THUMBNAIL {y} // DATEI ZU GROSS (MAX 2 MB)"), "err")
             return
         self.pending[y] = str(p_)
         self.refresh_thumb_row(y)
@@ -2296,21 +2394,30 @@ class SettingsDialog(tk.Toplevel):
         self.refresh_thumb_row(y)
 
     def reset(self):
-        self.title_var.set(DEFAULT_PLAYLIST_TEMPLATE)
+        self.title_var.set(default_playlist_template())
         self.desc.delete("1.0", "end")
-        self.desc.insert("1.0", DEFAULT_DESCRIPTION_TEMPLATE)
+        self.desc.insert("1.0", default_description_template())
         self.set_privacy("public")
         self.preview()
 
     def save(self):
         if not self.preview():
-            self.app.write_log("SETTINGS NOT SAVED // INVALID PLACEHOLDER (USE {channel} {handle} {year} {count})",
+            self.app.write_log(L("SETTINGS NOT SAVED // INVALID PLACEHOLDER (USE {channel} {handle} {year} {count})",
+                                 "NICHT GESPEICHERT // UNGÜLTIGER PLATZHALTER (ERLAUBT: {channel} {handle} {year} {count})"),
                                "err")
             return
         st = self.app.settings
-        st["playlist_template"] = self.title_var.get().strip() or DEFAULT_PLAYLIST_TEMPLATE
+        st["playlist_template"] = self.title_var.get().strip() or default_playlist_template()
         st["description_template"] = self.desc.get("1.0", "end").strip()
         st["privacy"] = self.privacy
+        lang_changed = self.language != LANG
+        if lang_changed:
+            # Standard-Vorlagen mit der Sprache wechseln, eigene Vorlagen bleiben
+            for key, fn in (("playlist_template", default_playlist_template),
+                            ("description_template", default_description_template)):
+                if st.get(key) == fn():
+                    st.pop(key, None)
+            st["language"] = self.language
         save(SETTINGS_FILE, st)
         apply_templates(st)
         # Thumbnails übernehmen (Kopie im Kanal-Ordner)
@@ -2328,9 +2435,16 @@ class SettingsDialog(tk.Toplevel):
                     shutil.copyfile(src, thumbs_dir() / name)
                     self.thumbs[str(y)] = {"file": name, "status": "queued", "error": ""}
             save(thumbs_file(), self.thumbs)
-        self.app.write_log("PLAYLIST SETTINGS SAVED", "ok")
+        self.app.write_log(L("SETTINGS SAVED", "EINSTELLUNGEN GESPEICHERT"), "ok")
         self.app.settings_card.redraw()
         self.destroy()
+        if lang_changed:
+            self.app.restart()
+
+
+def privacy_label(opt):
+    return {"public": L("PUBLIC", "ÖFFENTLICH"), "unlisted": L("UNLISTED", "NICHT GELISTET"),
+            "private": L("PRIVATE", "PRIVAT")}.get(opt, opt.upper())
 
 
 class SettingsCard(Panel):
@@ -2349,26 +2463,30 @@ class SettingsCard(Panel):
         for k, yy in enumerate((8, 12, 16)):
             self.create_line(ix + 6 * u, cy - isz / 2 + yy * u, ix + 18 * u, cy - isz / 2 + yy * u,
                              fill=mix(role, BG, 0.8), width=max(1, px(1.5)))
-        tx = self.right_tag(x0, y0, x1, y1, c, px(66), role, False)
+        tx = self.right_tag(x0, y0, x1, y1, c, px(66), YELLOW, False)
         nx = ix + isz + px(10)
         maxw = tx - nx - px(6)
-        self.create_text(nx, y0 + h * 0.34, text="PLAYLIST SETTINGS", anchor="w", font=F("ui", 14), fill=TEXT_DIM)
+        self.create_text(nx, y0 + h * 0.34, text=L("PLAYLIST SETTINGS", "PLAYLIST-EINSTELLUNGEN"), anchor="w", font=F("ui", 14), fill=TEXT_DIM)
         y = (YEARS[0] if YEARS else datetime.date.today().year - 1)
-        sub = f"{PRIVACY.upper()} // " + fill_template(PLAYLIST_TEMPLATE, y)
+        sub = f"{privacy_label(PRIVACY)} // {LANGUAGES[LANG]} // " + fill_template(PLAYLIST_TEMPLATE, y)
         self.create_text(nx, y0 + h * 0.66, text=fit_text(sub, F("mono", 10), maxw), anchor="w",
                          font=F("mono", 10), fill=TEXT_MUTED)
-        self.create_text((tx + x1) / 2, (y0 + y1 - c / 2) / 2, text="EDIT ›", font=F("mono", 12), fill=CYAN)
+        self.create_text((tx + x1) / 2, (y0 + y1 - c / 2) / 2, text=L("EDIT ›", "ÄNDERN ›"), font=F("mono", 12), fill=YELLOW)
 
 
 
-HELP_TEXT = [
+def help_text():
+    return HELP_TEXT_DE if LANG == "de" else HELP_TEXT_EN
+
+
+HELP_TEXT_DE = [
     ("h1", "Chronolist Hilfe"),
     ("p", "Chronolist erstellt für einen YouTube-Kanal pro Jahr eine Playlist mit allen Videos aus diesem Jahr. "
           "Die Videos stehen in der Reihenfolge, in der sie hochgeladen wurden. Das älteste kommt zuerst."),
 
     ("h2", "Schnellstart"),
     ("li", "Einmalig oben auf den API-Knopf klicken und die Zugangsdaten eintragen."),
-    ("li", "Links bei Target Channel auf EDIT klicken und den Kanal eingeben."),
+    ("li", "Links beim Zielkanal auf ÄNDERN klicken und den Kanal eingeben."),
     ("li", "In der Jahresliste ein oder mehrere Jahre anklicken."),
     ("li", "START drücken. Den Rest erledigt das Programm."),
 
@@ -2384,28 +2502,27 @@ HELP_TEXT = [
             "einmal. Dafür braucht es nur sehr wenige Einheiten.\n"
             "• Datumssuche: In dieser Liste stehen aber nur die neuesten 20.000 Uploads. Ältere Jahre sucht "
             "Chronolist deshalb Monat für Monat. Das verbraucht viele Einheiten und ist auf etwa 100 Suchen am Tag "
-            "begrenzt. Bei großen "
-            "Kanälen schafft man so ungefähr ein altes Jahr pro Tag.\n"
+            "begrenzt. Bei großen Kanälen schafft man so ungefähr ein altes Jahr pro Tag.\n"
             "Was einmal gefunden wurde, wird gespeichert und nicht noch einmal gesucht."),
     ("num", "3.  Playlist anlegen. Für jedes Jahr legt Chronolist eine Playlist an. Standardmäßig heißt sie zum "
             "Beispiel \"MeinKanal 2012 in Upload-Reihenfolge\" und ist öffentlich. Name, Beschreibung, Sichtbarkeit "
-            "und ein eigenes Bild stellst du unter PLAYLIST SETTINGS ein."),
+            "und ein eigenes Bild stellst du unter PLAYLIST-EINSTELLUNGEN ein."),
     ("num", "4.  Füllen. Die Videos werden der Reihe nach eingefügt. Jedes Video verbraucht 50 von 10.000 Einheiten, "
             "die man pro Tag hat. Das reicht für ungefähr 200 Videos am Tag."),
     ("num", "5.  Wenn das Tageskontingent leer ist:\n"
-            "• FALLBACK aus: Chronolist hält an. Im Log steht, wann das Kontingent zurückgesetzt wird. Das ist um "
-            "Mitternacht kalifornischer Zeit, bei uns also meistens um 9 Uhr, ein paar Wochen im Jahr schon um 8 Uhr.\n"
+            "• FALLBACK aus: Chronolist hält an. Im Protokoll steht, wann das Kontingent zurückgesetzt wird. Das ist "
+            "um Mitternacht kalifornischer Zeit. Chronolist rechnet das in deine Uhrzeit um.\n"
             "• FALLBACK an: Chronolist öffnet ein eigenes Edge-Fenster und fügt die restlichen Videos über die "
             "YouTube-Webseite ein, genau so, wie die Webseite es beim Speichern selbst macht. Dabei werden keine "
-            "Einheiten verbraucht. Es läuft in Paketen zu 15 Videos mit Pausen dazwischen. Neue Playlists kann das Edge-Fenster "
-            "auch anlegen. Videos finden (Schritt 2) kann es aber nicht.\n"
+            "Einheiten verbraucht. Es läuft in Paketen zu 15 Videos mit Pausen dazwischen. Neue Playlists kann das "
+            "Edge-Fenster auch anlegen. Videos finden (Schritt 2) kann es aber nicht.\n"
             "Chronolist merkt sich, wenn das Kontingent oder das Suchlimit an einem Tag aufgebraucht ist. Bis zum "
             "Reset fragt es nach einem Neustart nicht noch einmal nach, sondern nimmt gleich den Fallback. In dieser "
             "Zeit ist der API-Knopf gelb und zeigt LIMIT."),
-    ("num", "6.  Prüfen. Beim Start, alle 100 Videos, nach STOP und am Ende eines Jahres schaut Chronolist die "
+    ("num", "6.  Prüfen. Beim Start, alle 100 Videos, nach STOPP und am Ende eines Jahres schaut Chronolist die "
             "Playlist auf doppelte Videos durch. Doppelte werden entfernt und der Fortschritt wird abgeglichen."),
     ("num", "7.  Nächstes Jahr. Ist ein Jahr fertig, geht es mit dem nächsten weiter. Wurden dessen Videos noch nicht "
-            "gefunden und ist das Kontingent leer, hält Chronolist an. Mit SKIP AHEAD springt es stattdessen zum "
+            "gefunden und ist das Kontingent leer, hält Chronolist an. Mit VORZIEHEN springt es stattdessen zum "
             "nächsten Jahr, das schon bereit ist, und holt das fehlende später nach."),
 
     ("h2", "Was sind Einheiten?"),
@@ -2423,67 +2540,72 @@ HELP_TEXT = [
     ("li", "Ein Thumbnail hochladen: 50 Einheiten"),
 
     ("h2", "Oben im Fenster"),
-    ("dt", "HELP"),
+    ("dt", "HILFE"),
     ("dd", "Öffnet diese Hilfe."),
     ("dt", "API-Knopf"),
     ("dd", "Zeigt, ob der Zugang zu YouTube funktioniert. Mit einem Klick kannst du die Zugangsdaten eintragen oder "
            "ändern (Client ID und Client Secret aus der Google Cloud Console).\n"
-           "Rot MISSING: Es sind noch keine Zugangsdaten eingetragen.\n"
-           "Rot ERROR: Google hat die Anmeldung abgelehnt.\n"
-           "Blau SIGN IN: Zugangsdaten sind da, angemeldet bist du aber noch nicht.\n"
+           "Rot FEHLT: Es sind noch keine Zugangsdaten eingetragen.\n"
+           "Rot FEHLER: Google hat die Anmeldung abgelehnt.\n"
+           "Blau ANMELDEN: Zugangsdaten sind da, angemeldet bist du aber noch nicht.\n"
            "Gelb LIMIT: Das Tageskontingent ist aufgebraucht.\n"
            "Grün ONLINE: Alles funktioniert."),
     ("dt", "Statusanzeige"),
-    ("dd", "Zeigt, was das Programm gerade macht, zum Beispiel STANDBY (wartet), RUNNING (läuft), BROWSER UPLINK "
-           "(läuft über das Edge-Fenster), PAUSED (angehalten) oder eine Wartezeit mit Countdown."),
+    ("dd", "Zeigt, was das Programm gerade macht, zum Beispiel BEREIT, LÄUFT, BROWSER-MODUS (läuft über das "
+           "Edge-Fenster), PAUSIERT oder eine Wartezeit mit Countdown."),
 
-    ("h2", "Target Channel"),
-    ("p", "Hier steht der Kanal, dessen Videos gesammelt werden. Über EDIT gibst du einen anderen Kanal ein. "
+    ("h2", "Zielkanal"),
+    ("p", "Hier steht der Kanal, dessen Videos gesammelt werden. Über ÄNDERN gibst du einen anderen Kanal ein. "
           "Das geht als @Name, als Link zum Kanal oder als Kanal-ID (die fängt mit UC an). Chronolist holt sich dann "
           "den Namen und das Startjahr. Jeder Kanal hat seinen eigenen Fortschritt."),
 
-    ("h2", "Target Years"),
+    ("h2", "Jahre"),
     ("p", "Jede Karte steht für ein Jahr. Mit einem Klick wählst du ein Jahr aus oder wieder ab. Ausgewählte Jahre "
           "sind hell umrandet und werden beim Start nacheinander bearbeitet. Rechts siehst du den Fortschritt in "
           "Prozent und wie viele Videos schon drin sind."),
     ("dt", "Was unter dem Jahr stehen kann"),
-    ("dd", "NOT SCANNED: Die Videos wurden noch nicht gesucht.\n"
-           "SCAN PAUSED: Die Suche wurde angefangen, ist aber noch nicht fertig.\n"
-           "READY: Alle Videos sind gefunden, die Playlist kann gefüllt werden.\n"
-           "IN PROGRESS: Die Playlist ist schon teilweise gefüllt.\n"
-           "COMPLETE: Das Jahr ist fertig.\n"
-           "UPLINK ACTIVE: Wird gerade gefüllt (grün).\n"
-           "CHECKING PLAYLIST: Die Playlist wird gerade auf doppelte Videos geprüft."),
+    ("dd", "NICHT GESUCHT: Die Videos wurden noch nicht gesucht.\n"
+           "SUCHE PAUSIERT: Die Suche wurde angefangen, ist aber noch nicht fertig.\n"
+           "BEREIT: Alle Videos sind gefunden, die Playlist kann gefüllt werden.\n"
+           "IN ARBEIT: Die Playlist ist schon teilweise gefüllt.\n"
+           "FERTIG: Das Jahr ist fertig.\n"
+           "WIRD GEFÜLLT: Wird gerade gefüllt (grün).\n"
+           "PLAYLIST WIRD GEPRÜFT: Die Playlist wird gerade auf doppelte Videos geprüft."),
 
-    ("h2", "Control"),
+    ("h2", "Steuerung"),
     ("dt", "START"),
     ("dd", "Startet für die ausgewählten Jahre. Ist ein Jahr fertig, geht es von selbst mit dem nächsten weiter."),
-    ("dt", "PAUSE und RESUME"),
-    ("dd", "PAUSE hält nach dem aktuellen Schritt an. Mit RESUME geht es genau dort weiter."),
-    ("dt", "STOP"),
+    ("dt", "PAUSE und WEITER"),
+    ("dd", "PAUSE hält nach dem aktuellen Schritt an. Mit WEITER geht es genau dort weiter."),
+    ("dt", "STOPP"),
     ("dd", "Beendet den Lauf. Vorher prüft Chronolist die Playlist des aktuellen Jahres noch einmal auf doppelte "
            "Videos. Der Fortschritt bleibt gespeichert."),
-    ("dt", "CHECK"),
+    ("dt", "PRÜFEN"),
     ("dd", "Prüft die Playlists der ausgewählten Jahre komplett. Doppelte Videos werden entfernt, wobei immer das "
            "erste stehen bleibt, damit die Reihenfolge stimmt. Außerdem wird der Fortschritt abgeglichen."),
-    ("dt", "BATCH LIMIT"),
+    ("dt", "LIMIT PRO LAUF"),
     ("dd", "So viele Videos werden pro Jahr und Durchlauf höchstens eingefügt. Mit den Knöpfen oder dem Mausrad "
-           "änderst du den Wert in 50er-Schritten. UNLIMITED heißt: keine Grenze. Das ist praktisch, wenn du bei "
+           "änderst du den Wert in 50er-Schritten. UNBEGRENZT heißt: keine Grenze. Das ist praktisch, wenn du bei "
            "mehreren Jahren erst einmal nur die ersten Videos haben willst."),
 
-    ("h2", "Options"),
+    ("h2", "Optionen"),
     ("dt", "FALLBACK"),
     ("dd", "Wenn das Tageskontingent aufgebraucht ist, macht Chronolist über ein eigenes Edge-Fenster weiter, in dem "
            "du bei YouTube angemeldet bist. Das Fenster muss offen bleiben, minimieren geht aber.\n"
            "Wichtig: Das ist eine automatische Nutzung der YouTube-Webseite und laut den Nutzungsbedingungen von "
            "YouTube nicht erlaubt. Im schlimmsten Fall kann dein Konto gesperrt werden. Deshalb ist der Schalter am "
            "Anfang aus."),
-    ("dt", "SKIP AHEAD"),
+    ("dt", "VORZIEHEN"),
     ("dd", "Kann ein Jahr gerade nicht gesucht werden, weil das Kontingent oder das Suchlimit aufgebraucht ist, "
            "macht Chronolist mit dem nächsten Jahr weiter, das schon bereit ist. Das übersprungene Jahr kommt später "
            "dran. Ist der Schalter aus, hält Chronolist in diesem Fall an."),
-    ("dt", "PLAYLIST SETTINGS"),
-    ("dd", "Hier legst du fest, wie neue Playlists aussehen:\n"
+    ("dt", "AUTOSTART"),
+    ("dd", "Startet automatisch, sobald du das Programm öffnest."),
+    ("dt", "BOOT"),
+    ("dd", "Startet Chronolist zusammen mit Windows. Zusammen mit AUTOSTART läuft dann alles von allein."),
+    ("dt", "PLAYLIST-EINSTELLUNGEN"),
+    ("dd", "Sprache: Englisch oder Deutsch. Das gilt für die ganze Oberfläche, die Tooltips, diese Hilfe und das "
+           "Protokoll. Nach dem Speichern startet Chronolist kurz neu.\n"
            "Titel und Beschreibung: Du kannst Platzhalter verwenden, die beim Anlegen ersetzt werden. {channel} wird "
            "zum Kanalnamen, {handle} zum @Handle, {year} zum Jahr und {count} zur Anzahl der Videos in diesem Jahr. "
            "Die Knöpfe unter dem Titelfeld fügen sie an der Stelle ein, an der der Cursor steht. Darunter siehst du "
@@ -2493,21 +2615,18 @@ HELP_TEXT = [
            "Es wird hochgeladen, sobald die Playlist existiert und Kontingent da ist (50 Einheiten pro Bild). "
            "Erlaubt sind JPG und PNG bis 2 MB, am besten im Format 1280×720. Diese Funktion ist noch neu und "
            "nicht mit allen Konten getestet.\n"
-           "Änderungen gelten für Playlists, die ab jetzt angelegt werden. Schon vorhandene Playlists bleiben so, "
-           "wie sie sind."),
-    ("dt", "AUTO-RUN"),
-    ("dd", "Startet automatisch, sobald du das Programm öffnest."),
-    ("dt", "BOOT"),
-    ("dd", "Startet Chronolist zusammen mit Windows. Zusammen mit AUTO-RUN läuft dann alles von allein."),
+           "Titel, Beschreibung und Sichtbarkeit gelten für Playlists, die ab jetzt angelegt werden. Schon "
+           "vorhandene Playlists bleiben so, wie sie sind."),
 
     ("h2", "Warum macht Chronolist Pausen?"),
     ("p", "Über das Edge-Fenster arbeitet Chronolist absichtlich nicht im Höchsttempo, damit es nicht wie ein Bot "
           "aussieht. Die Pausen siehst du mit Countdown auf der Jahreskarte und oben in der Statusanzeige."),
-    ("dd", "NEXT BATCH: kurze Pause zwischen zwei Paketen mit je 15 Videos, 15 bis 30 Sekunden.\n"
-           "COOLDOWN: etwa eine Minute nach jeweils 150 Videos.\n"
-           "BREAK: etwa zehn Minuten nach jeweils 750 Videos.\n"
-           "RATE LIMIT: YouTube bremst kurz, Chronolist wartet zehn Minuten.\n"
-           "RETRY oder NO SIGNAL: kurzer Fehler oder keine Verbindung. Chronolist versucht es gleich noch einmal."),
+    ("dd", "NÄCHSTES PAKET: kurze Pause zwischen zwei Paketen mit je 15 Videos, 15 bis 30 Sekunden.\n"
+           "KURZE PAUSE: etwa eine Minute nach jeweils 150 Videos.\n"
+           "LANGE PAUSE: etwa zehn Minuten nach jeweils 750 Videos.\n"
+           "YOUTUBE BREMST: YouTube bremst kurz, Chronolist wartet zehn Minuten.\n"
+           "NEUER VERSUCH oder KEINE VERBINDUNG: kurzer Fehler oder keine Verbindung. Chronolist versucht es gleich "
+           "noch einmal."),
 
     ("h2", "Was du sonst noch wissen solltest"),
     ("li", "Die Datumssuche für alte Jahre ist nicht ganz lückenlos. Einzelne Videos können fehlen. Jahre aus der "
@@ -2516,15 +2635,15 @@ HELP_TEXT = [
     ("li", "Für die Webseite nennt YouTube keine Grenzen. Die Pausen in Chronolist sind eine vorsichtige Schätzung "
            "und keine Garantie."),
 
-    ("h2", "System Log"),
+    ("h2", "Protokoll"),
     ("p", "Unten rechts steht jeder Schritt mit Uhrzeit. Grün heißt erledigt, Gelb ist ein Hinweis oder eine "
           "Wartezeit, Rot ist ein Fehler oder der Beginn eines neuen Abschnitts."),
 
     ("h2", "Wo liegen meine Daten?"),
     ("p", "Alles liegt im Ordner des Programms: credentials.json (Zugangsdaten), token.json (Anmeldung), "
           "settings.json (Einstellungen), quota.json (gemerktes Tageslimit), der Ordner data mit dem Fortschritt "
-          "pro Kanal und Jahr und der Ordner browser_profile mit der Anmeldung im Edge-Fenster. Nichts davon wird "
-          "irgendwohin hochgeladen."),
+          "und den Thumbnails pro Kanal und Jahr und der Ordner browser_profile mit der Anmeldung im Edge-Fenster. "
+          "Nichts davon wird irgendwohin hochgeladen, außer zu Google/YouTube selbst."),
 
     ("h2", "Updates"),
     ("p", "Beim Start fragt Chronolist einmal bei GitHub nach, ob es eine neuere Version gibt. Wenn ja, erscheint oben "
@@ -2538,6 +2657,182 @@ HELP_TEXT = [
     ("p", "Chronolist ist ein unabhängiges Projekt und steht in keiner Verbindung zu YouTube oder Google. "
           "Du nutzt dabei deine eigenen API-Zugangsdaten und dein eigenes Konto. Für die Einhaltung der "
           "Nutzungsbedingungen von YouTube bist du selbst verantwortlich, besonders beim FALLBACK."),
+]
+
+
+HELP_TEXT_EN = [
+    ("h1", "Chronolist Help"),
+    ("p", "Chronolist creates one playlist per year for a YouTube channel, containing every video from that year. "
+          "The videos are in the order they were uploaded, oldest first."),
+
+    ("h2", "Quick start"),
+    ("li", "Once: click the API button at the top and enter your credentials."),
+    ("li", "On the left, click EDIT on the target channel and enter the channel."),
+    ("li", "Click one or more years in the list."),
+    ("li", "Press START. The program does the rest."),
+
+    ("h2", "How Chronolist works"),
+    ("p", "Chronolist talks to YouTube in two ways. Normally through Google's official interface (YouTube Data API). "
+          "If you switch on FALLBACK, also through the YouTube website in a separate Edge window. A run looks like this:"),
+    ("num", "1.  Sign in. On the first start you sign in to Google once by opening the link and entering the code "
+            "shown. After that Chronolist remembers the sign-in."),
+    ("num", "2.  Find the videos. First Chronolist has to know which videos belong to which year. This only works "
+            "through the API, in two ways:\n"
+            "• Archive scan: Chronolist goes through the channel's upload list once and saves all years in one go. "
+            "This needs very few units.\n"
+            "• Date search: that list only contains the newest 20,000 uploads, so older years are searched month by "
+            "month. This uses many units and is limited to about 100 searches per day. For large channels that is "
+            "roughly one old year per day.\n"
+            "Whatever has been found is saved and never searched again."),
+    ("num", "3.  Create the playlist. Chronolist creates one playlist per year. By default it is called, for "
+            "example, \"MyChannel 2012 in upload order\" and is public. Title, description, visibility and a custom "
+            "image are set under PLAYLIST SETTINGS."),
+    ("num", "4.  Fill it. The videos are added in order. Each video uses 50 of the 10,000 units you get per day, "
+            "which is enough for about 200 videos a day."),
+    ("num", "5.  When the daily quota is used up:\n"
+            "• FALLBACK off: Chronolist stops. The log shows when the quota resets. That is midnight California "
+            "time; Chronolist converts it to your local time.\n"
+            "• FALLBACK on: Chronolist opens its own Edge window and adds the remaining videos through the YouTube "
+            "website, exactly the way the website does it when you save a video. This uses no units. It works in "
+            "batches of 15 videos with pauses in between. The Edge window can also create new playlists. It cannot "
+            "find videos (step 2), though.\n"
+            "Chronolist remembers when the quota or the search limit was used up on a given day. Until the reset it "
+            "won't ask again after a restart and goes straight to the fallback. During that time the API button is "
+            "yellow and shows LIMIT."),
+    ("num", "6.  Check. On start, every 100 videos, after STOP and at the end of each year, Chronolist checks the "
+            "playlist for duplicate videos. Duplicates are removed and the progress is synced."),
+    ("num", "7.  Next year. When a year is done, Chronolist moves on to the next one. If that year's videos haven't "
+            "been found yet and the quota is used up, it stops. With SKIP AHEAD it jumps to the next year that is "
+            "already ready instead and catches up later."),
+
+    ("h2", "What are units?"),
+    ("p", "Using the YouTube API is free. There is no money involved. Google does give every project a fixed daily "
+          "quota, measured in units. By default that is 10,000 units per day, plus a separate limit of about 100 "
+          "searches per day. When the quota is used up, things continue after the reset the next day. The Edge "
+          "window uses no units at all."),
+    ("p", "Units per action:"),
+    ("li", "Going through the upload list (archive scan): 1 unit per 50 videos"),
+    ("li", "Date search for old years: 100 units per 50 videos, also counts towards the search limit"),
+    ("li", "Creating a playlist: 50 units"),
+    ("li", "Adding one video: 50 units"),
+    ("li", "Checking a playlist: 1 unit per 50 videos"),
+    ("li", "Removing one duplicate: 50 units"),
+    ("li", "Uploading a thumbnail: 50 units"),
+
+    ("h2", "At the top of the window"),
+    ("dt", "HELP"),
+    ("dd", "Opens this help."),
+    ("dt", "API button"),
+    ("dd", "Shows whether access to YouTube works. Click it to enter or change your credentials (Client ID and "
+           "Client Secret from the Google Cloud Console).\n"
+           "Red MISSING: no credentials entered yet.\n"
+           "Red ERROR: Google refused the sign-in.\n"
+           "Blue SIGN IN: credentials are set, but you're not signed in yet.\n"
+           "Yellow LIMIT: the daily quota is used up.\n"
+           "Green ONLINE: everything works."),
+    ("dt", "Status display"),
+    ("dd", "Shows what the program is doing, for example STANDBY, RUNNING, BROWSER UPLINK (running through the Edge "
+           "window), PAUSED or a waiting time with a countdown."),
+
+    ("h2", "Target channel"),
+    ("p", "The channel whose videos are collected. Use EDIT to enter another channel, as @name, as a link to the "
+          "channel or as the channel ID (starts with UC). Chronolist then looks up its name and start year. Every "
+          "channel has its own progress."),
+
+    ("h2", "Target years"),
+    ("p", "Each card is one year. Click a year to select or deselect it. Selected years have a bright border and are "
+          "processed one after another on START. On the right you see the progress in percent and how many videos "
+          "are already in."),
+    ("dt", "What can appear under a year"),
+    ("dd", "NOT SCANNED: the videos haven't been searched yet.\n"
+           "SCAN PAUSED: the search was started but isn't finished.\n"
+           "READY: all videos found, the playlist can be filled.\n"
+           "IN PROGRESS: the playlist is partly filled.\n"
+           "COMPLETE: the year is done.\n"
+           "UPLINK ACTIVE: being filled right now (green).\n"
+           "CHECKING PLAYLIST: the playlist is being checked for duplicates."),
+
+    ("h2", "Control"),
+    ("dt", "START"),
+    ("dd", "Starts working on the selected years. When a year is done, it moves on to the next one by itself."),
+    ("dt", "PAUSE and RESUME"),
+    ("dd", "PAUSE stops after the current step. RESUME continues right there."),
+    ("dt", "STOP"),
+    ("dd", "Ends the run. Before that, Chronolist checks the current year's playlist for duplicates once more. "
+           "Your progress is saved."),
+    ("dt", "CHECK"),
+    ("dd", "Checks the playlists of the selected years completely. Duplicates are removed, always keeping the first "
+           "one so the order stays right. The progress is synced as well."),
+    ("dt", "BATCH LIMIT"),
+    ("dd", "The maximum number of videos added per year and run. Change it in steps of 50 with the buttons or the "
+           "mouse wheel. UNLIMITED means no limit. Handy if you first want only the first videos of several years."),
+
+    ("h2", "Options"),
+    ("dt", "FALLBACK"),
+    ("dd", "When the daily quota is used up, Chronolist continues in a separate Edge window where you are signed in "
+           "to YouTube. The window has to stay open, minimizing is fine.\n"
+           "Important: this is automated use of the YouTube website and is not allowed by YouTube's Terms of "
+           "Service. In the worst case your account can be restricted. That's why the switch is off by default."),
+    ("dt", "SKIP AHEAD"),
+    ("dd", "If a year can't be searched right now because the quota or the search limit is used up, Chronolist "
+           "continues with the next year that is already ready. The skipped year comes later. With the switch off, "
+           "Chronolist stops in that case."),
+    ("dt", "AUTO-RUN"),
+    ("dd", "Starts automatically as soon as you open the program."),
+    ("dt", "BOOT"),
+    ("dd", "Starts Chronolist together with Windows. Together with AUTO-RUN everything runs by itself."),
+    ("dt", "PLAYLIST SETTINGS"),
+    ("dd", "Language: English or German. This applies to the whole interface, the tooltips, this help and the log. "
+           "Chronolist restarts briefly after saving.\n"
+           "Title and description: you can use placeholders that are filled in when the playlist is created. "
+           "{channel} becomes the channel name, {handle} the @handle, {year} the year and {count} the number of "
+           "videos in that year. The buttons below the title field insert them at the cursor. Below you see a "
+           "preview. Leave the description empty for no description.\n"
+           "Visibility: public, unlisted (link only) or private.\n"
+           "Thumbnails: you can pick a custom image for every year, even before the playlist exists. It is "
+           "uploaded as soon as the playlist exists and quota is available (50 units per image). JPG and PNG up to "
+           "2 MB, ideally 1280×720. This feature is new and not tested with every account.\n"
+           "Title, description and visibility apply to playlists created from now on. Existing playlists stay as "
+           "they are."),
+
+    ("h2", "Why does Chronolist pause?"),
+    ("p", "Through the Edge window Chronolist deliberately doesn't work at full speed, so it doesn't look like a bot. "
+          "You see the pauses with a countdown on the year card and in the status display at the top."),
+    ("dd", "NEXT BATCH: short pause between two batches of 15 videos, 15 to 30 seconds.\n"
+           "COOLDOWN: about one minute after every 150 videos.\n"
+           "BREAK: about ten minutes after every 750 videos.\n"
+           "RATE LIMIT: YouTube slows things down briefly, Chronolist waits ten minutes.\n"
+           "RETRY or NO SIGNAL: a short error or no connection. Chronolist tries again shortly."),
+
+    ("h2", "Good to know"),
+    ("li", "The date search for old years isn't completely gap-free. Single videos can be missing. Years from the "
+           "upload list are complete."),
+    ("li", "A playlist can hold at most 5,000 videos."),
+    ("li", "YouTube doesn't publish limits for the website. The pauses in Chronolist are a careful estimate, not a "
+           "guarantee."),
+
+    ("h2", "System log"),
+    ("p", "At the bottom right every step is listed with the time. Green means done, yellow is a note or a waiting "
+          "time, red is an error or the start of a new section."),
+
+    ("h2", "Where is my data?"),
+    ("p", "Everything is in the program folder: credentials.json (credentials), token.json (sign-in), settings.json "
+          "(settings), quota.json (remembered daily limit), the data folder with progress and thumbnails per channel "
+          "and year, and the browser_profile folder with the sign-in for the Edge window. None of it is uploaded "
+          "anywhere except to Google/YouTube itself."),
+
+    ("h2", "Updates"),
+    ("p", "On start, Chronolist asks GitHub once whether there is a newer version. If so, a green note appears next "
+          "to the version number at the top, linking to the download page. Nothing but this one request is sent. "
+          "To turn it off, set \"check_updates\": false in settings.json."),
+
+    ("h2", "About Chronolist"),
+    ("p", f"Version {VERSION}, build {BUILD:04d}. Open source under the MIT license: {REPO_URL}"),
+    ("p", "Chronolist was written entirely with Claude, an AI by Anthropic. Bugs, wishes and questions are welcome "
+          "as issues on GitHub."),
+    ("p", "Chronolist is an independent project and not affiliated with YouTube or Google. You use your own API "
+          "credentials and your own account. You are responsible for following YouTube's Terms of Service, "
+          "especially when using FALLBACK."),
 ]
 
 
@@ -2624,7 +2919,7 @@ class HelpWindow(tk.Toplevel):
 
     def __init__(self, master):
         super().__init__(master, bg="#16161f")
-        self.title("Chronolist Hilfe")
+        self.title(L("Chronolist Help", "Chronolist Hilfe"))
         self.geometry(f"{px(720)}x{px(760)}")
         self.minsize(px(480), px(400))
         base = "Segoe UI" if "Segoe UI" in tkfont.families(self) else "TkDefaultFont"
@@ -2644,7 +2939,7 @@ class HelpWindow(tk.Toplevel):
         txt.tag_configure("num", lmargin1=px(8), lmargin2=px(34), spacing1=px(6))
         txt.tag_configure("sub", lmargin1=px(34), lmargin2=px(52), foreground="#c9c9d6")
         txt.tag_configure("cont", lmargin1=px(34), lmargin2=px(34))
-        for kind, text in HELP_TEXT:
+        for kind, text in help_text():
             if kind == "li":
                 txt.insert("end", "•  " + text + "\n", "li")
             elif kind == "num":
@@ -2669,9 +2964,9 @@ class LoginPanel(Panel):
     def draw_content(self, x0, y0, x1, y1, c, role):
         x = x0 + px(14)
         self.create_rectangle(x, y0 + px(14), x + px(6), y0 + px(20), fill=RED, outline="")
-        self.create_text(x + px(14), y0 + px(17), text="GOOGLE AUTH // LINK REQUIRED", anchor="w",
+        self.create_text(x + px(14), y0 + px(17), text=L("GOOGLE AUTH // LINK REQUIRED", "GOOGLE-ANMELDUNG // LINK ÖFFNEN"), anchor="w",
                          font=F("ui", 15), fill=RED)
-        self.create_text(x, y0 + px(46), text="OPEN", anchor="w", font=F("mono", 11), fill=TEXT_MUTED)
+        self.create_text(x, y0 + px(46), text=L("OPEN", "ÖFFNEN"), anchor="w", font=F("mono", 11), fill=TEXT_MUTED)
         link = self.create_text(x + px(70), y0 + px(46), text=self.url, anchor="w", font=F("mono", 12),
                                 fill=CYAN)
         self.tag_bind(link, "<Button-1>", lambda e: self.on_url())
@@ -2679,10 +2974,10 @@ class LoginPanel(Panel):
                                                  self.itemconfigure(link, fill=CYAN_HOT)))
         self.tag_bind(link, "<Leave>", lambda e: (self.configure(cursor=""),
                                                  self.itemconfigure(link, fill=CYAN)))
-        self.create_text(x, y0 + px(80), text="ENTER CODE", anchor="w", font=F("mono", 11), fill=TEXT_MUTED)
+        self.create_text(x, y0 + px(80), text=L("ENTER CODE", "CODE"), anchor="w", font=F("mono", 11), fill=TEXT_MUTED)
         code = self.create_text(x + px(110), y0 + px(80), text=self.code, anchor="w", font=F("mono", 24),
                                 fill=YELLOW)
-        hint = self.create_text(self.bbox(code)[2] + px(14), y0 + px(82), text="CLICK TO COPY", anchor="w",
+        hint = self.create_text(self.bbox(code)[2] + px(14), y0 + px(82), text=L("CLICK TO COPY", "KLICKEN ZUM KOPIEREN"), anchor="w",
                                 font=F("mono", 10, False), fill=FLUFF)
         for item in (code, hint):
             self.tag_bind(item, "<Button-1>", lambda e: self.copied(hint))
@@ -2693,12 +2988,12 @@ class LoginPanel(Panel):
 
     def copied(self, hint):
         self.on_copy()
-        self.itemconfigure(hint, text="COPIED ✓", fill=GREEN)
-        self.after(1500, lambda: self.itemconfigure(hint, text="CLICK TO COPY", fill=FLUFF))
+        self.itemconfigure(hint, text=L("COPIED ✓", "KOPIERT ✓"), fill=GREEN)
+        self.after(1500, lambda: self.itemconfigure(hint, text=L("CLICK TO COPY", "KLICKEN ZUM KOPIEREN"), fill=FLUFF))
 
 
 class CutButton(tk.Canvas):
-    """Eckiger Button, zwei abgeschrägte Ecken, Cyan-Rahmen."""
+    """Eckiger Button mit einer abgeschnittenen Ecke unten rechts (wie die Panels)."""
 
     def __init__(self, master, text, command, width=0):
         f = tkfont.Font(family=FONT_MONO, size=-px(12), weight="bold")
@@ -2706,7 +3001,7 @@ class CutButton(tk.Canvas):
         super().__init__(master, width=w, height=px(36), bg=BG, highlightthickness=0, bd=0, cursor="hand2")
         self.text, self.command = text, command
         self.enabled, self.hover = True, False
-        self.color = CYAN
+        self.color = YELLOW      # Aktions-Knöpfe sind gelb
         self.bind("<Configure>", lambda e: self.redraw())
         self.bind("<Enter>", lambda e: self._hover(True))
         self.bind("<Leave>", lambda e: self._hover(False))
@@ -2747,11 +3042,11 @@ class CutButton(tk.Canvas):
         elif self.hover:
             fill, edge, tcol = mix(col, BG, 0.22), mix("#ffffff", col, 0.25), mix("#ffffff", col, 0.25)
             for d, a in ((1, 0.35), (2, 0.15)):
-                o = shape(x0 - d, y0 - d, x1 + d, y1 + d, c + 0.586 * d, "trbl")
+                o = shape(x0 - d, y0 - d, x1 + d, y1 + d, c + 0.586 * d)
                 self.create_polygon(flat(o), fill="", outline=mix(col, BG, a))
         else:
             fill, edge, tcol = mix(col, BG, 0.20), mix(col, BG, 0.9), col
-        self.create_polygon(flat(shape(x0, y0, x1, y1, c, "trbl")), fill=fill, outline=edge)
+        self.create_polygon(flat(shape(x0, y0, x1, y1, c)), fill=fill, outline=edge)
         self.create_text(w / 2, h / 2, text=self.text, font=F("mono", 12), fill=tcol)
 
 
@@ -2787,7 +3082,6 @@ class Header(tk.Canvas):
         self.update = None       # (version, url) wenn eine neuere Release existiert
         self.title_end = 0
         self.bind("<Configure>", lambda e: self.redraw())
-        self.after(8000, self.glitch)
 
     def redraw(self):
         self.delete("all")
@@ -2797,8 +3091,6 @@ class Header(tk.Canvas):
         x, y = px(18) + lsz + px(16), px(34)
         title = "\u200a".join("CHRONOLIST")
         f = F("ui", 26)
-        self.create_text(x + px(2), y, text=title, anchor="w", font=f, fill=mix(CYAN, BG, 0.8), tags="title")
-        self.create_text(x - px(2), y, text=title, anchor="w", font=f, fill=mix(RED, BG, 0.8), tags="title")
         t = self.create_text(x, y, text=title, anchor="w", font=f, fill=RED, tags="title")
         # Versions-Tag rechts neben dem Titel
         vx0 = self.bbox(t)[2] + px(14)
@@ -2806,7 +3098,7 @@ class Header(tk.Canvas):
         vf = tkfont.Font(family=FONT_MONO, size=-px(12), weight="bold")
         vx1 = vx0 + vf.measure(vtxt) + px(18)
         vy0, vy1, vc = y - px(11), y + px(11), px(6)
-        self.create_polygon(flat(shape(vx0, vy0, vx1, vy1, vc, "trbl")), fill=mix(YELLOW, BG, 0.12),
+        self.create_polygon(flat(shape(vx0, vy0, vx1, vy1, vc)), fill=mix(YELLOW, BG, 0.12),
                             outline=mix(YELLOW, BG, 0.75))
         self.create_text((vx0 + vx1) / 2, y, text=vtxt, font=vf, fill=YELLOW)
         bt = self.create_text(vx1 + px(10), y, text=f"BUILD {BUILD:04d}", anchor="w",
@@ -2819,7 +3111,7 @@ class Header(tk.Canvas):
             self.tag_bind("upd", "<Enter>", lambda e: self.configure(cursor="hand2"))
             self.tag_bind("upd", "<Leave>", lambda e: self.configure(cursor=""))
             self.title_end = self.bbox(ut)[2] + px(20)
-        sub_t = self.create_text(x, px(64), text=f"PLAYLIST UPLINK // {(CHANNEL.get('handle') or 'NO TARGET').upper()} // UPLOAD ORDER", anchor="w",
+        sub_t = self.create_text(x, px(64), text=f"{L('PLAYLIST UPLINK', 'PLAYLIST-UPLINK')} // {(CHANNEL.get('handle') or L('NO TARGET', 'KEIN ZIEL')).upper()} // {L('UPLOAD ORDER', 'UPLOAD-REIHENFOLGE')}", anchor="w",
                          font=F("mono", 11), fill=TEXT_MUTED)
         self.title_end = max(self.title_end, self.bbox(sub_t)[2] + px(20))
 
@@ -2857,16 +3149,6 @@ class Header(tk.Canvas):
             xx = w - px(18) - i * px(6)
             self.create_line(xx, yb - px(4), xx, yb, fill=RED_MILD)
 
-    def glitch(self):
-        seq = [(-2, 1), (4, -2), (-3, 0), (1, 1)]
-
-        def step(i=0):
-            if i < len(seq):
-                dx, dy = seq[i]
-                self.move("title", round(dx * S), round(dy * S))
-                self.after(60, step, i + 1)
-        step()
-        self.after(8000, self.glitch)
 
 
 class Footer(tk.Canvas):
@@ -2984,6 +3266,16 @@ class App(tk.Tk):
             self.after(ms, lambda: style_titlebar(self))
 
         self.settings = load(SETTINGS_FILE, {"years": [], "autorun": False, "limit": 0})
+        global LANG
+        lang = self.settings.get("language")
+        LANG = lang if lang in LANGUAGES else detect_language()
+        if "language" not in self.settings and self.settings.get("channel"):
+            # Bestehende Installation von vor der Sprachauswahl: bisherige (deutsche) Standard-Vorlagen festschreiben,
+            # damit neue Playlists genauso heißen wie die schon vorhandenen.
+            self.settings.setdefault("playlist_template", "{channel} {year} in Upload-Reihenfolge")
+            self.settings.setdefault("description_template", "Alle Videos von {channel} aus {year} in Upload-Reihenfolge.")
+            self.settings["language"] = LANG
+            save(SETTINGS_FILE, self.settings)
         apply_templates(self.settings)
         set_channel(self.settings.get("channel"))
         self.out = queue.Queue()
@@ -3008,11 +3300,11 @@ class App(tk.Tk):
         left.grid(row=0, column=0, sticky="nsew", padx=(0, px(14)))
         left.rowconfigure(3, weight=1)
         left.columnconfigure(0, weight=1)
-        Section(left, "TARGET CHANNEL", "YOUTUBE // HANDLE").grid(row=0, column=0, sticky="ew", pady=(0, px(6)))
+        Section(left, L("TARGET CHANNEL", "ZIELKANAL"), "YOUTUBE // HANDLE").grid(row=0, column=0, sticky="ew", pady=(0, px(6)))
         self.channel_card = ChannelCard(left, self.edit_channel)
         self.channel_card.grid(row=1, column=0, sticky="ew", pady=(0, px(16)))
         self.channel_card.update_state()
-        Section(left, "TARGET YEARS", "CLICK TO TOGGLE").grid(row=2, column=0, sticky="ew", pady=(0, px(6)))
+        Section(left, L("TARGET YEARS", "JAHRE"), L("CLICK TO TOGGLE", "KLICK ZUM AUSWÄHLEN")).grid(row=2, column=0, sticky="ew", pady=(0, px(6)))
         self.scroll = ScrollArea(left)
         self.scroll.grid(row=3, column=0, sticky="nsew")
         self.rows = {}
@@ -3024,21 +3316,23 @@ class App(tk.Tk):
         right.columnconfigure(0, weight=1)
         right.rowconfigure(6, weight=1)
 
-        Section(right, "CONTROL", "HUD // STATUS").grid(row=0, column=0, sticky="ew", pady=(0, px(6)))
+        Section(right, L("CONTROL", "STEUERUNG"), "HUD // STATUS").grid(row=0, column=0, sticky="ew", pady=(0, px(6)))
         btns = tk.Frame(right, bg=BG)
         btns.grid(row=1, column=0, sticky="ew", pady=(0, px(8)))
         self.start_btn = CutButton(btns, "▶  START", self.start, width=100)
         self.start_btn.pack(side="left")
-        self.pause_btn = CutButton(btns, "❚❚  PAUSE", self.toggle_pause, width=112)
+        self.pause_btn = CutButton(btns, L("❚❚  PAUSE", "❚❚  PAUSE"), self.toggle_pause, width=112)
         self.pause_btn.pack(side="left", padx=(px(6), 0))
         self.pause_btn.set_enabled(False)
-        self.stop_btn = CutButton(btns, "■  STOP", self.stop, width=96)
+        self.stop_btn = CutButton(btns, L("■  STOP", "■  STOPP"), self.stop, width=96)
         self.stop_btn.pack(side="left", padx=(px(6), 0))
-        self.check_btn = CutButton(btns, "✓  CHECK", self.run_check, width=104)
+        self.check_btn = CutButton(btns, L("✓  CHECK", "✓  PRÜFEN"), self.run_check, width=104)
         self.check_btn.pack(side="left", padx=(px(6), 0))
-        self.setup_btn = CutButton(self.header, "API // MISSING", self.edit_credentials, width=150)
+        for b in (self.start_btn, self.pause_btn, self.stop_btn, self.check_btn):
+            b.set_color(YELLOW)   # Hauptsteuerung in Cyberpunk-Gelb
+        self.setup_btn = CutButton(self.header, L("API // MISSING", "API // ANMELDEN"), self.edit_credentials, width=150)
         self.header.api_btn = self.setup_btn
-        self.help_btn = CutButton(self.header, "?  HELP", self.show_help, width=86)
+        self.help_btn = CutButton(self.header, L("?  HELP", "?  HILFE"), self.show_help, width=86)
         self.header.help_btn = self.help_btn
         self.header.redraw()
         self.api_ok = None   # None = unbekannt, True = Login/Aufruf erfolgreich, False = Fehler
@@ -3049,8 +3343,10 @@ class App(tk.Tk):
         lim.grid(row=2, column=0, sticky="ew", pady=(0, px(4)))
         lim.columnconfigure(0, weight=1)
         self.limit_panel = LimitPanel(lim, self.limit_val)
-        Tooltip(self.limit_panel, "Höchstens so viele Videos pro Jahr und Lauf einfügen. "
-                                  "Mit den Knöpfen daneben oder dem Mausrad in 50er-Schritten. UNLIMITED heißt keine Grenze.")
+        Tooltip(self.limit_panel, L("Add at most this many videos per year and run. Use the buttons next to it or "
+                                    "the mouse wheel to change it in steps of 50. UNLIMITED means no limit.",
+                                    "Höchstens so viele Videos pro Jahr und Lauf einfügen. Mit den Knöpfen daneben "
+                                    "oder dem Mausrad in 50er-Schritten. UNBEGRENZT heißt keine Grenze."))
         self.limit_panel.grid(row=0, column=0, sticky="ew")
         for w in (self.limit_panel,):
             w.bind("<MouseWheel>", lambda e: self.change_limit(50 if e.delta > 0 else -50))
@@ -3060,30 +3356,30 @@ class App(tk.Tk):
         b_minus.grid(row=0, column=1, padx=(px(6), 0))
         b_plus = CutButton(lim, "+", lambda: self.change_limit(50), width=40)
         b_plus.grid(row=0, column=2, padx=(px(4), 0))
-        Tooltip(b_minus, "Batch-Limit um 50 verringern.")
-        Tooltip(b_plus, "Batch-Limit um 50 erhöhen.")
+        Tooltip(b_minus, L("Lower the batch limit by 50.", "Limit um 50 verringern."))
+        Tooltip(b_plus, L("Raise the batch limit by 50.", "Limit um 50 erhöhen."))
 
-        Section(right, "OPTIONS", "RUN // SYSTEM").grid(row=3, column=0, sticky="ew", pady=(px(6), px(6)))
+        Section(right, L("OPTIONS", "OPTIONEN"), "RUN // SYSTEM").grid(row=3, column=0, sticky="ew", pady=(px(6), px(6)))
         opts = tk.Frame(right, bg=BG)
         opts.grid(row=4, column=0, sticky="ew", pady=(0, px(8)))
         opts.columnconfigure(0, weight=1, uniform="opt")
         opts.columnconfigure(1, weight=1, uniform="opt")
         # Zeile 1: Ablauf
         self.fallback = bool(self.settings.get("browser_fallback", False))
-        self.fallback_card = ToggleCard(opts, "FALLBACK", "EDGE AFTER QUOTA",
+        self.fallback_card = ToggleCard(opts, "FALLBACK", L("EDGE AFTER QUOTA", "EDGE BEI LIMIT"),
                                         self.fallback, self.toggle_fallback, compact=True)
         self.fallback_card.grid(row=0, column=0, sticky="ew", padx=(0, px(3)), pady=(0, px(4)))
         self.skip_ahead = bool(self.settings.get("skip_ahead", False))
-        self.skip_card = ToggleCard(opts, "SKIP AHEAD", "NEXT READY YEAR",
+        self.skip_card = ToggleCard(opts, L("SKIP AHEAD", "VORZIEHEN"), L("NEXT READY YEAR", "NÄCHSTES FERTIGES JAHR"),
                                     self.skip_ahead, self.toggle_skip, compact=True)
         self.skip_card.grid(row=0, column=1, sticky="ew", padx=(px(3), 0), pady=(0, px(4)))
         # Zeile 2: System
         self.autorun = bool(self.settings.get("autorun", False))
-        self.autorun_card = ToggleCard(opts, "AUTO-RUN", "ON LAUNCH", self.autorun, self.toggle_autorun,
+        self.autorun_card = ToggleCard(opts, L("AUTO-RUN", "AUTOSTART"), L("ON LAUNCH", "BEIM ÖFFNEN"), self.autorun, self.toggle_autorun,
                                        compact=True)
         self.autorun_card.grid(row=1, column=0, sticky="ew", padx=(0, px(3)))
         self.win_on = get_windows_autostart()
-        self.win_card = ToggleCard(opts, "BOOT", "WITH WINDOWS", self.win_on,
+        self.win_card = ToggleCard(opts, "BOOT", L("WITH WINDOWS", "MIT WINDOWS"), self.win_on,
                                    self.toggle_windows, available=winreg is not None, compact=True)
         self.win_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
         self.settings_card = SettingsCard(opts, self.edit_settings)
@@ -3095,18 +3391,19 @@ class App(tk.Tk):
         self.login_panel.grid(row=0, column=0, sticky="ew")
         lb = tk.Frame(self.login, bg=BG)
         lb.grid(row=1, column=0, sticky="w", pady=(px(4), px(8)))
-        b_open = CutButton(lb, "OPEN LINK", self.open_login)
+        b_open = CutButton(lb, L("OPEN LINK", "LINK ÖFFNEN"), self.open_login)
         b_open.pack(side="left")
-        b_copy = CutButton(lb, "COPY CODE", self.copy_code)
+        b_copy = CutButton(lb, L("COPY CODE", "CODE KOPIEREN"), self.copy_code)
         b_copy.pack(side="left", padx=(px(8), 0))
-        Tooltip(b_open, "Öffnet die Google-Anmeldeseite im Browser.")
-        Tooltip(b_copy, "Kopiert den Anmeldecode in die Zwischenablage. Auf der Google-Seite einfügen und bestätigen.")
+        Tooltip(b_open, L("Opens the Google sign-in page in your browser.", "Öffnet die Google-Anmeldeseite im Browser."))
+        Tooltip(b_copy, L("Copies the sign-in code to the clipboard. Paste it on the Google page and confirm.",
+                          "Kopiert den Anmeldecode in die Zwischenablage. Auf der Google-Seite einfügen und bestätigen."))
 
         logwrap = tk.Frame(right, bg=BG)
         logwrap.grid(row=6, column=0, sticky="nsew")
         logwrap.columnconfigure(0, weight=1)
         logwrap.rowconfigure(1, weight=1)
-        Section(logwrap, "SYSTEM LOG", "NET // 0x7F3A").grid(row=0, column=0, sticky="ew", pady=(0, px(6)))
+        Section(logwrap, L("SYSTEM LOG", "PROTOKOLL"), "NET // 0x7F3A").grid(row=0, column=0, sticky="ew", pady=(0, px(6)))
         self.log_panel = Panel(logwrap, 200, state="frame")
         self.log_panel.grid(row=1, column=0, sticky="nsew")
         inner = tk.Frame(self.log_panel, bg=BG)
@@ -3149,7 +3446,7 @@ class App(tk.Tk):
         self.add_tooltips()
         self.after(60000, self.api_tick)
         self.set_status("idle")
-        self.write_log("CHRONOLIST ONLINE // SYSTEMS NOMINAL", "info")
+        self.write_log(L("CHRONOLIST ONLINE // SYSTEMS NOMINAL", "CHRONOLIST ONLINE // ALLE SYSTEME BEREIT"), "info")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(200, self.poll)
         self.after(40, self.animate)
@@ -3187,10 +3484,6 @@ class App(tk.Tk):
     def edit_settings(self):
         if self.busy():
             return
-        if not CHANNEL:
-            self.write_log("SET A TARGET CHANNEL FIRST", "warn")
-            self.edit_channel()
-            return
         SettingsDialog(self)
 
     def toggle_skip(self):
@@ -3212,7 +3505,7 @@ class App(tk.Tk):
         try:
             set_windows_autostart(new)
         except OSError as e:
-            self.write_log(f"BOOT SEQUENCE UPDATE FAILED // {e}", "err")
+            self.write_log(L(f"BOOT SEQUENCE UPDATE FAILED // {e}", f"AUTOSTART KONNTE NICHT GEÄNDERT WERDEN // {e}"), "err")
             return
         self.win_on = new
         self.win_card.update_value(new)
@@ -3220,16 +3513,16 @@ class App(tk.Tk):
     # --- Status
     def set_status(self, key):
         text, role, state, blink = {
-            "idle": ("STANDBY", CYAN, "inactive", False),
-            "running": ("RUNNING", GREEN, "running", False),
-            "browser": ("BROWSER UPLINK", GREEN, "running", False),
-            "browser_login": ("SIGN IN // EDGE", YELLOW, "active", True),
-            "checking": ("PLAYLIST CHECK...", CYAN, "active", True),
-            "stopping": ("STOPPING...", CYAN, "inactive", True),
-            "fertig": ("COMPLETE", CYAN, "active", False),
-            "gestoppt": ("HALTED", RED, "frame", False),
-            "quota": ("DAILY QUOTA REACHED", YELLOW, "active", False),
-            "fehler": ("ERROR // SEE LOG", RED, "frame", False),
+            "idle": (L("STANDBY", "BEREIT"), CYAN, "inactive", False),
+            "running": (L("RUNNING", "LÄUFT"), GREEN, "running", False),
+            "browser": (L("BROWSER UPLINK", "BROWSER-MODUS"), GREEN, "running", False),
+            "browser_login": (L("SIGN IN // EDGE", "ANMELDEN // EDGE"), YELLOW, "active", True),
+            "checking": (L("PLAYLIST CHECK...", "PRÜFE PLAYLIST..."), CYAN, "active", True),
+            "stopping": (L("STOPPING...", "WIRD GESTOPPT..."), CYAN, "inactive", True),
+            "fertig": (L("COMPLETE", "FERTIG"), CYAN, "active", False),
+            "gestoppt": (L("HALTED", "ANGEHALTEN"), RED, "frame", False),
+            "quota": (L("DAILY QUOTA REACHED", "TAGESLIMIT ERREICHT"), YELLOW, "active", False),
+            "fehler": (L("ERROR // SEE LOG", "FEHLER // SIEHE PROTOKOLL"), RED, "frame", False),
         }.get(key, (key.upper(), CYAN, "inactive", False))
         self.header.chip.show(text, role, state, blink)
 
@@ -3270,7 +3563,7 @@ class App(tk.Tk):
 
     def busy(self):
         if self.worker and self.worker.is_alive():
-            self.write_log("STOP THE CURRENT RUN FIRST", "err")
+            self.write_log(L("STOP THE CURRENT RUN FIRST", "ERST DEN LAUFENDEN DURCHLAUF STOPPEN"), "err")
             return True
         return False
 
@@ -3278,51 +3571,86 @@ class App(tk.Tk):
         if self.busy():
             return
         cid, sec = get_creds()
-        NCDialog(self, "API Setup", [
+        NCDialog(self, L("API Setup", "API-Zugang"), [
             ("client_id", "CLIENT ID", cid, False),
             ("client_secret", "CLIENT SECRET", sec, True),
-        ], "GOOGLE CLOUD CONSOLE // YOUTUBE DATA API V3 // OAUTH CLIENT TYPE: TVS AND LIMITED INPUT DEVICES. "
-           "STORED LOCALLY IN CREDENTIALS.JSON NEXT TO THE PROGRAM.", self.save_credentials)
+        ], L("GOOGLE CLOUD CONSOLE // YOUTUBE DATA API V3 // OAUTH CLIENT TYPE: TVS AND LIMITED INPUT DEVICES. "
+             "STORED LOCALLY IN CREDENTIALS.JSON NEXT TO THE PROGRAM.",
+             "GOOGLE CLOUD CONSOLE // YOUTUBE DATA API V3 // OAUTH-CLIENT-TYP: TVS AND LIMITED INPUT DEVICES. "
+             "WIRD NUR LOKAL IN CREDENTIALS.JSON NEBEN DEM PROGRAMM GESPEICHERT."), self.save_credentials)
 
     def year_tip(self, row):
-        sel = "Ausgewählt, wird beim START bearbeitet." if row.selected else "Klicken, um dieses Jahr auszuwählen."
         if row.selected:
-            sel += " Erneut klicken zum Abwählen."
+            sel = L("Selected, will be processed on START. Click again to deselect.",
+                    "Ausgewählt, wird beim START bearbeitet. Erneut klicken zum Abwählen.")
+        else:
+            sel = L("Click to select this year.", "Klicken, um dieses Jahr auszuwählen.")
         info = row.info
-        state = {"none": "Videos noch nicht gesucht.", "scanning": "Suche angefangen, aber noch nicht fertig.",
-                 "ready": f"{info['total']} Videos gefunden, Playlist noch leer.",
-                 "progress": f"{info['done']} von {info['total']} Videos eingefügt.",
-                 "done": f"Fertig, alle {info['total']} Videos sind in der Playlist."}.get(info["code"], "")
+        state = {"none": L("Videos not searched yet.", "Videos noch nicht gesucht."),
+                 "scanning": L("Search started but not finished.", "Suche angefangen, aber noch nicht fertig."),
+                 "ready": L(f"{info['total']} videos found, playlist still empty.",
+                            f"{info['total']} Videos gefunden, Playlist noch leer."),
+                 "progress": L(f"{info['done']} of {info['total']} videos added.",
+                               f"{info['done']} von {info['total']} Videos eingefügt."),
+                 "done": L(f"Done, all {info['total']} videos are in the playlist.",
+                           f"Fertig, alle {info['total']} Videos sind in der Playlist.")}.get(info["code"], "")
         return f"{row.year}: {state}\n{sel}"
 
     def add_tooltips(self):
-        Tooltip(self.help_btn, "Öffnet die ausführliche Hilfe zu allen Funktionen.")
+        Tooltip(self.help_btn, L("Opens the detailed help for all features.",
+                                 "Öffnet die ausführliche Hilfe zu allen Funktionen."))
         Tooltip(self.setup_btn, lambda: {
-            YELLOW: "Das Tageskontingent ist aufgebraucht. Bis zum Reset fragt Chronolist nicht mehr nach und nimmt "
-                    "direkt den Fallback, wenn er eingeschaltet ist."
+            YELLOW: L("The daily quota is used up. Until the reset, Chronolist won't ask again and goes straight to "
+                      "the fallback if it is switched on.",
+                      "Das Tageskontingent ist aufgebraucht. Bis zum Reset fragt Chronolist nicht mehr nach und nimmt "
+                      "direkt den Fallback, wenn er eingeschaltet ist.")
                     + (f" Reset: {fmt_reset(quota_blocked('units'))}." if quota_blocked("units") else ""),
-            RED: "Zugang zu YouTube fehlt oder wurde abgelehnt. Klicken, um Client ID und Secret einzutragen.",
-            GREEN: "Zugang zu YouTube funktioniert. Klicken, um die Zugangsdaten zu ändern.",
-        }.get(self.setup_btn.color, "Zugangsdaten sind eingetragen, die Anmeldung bei Google folgt beim nächsten START."))
-        Tooltip(self.header.chip, "Zeigt, was Chronolist gerade macht. Bei Pausen läuft hier ein Countdown.")
-        Tooltip(self.channel_card, "Der Kanal, dessen Videos gesammelt werden. Über EDIT einen anderen Kanal eingeben "
-                                   "(@Name, Link oder Kanal-ID).")
-        Tooltip(self.start_btn, "Startet die Arbeit für die links ausgewählten Jahre. Fertige Jahre gehen automatisch "
-                                "ins nächste über.")
-        Tooltip(self.pause_btn, "Hält nach dem aktuellen Schritt an. RESUME macht genau dort weiter.")
-        Tooltip(self.stop_btn, "Beendet den Lauf. Vorher wird die aktuelle Playlist noch einmal auf Doppelte geprüft. "
-                               "Der Fortschritt bleibt gespeichert.")
-        Tooltip(self.check_btn, "Prüft die Playlists der ausgewählten Jahre: entfernt doppelte Videos und gleicht den "
-                                "Fortschritt ab.")
-        Tooltip(self.fallback_card, "Wenn das tägliche YouTube-Kontingent leer ist, über ein eigenes Edge-Fenster "
-                                    "weitermachen. Achtung: verstößt gegen die YouTube-Regeln, Risiko für dein Konto.")
-        Tooltip(self.skip_card, "Kann ein Jahr gerade nicht gesucht werden, mit dem nächsten fertigen Jahr "
-                                "weitermachen und das übersprungene später nachholen.")
-        Tooltip(self.autorun_card, "Beim Öffnen von Chronolist automatisch starten.")
-        Tooltip(self.win_card, "Chronolist automatisch mit Windows starten.")
-        Tooltip(self.settings_card, "Playlist-Titel und Beschreibung mit Platzhaltern, Sichtbarkeit und eigene "
-                                    "Thumbnails pro Jahr einstellen.")
-        Tooltip(self.login_panel, "Google-Anmeldung: Link öffnen, Code eingeben, bestätigen. Klick auf den Code kopiert ihn.")
+            RED: L("YouTube access is missing or was refused. Click to enter your Client ID and secret.",
+                   "Zugang zu YouTube fehlt oder wurde abgelehnt. Klicken, um Client ID und Secret einzutragen."),
+            GREEN: L("YouTube access works. Click to change your credentials.",
+                     "Zugang zu YouTube funktioniert. Klicken, um die Zugangsdaten zu ändern."),
+        }.get(self.setup_btn.color, L("Credentials are set. You'll sign in to Google on the next START.",
+                                      "Zugangsdaten sind eingetragen, die Anmeldung bei Google folgt beim nächsten START.")))
+        Tooltip(self.header.chip, L("Shows what Chronolist is doing right now. During pauses a countdown runs here.",
+                                    "Zeigt, was Chronolist gerade macht. Bei Pausen läuft hier ein Countdown."))
+        Tooltip(self.channel_card, L("The channel whose videos are collected. Use EDIT to enter another channel "
+                                     "(@name, link or channel ID).",
+                                     "Der Kanal, dessen Videos gesammelt werden. Über ÄNDERN einen anderen Kanal "
+                                     "eingeben (@Name, Link oder Kanal-ID)."))
+        Tooltip(self.start_btn, L("Starts working on the years selected on the left. Finished years move on to the "
+                                  "next one automatically.",
+                                  "Startet die Arbeit für die links ausgewählten Jahre. Fertige Jahre gehen "
+                                  "automatisch ins nächste über."))
+        Tooltip(self.pause_btn, L("Pauses after the current step. RESUME continues right there.",
+                                  "Hält nach dem aktuellen Schritt an. WEITER macht genau dort weiter."))
+        Tooltip(self.stop_btn, L("Ends the run. Before that, the current playlist is checked for duplicates once more. "
+                                 "Your progress is saved.",
+                                 "Beendet den Lauf. Vorher wird die aktuelle Playlist noch einmal auf Doppelte "
+                                 "geprüft. Der Fortschritt bleibt gespeichert."))
+        Tooltip(self.check_btn, L("Checks the playlists of the selected years: removes duplicate videos and syncs "
+                                  "the progress.",
+                                  "Prüft die Playlists der ausgewählten Jahre: entfernt doppelte Videos und gleicht "
+                                  "den Fortschritt ab."))
+        Tooltip(self.fallback_card, L("When the daily YouTube quota is used up, continue in a separate Edge window. "
+                                      "Warning: this breaks YouTube's rules and puts your account at risk.",
+                                      "Wenn das tägliche YouTube-Kontingent leer ist, über ein eigenes Edge-Fenster "
+                                      "weitermachen. Achtung: verstößt gegen die YouTube-Regeln, Risiko für dein "
+                                      "Konto."))
+        Tooltip(self.skip_card, L("If a year can't be searched right now, continue with the next ready year and "
+                                  "catch up on the skipped one later.",
+                                  "Kann ein Jahr gerade nicht gesucht werden, mit dem nächsten fertigen Jahr "
+                                  "weitermachen und das übersprungene später nachholen."))
+        Tooltip(self.autorun_card, L("Start working automatically when Chronolist opens.",
+                                     "Beim Öffnen von Chronolist automatisch starten."))
+        Tooltip(self.win_card, L("Start Chronolist automatically with Windows.",
+                                 "Chronolist automatisch mit Windows starten."))
+        Tooltip(self.settings_card, L("Language, playlist title and description with placeholders, visibility and "
+                                      "custom thumbnails per year.",
+                                      "Sprache, Playlist-Titel und Beschreibung mit Platzhaltern, Sichtbarkeit und "
+                                      "eigene Thumbnails pro Jahr."))
+        Tooltip(self.login_panel, L("Google sign-in: open the link, enter the code, confirm. Clicking the code copies it.",
+                                    "Google-Anmeldung: Link öffnen, Code eingeben, bestätigen. Klick auf den Code "
+                                    "kopiert ihn."))
 
     def api_tick(self):
         self.update_api_button()
@@ -3340,7 +3668,8 @@ class App(tk.Tk):
         """Rot = keine Zugangsdaten oder Fehler, Grün = angemeldet und funktioniert, Cyan = gesetzt, ungeprüft."""
         if not all(get_creds()) or self.api_ok is False:
             self.setup_btn.set_color(RED)
-            self.setup_btn.set_text("API // MISSING" if not all(get_creds()) else "API // ERROR")
+            self.setup_btn.set_text(L("API // MISSING", "API // FEHLT") if not all(get_creds())
+                                    else L("API // ERROR", "API // FEHLER"))
         elif quota_blocked("units"):
             self.setup_btn.set_color(YELLOW)
             self.setup_btn.set_text("API // LIMIT")
@@ -3349,11 +3678,11 @@ class App(tk.Tk):
             self.setup_btn.set_text("API // ONLINE")
         else:
             self.setup_btn.set_color(CYAN)
-            self.setup_btn.set_text("API // SIGN IN")
+            self.setup_btn.set_text(L("API // SIGN IN", "API // ANMELDEN"))
 
     def save_credentials(self, v):
         if not v["client_id"] or not v["client_secret"]:
-            self.write_log("CLIENT ID AND SECRET REQUIRED", "err")
+            self.write_log(L("CLIENT ID AND SECRET REQUIRED", "CLIENT ID UND SECRET NÖTIG"), "err")
             return False
         if (v["client_id"], v["client_secret"]) != get_creds():
             save(CREDENTIALS_FILE, v)
@@ -3361,7 +3690,7 @@ class App(tk.Tk):
                 TOKEN_FILE.unlink()   # alter Login gehört zu den alten Zugangsdaten
             if QUOTA_FILE.exists():
                 QUOTA_FILE.unlink()   # Limit gilt pro Google-Projekt
-            self.write_log("API CREDENTIALS UPDATED // NEW GOOGLE SIGN-IN ON NEXT START", "ok")
+            self.write_log(L("API CREDENTIALS UPDATED // NEW GOOGLE SIGN-IN ON NEXT START", "ZUGANGSDATEN GESPEICHERT // NEUE GOOGLE-ANMELDUNG BEIM NÄCHSTEN START"), "ok")
             self.api_ok = None
             self.update_api_button()
 
@@ -3369,12 +3698,14 @@ class App(tk.Tk):
         if self.busy():
             return
         if not all(get_creds()):
-            self.write_log("SET API CREDENTIALS FIRST", "warn")
+            self.write_log(L("SET API CREDENTIALS FIRST", "ZUERST DIE API-ZUGANGSDATEN EINTRAGEN"), "warn")
             self.edit_credentials()
             return
-        NCDialog(self, "Target Channel", [
-            ("channel", "@HANDLE, CHANNEL URL OR CHANNEL ID", CHANNEL.get("handle") or CHANNEL.get("id", ""), False),
-        ], "EXAMPLES: @CHANNELNAME // YOUTUBE.COM/@CHANNELNAME // UC...", self.save_channel)
+        NCDialog(self, L("Target Channel", "Zielkanal"), [
+            ("channel", L("@HANDLE, CHANNEL URL OR CHANNEL ID", "@HANDLE, KANAL-LINK ODER KANAL-ID"),
+             CHANNEL.get("handle") or CHANNEL.get("id", ""), False),
+        ], L("EXAMPLES: @CHANNELNAME // YOUTUBE.COM/@CHANNELNAME // UC...",
+             "BEISPIELE: @KANALNAME // YOUTUBE.COM/@KANALNAME // UC..."), self.save_channel)
 
     def save_channel(self, v):
         target = parse_channel(v["channel"])
@@ -3406,16 +3737,16 @@ class App(tk.Tk):
         if self.worker and self.worker.is_alive():
             return
         if not all(get_creds()):
-            self.write_log("NO API CREDENTIALS // OPEN API SETUP", "err")
+            self.write_log(L("NO API CREDENTIALS // OPEN API SETUP", "KEINE API-ZUGANGSDATEN // API-KNOPF OBEN ÖFFNEN"), "err")
             self.edit_credentials()
             return
         if not CHANNEL:
-            self.write_log("NO TARGET CHANNEL // CLICK THE CHANNEL CARD", "err")
+            self.write_log(L("NO TARGET CHANNEL // CLICK THE CHANNEL CARD", "KEIN ZIELKANAL // OBEN LINKS AUF ÄNDERN KLICKEN"), "err")
             self.edit_channel()
             return
         years = self.selected_years()
         if not years:
-            self.write_log("NO TARGET SELECTED // CLICK A YEAR ON THE LEFT", "err")
+            self.write_log(L("NO TARGET SELECTED // CLICK A YEAR ON THE LEFT", "KEIN JAHR AUSGEWÄHLT // LINKS EIN JAHR ANKLICKEN"), "err")
             return
         self.save_settings()
         self.write_log(f"START // {', '.join(map(str, years))}", "sep")
@@ -3428,7 +3759,7 @@ class App(tk.Tk):
         self.check_btn.set_enabled(False)
         self.stop_btn.set_enabled(True)
         self.pause_btn.set_enabled(True)
-        self.pause_btn.set_text("❚❚  PAUSE")
+        self.pause_btn.set_text(L("❚❚  PAUSE", "❚❚  PAUSE"))
         self.set_status("running")
 
     def run_check(self):
@@ -3440,9 +3771,9 @@ class App(tk.Tk):
             return
         years = self.selected_years()
         if not years:
-            self.write_log("NO TARGET SELECTED // CLICK A YEAR ON THE LEFT", "err")
+            self.write_log(L("NO TARGET SELECTED // CLICK A YEAR ON THE LEFT", "KEIN JAHR AUSGEWÄHLT // LINKS EIN JAHR ANKLICKEN"), "err")
             return
-        self.write_log(f"PLAYLIST CHECK // {', '.join(map(str, years))}", "sep")
+        self.write_log(L(f"PLAYLIST CHECK // {', '.join(map(str, years))}", f"PLAYLIST-PRÜFUNG // {', '.join(map(str, years))}"), "sep")
         self.worker = Worker(years, 0, self.out, fallback=self.fallback, check_only=True)
         self.run_mode = "running"
         self.pause_info = None
@@ -3457,10 +3788,10 @@ class App(tk.Tk):
             return
         if self.worker.pause_event.is_set():
             self.worker.pause_event.clear()
-            self.pause_btn.set_text("❚❚  PAUSE")
+            self.pause_btn.set_text(L("❚❚  PAUSE", "❚❚  PAUSE"))
         else:
             self.worker.pause_event.set()
-            self.pause_btn.set_text("▶  RESUME")
+            self.pause_btn.set_text(L("▶  RESUME", "▶  WEITER"))
 
     def stop(self):
         if self.worker and self.worker.is_alive():
@@ -3468,6 +3799,23 @@ class App(tk.Tk):
             self.worker.stop_event.set()
             self.stop_btn.set_enabled(False)
             self.set_status("stopping")
+
+    def restart(self):
+        """Programm neu starten (z. B. nach Sprachwechsel)."""
+        import subprocess
+        if getattr(sys, "frozen", False):
+            args = [sys.executable]
+        else:
+            exe = Path(sys.executable)
+            pyw = exe.with_name("pythonw.exe")
+            args = [str(pyw if pyw.exists() else exe), str(Path(__file__).resolve())]
+        try:
+            subprocess.Popen(args, cwd=str(HERE))
+        except OSError as e:
+            self.write_log(L(f"RESTART FAILED // {e} // PLEASE RESTART MANUALLY",
+                             f"NEUSTART FEHLGESCHLAGEN // {e} // BITTE VON HAND NEU STARTEN"), "err")
+            return
+        self.on_close()
 
     def on_close(self):
         if self.worker and self.worker.is_alive():
@@ -3483,7 +3831,7 @@ class App(tk.Tk):
     def copy_code(self):
         self.clipboard_clear()
         self.clipboard_append(self.code)
-        self.write_log("CODE COPIED TO CLIPBOARD", "info")
+        self.write_log(L("CODE COPIED TO CLIPBOARD", "CODE IN DIE ZWISCHENABLAGE KOPIERT"), "info")
 
     # --- Nachrichten vom Worker
     def write_log(self, text, level="info"):
@@ -3518,7 +3866,7 @@ class App(tk.Tk):
                 elif kind == "update":
                     self.header.update = (msg[1], msg[2])
                     self.header.redraw()
-                    self.write_log(f"UPDATE AVAILABLE // v{msg[1]} // CLICK THE GREEN TAG IN THE HEADER", "ok")
+                    self.write_log(L(f"UPDATE AVAILABLE // v{msg[1]} // CLICK THE GREEN TAG IN THE HEADER", f"UPDATE VERFÜGBAR // v{msg[1]} // OBEN AUF DEN GRÜNEN HINWEIS KLICKEN"), "ok")
                 elif kind == "mode":
                     self.run_mode = msg[1]
                     self.set_status(msg[1])
@@ -3556,7 +3904,7 @@ class App(tk.Tk):
                     self.check_btn.set_enabled(True)
                     self.stop_btn.set_enabled(False)
                     self.pause_btn.set_enabled(False)
-                    self.pause_btn.set_text("❚❚  PAUSE")
+                    self.pause_btn.set_text(L("❚❚  PAUSE", "❚❚  PAUSE"))
                     self.pause_info = None
                     self.set_status("idle" if msg[1] == "resolved" else msg[1])
                     self.update_api_button()
