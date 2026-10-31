@@ -33,7 +33,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
 from pathlib import Path
-from tkinter import ttk
+from tkinter import filedialog, ttk
 
 import requests
 
@@ -45,15 +45,19 @@ except ImportError:  # nicht unter Windows
 # ---------------------------------------------------------------- Einstellungen
 # Zugangsdaten stehen NICHT im Code, sondern in credentials.json (wird über API SETUP angelegt).
 # Kanal wird im Programm eingegeben und in settings.json gespeichert.
-# Standard-Vorlagen; in settings.json über "playlist_template" / "description_template" änderbar.
+# Standard-Vorlagen; im Programm unter PLAYLIST SETTINGS änderbar (gespeichert in settings.json).
+# Platzhalter: {channel} {handle} {year} {count}
 DEFAULT_PLAYLIST_TEMPLATE = "{channel} {year} in Upload-Reihenfolge"
 DEFAULT_DESCRIPTION_TEMPLATE = "Alle Videos von {channel} aus {year} in Upload-Reihenfolge."
 PLAYLIST_TEMPLATE = DEFAULT_PLAYLIST_TEMPLATE
 DESCRIPTION_TEMPLATE = DEFAULT_DESCRIPTION_TEMPLATE
-PRIVACY = "public"
+PRIVACY = "public"              # public / unlisted / private
+PRIVACY_OPTIONS = ("public", "unlisted", "private")
+TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
+THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.8.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 36
+BUILD = 37
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -198,8 +202,24 @@ def archive_cutoff():
 def videos_file(y): return CHAN_DIR / f"videos_{y}.json"
 def collect_file(y): return CHAN_DIR / f"collect_{y}.json"
 def state_file(y): return CHAN_DIR / f"state_{y}.json"
-def playlist_title(y): return PLAYLIST_TEMPLATE.format(channel=channel_name(), year=y)
-def playlist_description(y): return DESCRIPTION_TEMPLATE.format(channel=channel_name(), year=y)
+def template_values(y, count=None):
+    if count is None:
+        vids = load(videos_file(y), None)
+        count = len(vids) if vids is not None else "?"
+    return {"channel": channel_name(), "handle": CHANNEL.get("handle", ""), "year": y, "count": count}
+
+
+def fill_template(t, y, count=None):
+    try:
+        return t.format(**template_values(y, count))
+    except (KeyError, IndexError, ValueError, AttributeError):
+        return t
+
+
+def playlist_title(y): return fill_template(PLAYLIST_TEMPLATE, y)
+def playlist_description(y): return fill_template(DESCRIPTION_TEMPLATE, y)
+def thumbs_dir(): return CHAN_DIR / "thumbs"
+def thumbs_file(): return CHAN_DIR / "thumbs.json"
 
 
 def load(path, default):
@@ -257,7 +277,7 @@ def set_windows_autostart(on):
 
 def _template_ok(t):
     try:
-        t.format(channel="X", year=2000)
+        t.format(channel="X", handle="@x", year=2000, count=1)
         return True
     except (KeyError, IndexError, ValueError, AttributeError):
         return False
@@ -265,11 +285,13 @@ def _template_ok(t):
 
 def apply_templates(settings):
     """Playlist-Titel und -Beschreibung aus settings.json übernehmen (Platzhalter: {channel}, {year})."""
-    global PLAYLIST_TEMPLATE, DESCRIPTION_TEMPLATE
+    global PLAYLIST_TEMPLATE, DESCRIPTION_TEMPLATE, PRIVACY
     pt = settings.get("playlist_template") or DEFAULT_PLAYLIST_TEMPLATE
-    dt = settings.get("description_template") or DEFAULT_DESCRIPTION_TEMPLATE
+    dt = settings.get("description_template", DEFAULT_DESCRIPTION_TEMPLATE)   # "" = keine Beschreibung
     PLAYLIST_TEMPLATE = pt if isinstance(pt, str) and _template_ok(pt) else DEFAULT_PLAYLIST_TEMPLATE
     DESCRIPTION_TEMPLATE = dt if isinstance(dt, str) and _template_ok(dt) else DEFAULT_DESCRIPTION_TEMPLATE
+    pv = settings.get("privacy", "public")
+    PRIVACY = pv if pv in PRIVACY_OPTIONS else "public"
 
 
 def version_tuple(v):
@@ -710,6 +732,10 @@ class Worker(threading.Thread):
                 r = quota_blocked(kind)
                 if r:
                     self.log(f"{label} ALREADY USED UP TODAY // SKIPPING IT UNTIL RESET {fmt_reset(r)}", "warn")
+            try:
+                self.apply_thumbnails()
+            except Exception as e:  # noqa: BLE001
+                self.log(f"THUMBNAILS SKIPPED // {str(e)[:120]}", "warn")
             if self.fallback:
                 self.scan_archive()
             queue_ = list(self.years)
@@ -1133,7 +1159,76 @@ class Worker(threading.Thread):
             state = {"playlist_id": pid, "next": 0, "skipped": []}
             save(sf, state)
             self.log(f"PLAYLIST CREATED // {playlist_title(year)}", "ok")
+            try:
+                self.apply_thumbnails(only_year=year)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"THUMBNAIL {year} FAILED // {str(e)[:120]}", "err")
         return state
+
+    # --- Playlist-Thumbnails (eigenes Bild pro Jahr)
+    def upload_call(self, method, params, meta, data, mime):
+        """Multipart-Upload an /upload/youtube/v3/playlistImages (Metadaten + Bild)."""
+        if quota_blocked("units"):
+            raise QuotaExceeded()
+        boundary = "chronolist" + str(random.randint(10 ** 8, 10 ** 9))
+        body = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
+                f"{json.dumps(meta)}\r\n--{boundary}\r\nContent-Type: {mime}\r\n\r\n").encode() + data + \
+            f"\r\n--{boundary}--\r\n".encode()
+        for _ in range(3):
+            if time.time() > self.tok.get("expires_at", 0):
+                self.refresh()
+            r = requests.request(method, "https://www.googleapis.com/upload/youtube/v3/playlistImages",
+                                 params={**params, "uploadType": "multipart"}, data=body, timeout=60,
+                                 headers={"Authorization": f"Bearer {self.tok['access_token']}",
+                                          "Content-Type": f"multipart/related; boundary={boundary}"})
+            if r.ok:
+                return r.json() if r.content else {}
+            if r.status_code == 401:
+                self.refresh()
+                continue
+            try:
+                errs = r.json().get("error", {})
+            except ValueError:
+                errs = {}
+            reasons = {e.get("reason") for e in errs.get("errors", [])}
+            if reasons & {"quotaExceeded", "dailyLimitExceeded"}:
+                mark_quota("units")
+                raise QuotaExceeded()
+            raise ApiError(r.status_code, reasons, errs.get("message") or r.text)
+        raise RuntimeError("THUMBNAIL UPLOAD FAILED // AUTH")
+
+    def apply_thumbnails(self, only_year=None):
+        """Wartende Thumbnails hochladen, sobald die Playlist existiert. Nur über die API (50 Einheiten pro Bild)."""
+        info = load(thumbs_file(), {})
+        todo = [(int(y), t) for y, t in info.items()
+                if t.get("status") == "queued" and (only_year is None or int(y) == only_year)]
+        for y, t in sorted(todo):
+            pid = load(state_file(y), {}).get("playlist_id")
+            path = thumbs_dir() / t.get("file", "")
+            if not pid or not path.exists():
+                continue
+            if self.mode != "api" or quota_blocked("units"):
+                self.log(f"THUMBNAIL {y} WAITING // NEEDS API QUOTA", "warn")
+                return
+            mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+            try:
+                existing = self.call("GET", "playlistImages", {"part": "id,snippet", "playlistId": pid}).get("items", [])
+                meta = {"snippet": {"playlistId": pid, "type": "hero"}}
+                if existing:
+                    meta["id"] = existing[0]["id"]
+                    self.upload_call("PUT", {"part": "snippet"}, meta, path.read_bytes(), mime)
+                else:
+                    self.upload_call("POST", {"part": "snippet"}, meta, path.read_bytes(), mime)
+                t.update(status="done", error="")
+                self.log(f"THUMBNAIL {y} UPLOADED", "ok")
+            except QuotaExceeded:
+                self.log(f"THUMBNAIL {y} WAITING // NEEDS API QUOTA", "warn")
+                return
+            except (ApiError, RuntimeError, requests.RequestException) as e:
+                t.update(status="error", error=str(e)[:200])
+                self.log(f"THUMBNAIL {y} FAILED // {str(e)[:120]}", "err")
+            info[str(y)] = t
+            save(thumbs_file(), info)
 
     def switch_to_browser(self):
         self.log("DAILY API QUOTA REACHED // SWITCHING TO BROWSER FALLBACK", "warn")
@@ -2012,6 +2107,260 @@ class NCDialog(tk.Toplevel):
             self.destroy()
 
 
+class SettingsDialog(tk.Toplevel):
+    """Playlist-Einstellungen: Titel, Beschreibung, Sichtbarkeit, Thumbnails pro Jahr."""
+
+    CHIPS = (("CHANNEL", "{channel}"), ("HANDLE", "{handle}"), ("YEAR", "{year}"), ("COUNT", "{count}"))
+
+    def __init__(self, app):
+        super().__init__(app, bg=BG)
+        self.app = app
+        self.title("Playlist Settings")
+        self.transient(app)
+        self.minsize(px(640), px(560))
+        self.geometry(f"{px(720)}x{px(800)}")
+        self.focus_field = None
+        pad = px(18)
+        st = app.settings
+        sample = (app.selected_years() or YEARS or [datetime.date.today().year - 1])[0]
+        self.sample_year = sample
+
+        row = tk.Frame(self, bg=BG)
+        row.pack(side="bottom", fill="x", padx=pad, pady=pad)
+        CutButton(row, "SAVE", self.save, width=110).pack(side="left")
+        CutButton(row, "CANCEL", self.destroy, width=110).pack(side="left", padx=(px(8), 0))
+        CutButton(row, "RESET TO DEFAULT", self.reset, width=170).pack(side="right")
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
+
+        Section(body, "PLAYLIST SETTINGS", "TEMPLATE // VISIBILITY").pack(fill="x", pady=(0, px(10)))
+        self.lbl(body, "TITLE")
+        self.title_var = tk.StringVar(value=st.get("playlist_template") or DEFAULT_PLAYLIST_TEMPLATE)
+        self.title_entry = self.entry(body, self.title_var)
+        self.title_entry.bind("<FocusIn>", lambda e: setattr(self, "focus_field", self.title_entry))
+        self.focus_field = self.title_entry
+
+        chips = tk.Frame(body, bg=BG)
+        chips.pack(fill="x", pady=(px(2), px(6)))
+        tk.Label(chips, text="INSERT:", bg=BG, fg=TEXT_MUTED, font=F("mono", 10)).pack(side="left", padx=(0, px(6)))
+        tips = {"{channel}": "Name des Kanals", "{handle}": "@Handle des Kanals", "{year}": "Jahr der Playlist",
+                "{count}": "Anzahl der Videos in diesem Jahr"}
+        for label, tok in self.CHIPS:
+            b = CutButton(chips, label, lambda t=tok: self.insert(t))
+            b.pack(side="left", padx=(0, px(6)))
+            Tooltip(b, f"Fügt {tok} ein: {tips[tok]}.")
+
+        self.lbl(body, "DESCRIPTION (OPTIONAL, LEAVE EMPTY FOR NONE)")
+        self.desc = tk.Text(body, height=4, wrap="word", bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                            font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
+                            highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3),
+                            padx=px(6), pady=px(6))
+        self.desc.insert("1.0", st.get("description_template", DEFAULT_DESCRIPTION_TEMPLATE))
+        self.desc.pack(fill="x", pady=(px(4), px(8)))
+        self.desc.bind("<FocusIn>", lambda e: setattr(self, "focus_field", self.desc))
+        self.desc.bind("<KeyRelease>", lambda e: self.preview())
+        self.title_var.trace_add("write", lambda *a: self.preview())
+
+        self.prev = tk.Label(body, text="", bg=BG, fg=TEXT, font=F("mono", 11, False), justify="left", anchor="w",
+                             wraplength=px(640))
+        self.prev.pack(fill="x", pady=(0, px(8)))
+
+        self.lbl(body, "VISIBILITY")
+        vis = tk.Frame(body, bg=BG)
+        vis.pack(fill="x", pady=(px(4), px(4)))
+        self.privacy = st.get("privacy", "public")
+        self.vis_btns = {}
+        for opt in PRIVACY_OPTIONS:
+            b = CutButton(vis, opt.upper(), lambda o=opt: self.set_privacy(o), width=110)
+            b.pack(side="left", padx=(0, px(6)))
+            self.vis_btns[opt] = b
+        Tooltip(self.vis_btns["public"], "Jeder kann die Playlist finden und ansehen.")
+        Tooltip(self.vis_btns["unlisted"], "Nur Leute mit dem Link können die Playlist sehen.")
+        Tooltip(self.vis_btns["private"], "Nur du kannst die Playlist sehen.")
+        self.set_privacy(self.privacy)
+        tk.Label(body, text="TITLE, DESCRIPTION AND VISIBILITY APPLY TO PLAYLISTS CREATED FROM NOW ON.",
+                 bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w").pack(fill="x", pady=(px(2), px(12)))
+
+        Section(body, "THUMBNAILS (OPTIONAL, EXPERIMENTAL)", "JPG/PNG // MAX 2 MB").pack(fill="x", pady=(0, px(6)))
+        tk.Label(body, text="PICK AN IMAGE PER YEAR, ALSO FOR PLAYLISTS THAT DON'T EXIST YET. IT IS UPLOADED VIA THE "
+                            "API (50 UNITS) AS SOON AS THE PLAYLIST EXISTS AND QUOTA IS AVAILABLE. "
+                            "RECOMMENDED: 1280×720.",
+                 bg=BG, fg=TEXT_MUTED, font=F("mono", 10, False), justify="left", anchor="w",
+                 wraplength=px(660)).pack(fill="x", pady=(0, px(6)))
+        wrap = tk.Frame(body, bg=BG)
+        wrap.pack(fill="both", expand=True)
+        self.thumb_area = ScrollArea(wrap)
+        self.thumb_area.pack(fill="both", expand=True)
+        self.thumbs = load(thumbs_file(), {})
+        self.pending = {}      # jahr -> neuer Dateipfad oder None (= entfernen)
+        self.thumb_rows = {}
+        for y in YEARS:
+            self.build_thumb_row(y)
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.preview()
+        style_titlebar(self)
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - self.winfo_height()) // 3)
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.grab_set()
+        self.focus_force()
+
+    # --- Bausteine
+    def lbl(self, parent, text):
+        tk.Label(parent, text=text, bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w").pack(fill="x")
+
+    def entry(self, parent, var):
+        e = tk.Entry(parent, textvariable=var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                     font=F("mono", 13, False), highlightthickness=1, highlightcolor=CYAN,
+                     highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3))
+        e.pack(fill="x", pady=(px(4), 0), ipady=px(6))
+        return e
+
+    def insert(self, tok):
+        w = self.focus_field or self.title_entry
+        w.insert("insert", tok)
+        w.focus_set()
+        self.preview()
+
+    def set_privacy(self, opt):
+        self.privacy = opt
+        for o, b in self.vis_btns.items():
+            b.set_color(GREEN if o == opt else CYAN)
+            b.set_text(("● " if o == opt else "") + o.upper())
+
+    def preview(self):
+        t, d = self.title_var.get(), self.desc.get("1.0", "end").strip()
+        ok_t, ok_d = _template_ok(t), _template_ok(d) if d else True
+        y = self.sample_year
+        lines = [f"PREVIEW {y}: " + (fill_template(t, y) if ok_t else "INVALID PLACEHOLDER IN TITLE")]
+        if d:
+            short = fill_template(d, y) if ok_d else "INVALID PLACEHOLDER IN DESCRIPTION"
+            lines.append("DESCRIPTION: " + (short if len(short) < 140 else short[:137] + "..."))
+        else:
+            lines.append("DESCRIPTION: (NONE)")
+        self.prev.configure(text="\n".join(lines), fg=TEXT if ok_t and ok_d else RED)
+        return ok_t and ok_d
+
+    def thumb_state(self, y):
+        if y in self.pending:
+            return ("NEW", Path(self.pending[y]).name) if self.pending[y] else ("REMOVE", "")
+        t = self.thumbs.get(str(y))
+        if not t:
+            return ("NONE", "")
+        status = {"queued": "QUEUED", "done": "UPLOADED", "error": "ERROR"}.get(t.get("status"), "?")
+        return (status, t.get("file", ""))
+
+    def build_thumb_row(self, y):
+        fr = tk.Frame(self.thumb_area.inner, bg=BG)
+        fr.pack(fill="x", pady=(0, px(4)))
+        tk.Label(fr, text=str(y), bg=BG, fg=TEXT, font=F("ui", 14), width=6, anchor="w").pack(side="left")
+        info = tk.Label(fr, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w")
+        info.pack(side="left", fill="x", expand=True)
+        rm = CutButton(fr, "REMOVE", lambda: self.remove_thumb(y), width=90)
+        rm.pack(side="right")
+        CutButton(fr, "CHOOSE…", lambda: self.choose_thumb(y), width=100).pack(side="right", padx=(0, px(6)))
+        self.thumb_area.wheel(fr)
+        self.thumb_rows[y] = (info, rm)
+        self.refresh_thumb_row(y)
+
+    def refresh_thumb_row(self, y):
+        info, rm = self.thumb_rows[y]
+        status, name = self.thumb_state(y)
+        col = {"UPLOADED": GREEN, "QUEUED": YELLOW, "NEW": CYAN, "ERROR": RED, "REMOVE": RED}.get(status, TEXT_MUTED)
+        txt = f"{status}" + (f" // {name}" if name else "")
+        t = self.thumbs.get(str(y)) or {}
+        if status == "ERROR" and t.get("error"):
+            txt += f" // {t['error'][:60]}"
+        info.configure(text=txt, fg=col)
+        rm.set_enabled(status not in ("NONE", "REMOVE"))
+
+    def choose_thumb(self, y):
+        f = filedialog.askopenfilename(parent=self, title=f"Thumbnail {y}",
+                                       filetypes=[("Images", "*.jpg *.jpeg *.png"), ("All files", "*.*")])
+        if not f:
+            return
+        p_ = Path(f)
+        if p_.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+            self.app.write_log(f"THUMBNAIL {y} // ONLY JPG OR PNG", "err")
+            return
+        if p_.stat().st_size > THUMB_MAX_BYTES:
+            self.app.write_log(f"THUMBNAIL {y} // FILE TOO LARGE (MAX 2 MB)", "err")
+            return
+        self.pending[y] = str(p_)
+        self.refresh_thumb_row(y)
+
+    def remove_thumb(self, y):
+        self.pending[y] = None
+        self.refresh_thumb_row(y)
+
+    def reset(self):
+        self.title_var.set(DEFAULT_PLAYLIST_TEMPLATE)
+        self.desc.delete("1.0", "end")
+        self.desc.insert("1.0", DEFAULT_DESCRIPTION_TEMPLATE)
+        self.set_privacy("public")
+        self.preview()
+
+    def save(self):
+        if not self.preview():
+            self.app.write_log("SETTINGS NOT SAVED // INVALID PLACEHOLDER (USE {channel} {handle} {year} {count})",
+                               "err")
+            return
+        st = self.app.settings
+        st["playlist_template"] = self.title_var.get().strip() or DEFAULT_PLAYLIST_TEMPLATE
+        st["description_template"] = self.desc.get("1.0", "end").strip()
+        st["privacy"] = self.privacy
+        save(SETTINGS_FILE, st)
+        apply_templates(st)
+        # Thumbnails übernehmen (Kopie im Kanal-Ordner)
+        if self.pending:
+            thumbs_dir().mkdir(parents=True, exist_ok=True)
+            for y, src in self.pending.items():
+                old = self.thumbs.pop(str(y), None)
+                if old and old.get("file") and (thumbs_dir() / old["file"]).exists():
+                    try:
+                        (thumbs_dir() / old["file"]).unlink()
+                    except OSError:
+                        pass
+                if src:
+                    name = f"{y}{Path(src).suffix.lower()}"
+                    shutil.copyfile(src, thumbs_dir() / name)
+                    self.thumbs[str(y)] = {"file": name, "status": "queued", "error": ""}
+            save(thumbs_file(), self.thumbs)
+        self.app.write_log("PLAYLIST SETTINGS SAVED", "ok")
+        self.app.settings_card.redraw()
+        self.destroy()
+
+
+class SettingsCard(Panel):
+    """Karte unter den Optionen: zeigt die aktuelle Titel-Vorlage, Klick öffnet die Einstellungen."""
+
+    def __init__(self, master, command):
+        super().__init__(master, 54, command=command)
+
+    def draw_content(self, x0, y0, x1, y1, c, role):
+        h = y1 - y0
+        cy = (y0 + y1) / 2
+        isz = px(24)
+        ix = x0 + px(8)
+        self.icon_box(ix, cy, isz, role, False)
+        u = isz / 24
+        for k, yy in enumerate((8, 12, 16)):
+            self.create_line(ix + 6 * u, cy - isz / 2 + yy * u, ix + 18 * u, cy - isz / 2 + yy * u,
+                             fill=mix(role, BG, 0.8), width=max(1, px(1.5)))
+        tx = self.right_tag(x0, y0, x1, y1, c, px(66), role, False)
+        nx = ix + isz + px(10)
+        maxw = tx - nx - px(6)
+        self.create_text(nx, y0 + h * 0.34, text="PLAYLIST SETTINGS", anchor="w", font=F("ui", 14), fill=TEXT_DIM)
+        y = (YEARS[0] if YEARS else datetime.date.today().year - 1)
+        sub = f"{PRIVACY.upper()} // " + fill_template(PLAYLIST_TEMPLATE, y)
+        self.create_text(nx, y0 + h * 0.66, text=fit_text(sub, F("mono", 10), maxw), anchor="w",
+                         font=F("mono", 10), fill=TEXT_MUTED)
+        self.create_text((tx + x1) / 2, (y0 + y1 - c / 2) / 2, text="EDIT ›", font=F("mono", 12), fill=CYAN)
+
+
+
 HELP_TEXT = [
     ("h1", "Chronolist Hilfe"),
     ("p", "Chronolist erstellt für einen YouTube-Kanal pro Jahr eine Playlist mit allen Videos aus diesem Jahr. "
@@ -2038,8 +2387,9 @@ HELP_TEXT = [
             "begrenzt. Bei großen "
             "Kanälen schafft man so ungefähr ein altes Jahr pro Tag.\n"
             "Was einmal gefunden wurde, wird gespeichert und nicht noch einmal gesucht."),
-    ("num", "3.  Playlist anlegen. Für jedes Jahr legt Chronolist eine öffentliche Playlist an. "
-            "Sie heißt zum Beispiel \"MeinKanal 2012 in Upload-Reihenfolge\". Den Namen kannst du in settings.json über playlist_template ändern (Platzhalter {channel} und {year})."),
+    ("num", "3.  Playlist anlegen. Für jedes Jahr legt Chronolist eine Playlist an. Standardmäßig heißt sie zum "
+            "Beispiel \"MeinKanal 2012 in Upload-Reihenfolge\" und ist öffentlich. Name, Beschreibung, Sichtbarkeit "
+            "und ein eigenes Bild stellst du unter PLAYLIST SETTINGS ein."),
     ("num", "4.  Füllen. Die Videos werden der Reihe nach eingefügt. Jedes Video verbraucht 50 von 10.000 Einheiten, "
             "die man pro Tag hat. Das reicht für ungefähr 200 Videos am Tag."),
     ("num", "5.  Wenn das Tageskontingent leer ist:\n"
@@ -2070,6 +2420,7 @@ HELP_TEXT = [
     ("li", "Ein Video einfügen: 50 Einheiten"),
     ("li", "Playlist prüfen: 1 Einheit pro 50 Videos"),
     ("li", "Ein doppeltes Video entfernen: 50 Einheiten"),
+    ("li", "Ein Thumbnail hochladen: 50 Einheiten"),
 
     ("h2", "Oben im Fenster"),
     ("dt", "HELP"),
@@ -2131,6 +2482,19 @@ HELP_TEXT = [
     ("dd", "Kann ein Jahr gerade nicht gesucht werden, weil das Kontingent oder das Suchlimit aufgebraucht ist, "
            "macht Chronolist mit dem nächsten Jahr weiter, das schon bereit ist. Das übersprungene Jahr kommt später "
            "dran. Ist der Schalter aus, hält Chronolist in diesem Fall an."),
+    ("dt", "PLAYLIST SETTINGS"),
+    ("dd", "Hier legst du fest, wie neue Playlists aussehen:\n"
+           "Titel und Beschreibung: Du kannst Platzhalter verwenden, die beim Anlegen ersetzt werden. {channel} wird "
+           "zum Kanalnamen, {handle} zum @Handle, {year} zum Jahr und {count} zur Anzahl der Videos in diesem Jahr. "
+           "Die Knöpfe unter dem Titelfeld fügen sie an der Stelle ein, an der der Cursor steht. Darunter siehst du "
+           "eine Vorschau. Lässt du die Beschreibung leer, bekommt die Playlist keine.\n"
+           "Sichtbarkeit: öffentlich, nicht gelistet (nur mit Link) oder privat.\n"
+           "Thumbnails: Für jedes Jahr kannst du ein eigenes Bild auswählen, auch schon bevor es die Playlist gibt. "
+           "Es wird hochgeladen, sobald die Playlist existiert und Kontingent da ist (50 Einheiten pro Bild). "
+           "Erlaubt sind JPG und PNG bis 2 MB, am besten im Format 1280×720. Diese Funktion ist noch neu und "
+           "nicht mit allen Konten getestet.\n"
+           "Änderungen gelten für Playlists, die ab jetzt angelegt werden. Schon vorhandene Playlists bleiben so, "
+           "wie sie sind."),
     ("dt", "AUTO-RUN"),
     ("dd", "Startet automatisch, sobald du das Programm öffnest."),
     ("dt", "BOOT"),
@@ -2446,7 +2810,7 @@ class Header(tk.Canvas):
                             outline=mix(YELLOW, BG, 0.75))
         self.create_text((vx0 + vx1) / 2, y, text=vtxt, font=vf, fill=YELLOW)
         bt = self.create_text(vx1 + px(10), y, text=f"BUILD {BUILD:04d}", anchor="w",
-                              font=F("mono", 10, False), fill=FLUFF)
+                              font=F("mono", 10, False), fill=FLUFF, tags="buildtxt")
         self.title_end = self.bbox(bt)[2] + px(20)
         if self.update:
             ut = self.create_text(self.title_end - px(6), y, text=f"UPDATE v{self.update[0]} ›", anchor="w",
@@ -2474,6 +2838,10 @@ class Header(tk.Canvas):
             bw_ = self.help_btn.winfo_reqwidth()
             self.create_window(bx, px(46), window=self.help_btn, anchor="e")
             bx -= bw_ + px(16)
+        # BUILD-Hinweis weglassen, wenn er sonst unter die Knöpfe läuft
+        bb = self.bbox("buildtxt")
+        if bb and bb[2] > bx + px(8):
+            self.delete("buildtxt")
         # Deko nur, wenn neben dem Titel Platz ist
         if bx - px(110) > self.title_end:
             for bw in (1, 3, 1, 2, 1, 1, 3, 1, 2, 1):
@@ -2718,6 +3086,8 @@ class App(tk.Tk):
         self.win_card = ToggleCard(opts, "BOOT", "WITH WINDOWS", self.win_on,
                                    self.toggle_windows, available=winreg is not None, compact=True)
         self.win_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
+        self.settings_card = SettingsCard(opts, self.edit_settings)
+        self.settings_card.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(px(4), 0))
 
         self.login = tk.Frame(right, bg=BG)
         self.login.columnconfigure(0, weight=1)
@@ -2813,6 +3183,15 @@ class App(tk.Tk):
         self.autorun = not self.autorun
         self.autorun_card.update_value(self.autorun)
         self.save_settings()
+
+    def edit_settings(self):
+        if self.busy():
+            return
+        if not CHANNEL:
+            self.write_log("SET A TARGET CHANNEL FIRST", "warn")
+            self.edit_channel()
+            return
+        SettingsDialog(self)
 
     def toggle_skip(self):
         self.skip_ahead = not self.skip_ahead
@@ -2941,6 +3320,8 @@ class App(tk.Tk):
                                 "weitermachen und das übersprungene später nachholen.")
         Tooltip(self.autorun_card, "Beim Öffnen von Chronolist automatisch starten.")
         Tooltip(self.win_card, "Chronolist automatisch mit Windows starten.")
+        Tooltip(self.settings_card, "Playlist-Titel und Beschreibung mit Platzhaltern, Sichtbarkeit und eigene "
+                                    "Thumbnails pro Jahr einstellen.")
         Tooltip(self.login_panel, "Google-Anmeldung: Link öffnen, Code eingeben, bestätigen. Klick auf den Code kopiert ihn.")
 
     def api_tick(self):
@@ -3018,6 +3399,8 @@ class App(tk.Tk):
         self.channel_card.update_state(resolving=False)
         self.header.redraw()
         self.footer.redraw()
+        if hasattr(self, "settings_card"):
+            self.settings_card.redraw()
 
     def start(self):
         if self.worker and self.worker.is_alive():
