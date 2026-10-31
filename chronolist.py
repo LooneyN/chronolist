@@ -91,7 +91,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.8.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 38
+BUILD = 39
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2162,7 +2162,7 @@ class NCDialog(tk.Toplevel):
         CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
         self.bind("<Return>", lambda e: self.save())
         self.bind("<Escape>", lambda e: self.destroy())
-        style_titlebar(self)
+        style_window(self)
         self.update_idletasks()
         x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
         y = master.winfo_rooty() + (master.winfo_height() - self.winfo_height()) // 3
@@ -2287,7 +2287,7 @@ class SettingsDialog(tk.Toplevel):
 
         self.bind("<Escape>", lambda e: self.destroy())
         self.preview()
-        style_titlebar(self)
+        style_window(self)
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
         y = app.winfo_rooty() + max(0, (app.winfo_height() - self.winfo_height()) // 3)
@@ -2951,7 +2951,7 @@ class HelpWindow(tk.Toplevel):
                 txt.insert("end", text + "\n", kind)
         txt.configure(state="disabled")
         txt.bind("<MouseWheel>", lambda e: txt.yview_scroll(int(-e.delta / 120), "units"))
-        style_titlebar(self)
+        style_window(self)
         self.transient(master)
         self.focus_force()
 
@@ -3182,12 +3182,31 @@ class ScrollArea(tk.Frame):
         self.columnconfigure(0, weight=1)
         self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self.win, width=e.width))
-        self.wheel(self.canvas)
+        self._is_scrollarea = True
+        root = self.winfo_toplevel()._root()
+        if not getattr(root, "_wheel_dispatch", False):
+            # Ein zentraler Mausrad-Handler: scrollt die ScrollArea, über der sich die Maus gerade befindet –
+            # egal über welchem Kind-Element (Label, Knopf, Karte).
+            root._wheel_dispatch = True
+            root.bind_all("<MouseWheel>", lambda e: ScrollArea._dispatch(e, int(-e.delta / 120)), add="+")
+            root.bind_all("<Button-4>", lambda e: ScrollArea._dispatch(e, -1), add="+")
+            root.bind_all("<Button-5>", lambda e: ScrollArea._dispatch(e, 1), add="+")
+
+    @staticmethod
+    def _dispatch(e, steps):
+        try:
+            w = e.widget.winfo_containing(e.x_root, e.y_root)
+        except (tk.TclError, AttributeError, KeyError):
+            return
+        while w is not None:
+            if getattr(w, "_is_scrollarea", False):
+                if steps:
+                    w.canvas.yview_scroll(steps, "units")
+                return
+            w = getattr(w, "master", None)
 
     def wheel(self, widget):
-        widget.bind("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 120), "units"))
-        widget.bind("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
-        widget.bind("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
+        """Nicht mehr nötig (zentraler Handler), bleibt für bestehende Aufrufe."""
 
 
 def enable_dpi_awareness():
@@ -3226,6 +3245,13 @@ def style_titlebar(root):
         ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(MARGINS(0, 0, 0, 0)))
     except Exception:  # noqa: BLE001
         pass
+
+
+def style_window(win):
+    """Dunkle Titelleiste und kein durchscheinender Hintergrund – auch nach dem Anzeigen noch einmal setzen."""
+    style_titlebar(win)
+    for ms in (50, 300, 1000, 2500):
+        win.after(ms, lambda: win.winfo_exists() and style_titlebar(win))
 
 
 def setup_theme(root):
