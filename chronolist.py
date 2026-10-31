@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 58
+BUILD = 59
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1020,6 +1020,8 @@ class Worker(threading.Thread):
 
     # --- Hilfen
     def emit(self, *msg):
+        if msg and msg[0] == "current":
+            self.current_year = msg[1]
         self.out.put(msg)
 
     def act(self, text=None):
@@ -1433,8 +1435,10 @@ class Worker(threading.Thread):
             if not tok:
                 idx["end"] = True
             save(web_index_file(), idx)
-            self.act(L(f"CHANNEL PAGE // {len(idx['ids'])} READ // {(idx['last'] or '?')[:7]}",
-                       f"KANALSEITE // {len(idx['ids'])} GELESEN // {(idx['last'] or '?')[:7]}"))
+            pre = (L(f"PRE-SCAN {year} // ", f"VORAB {year} // ")
+                   if year != getattr(self, "current_year", year) else "")
+            self.act(pre + L(f"CHANNEL PAGE // {len(idx['ids'])} READ // {(idx['last'] or '?')[:7]}",
+                             f"KANALSEITE // {len(idx['ids'])} GELESEN // {(idx['last'] or '?')[:7]}"))
             pages += 1
             if pages % 10 == 0:
                 self.log(L(f"CHANNEL PAGE // {len(idx['ids'])} VIDEOS READ // NOW AT {(idx['last'] or '?')[:7]}",
@@ -1562,7 +1566,9 @@ class Worker(threading.Thread):
                 start = f"{year}-{m:02d}-01T00:00:00Z"
                 end = f"{year + 1}-01-01T00:00:00Z" if m == 12 else f"{year}-{m + 1:02d}-01T00:00:00Z"
                 token, count = None, 0
-                self.act(L(f"DATE SEARCH // {m:02d}/{year}", f"DATUMSSUCHE // {m:02d}/{year}"))
+                self.act((L(f"PRE-SCAN {year} // ", f"VORAB {year} // ")
+                          if year != getattr(self, "current_year", year) else "")
+                         + L(f"DATE SEARCH // {m:02d}/{year}", f"DATUMSSUCHE // {m:02d}/{year}"))
                 while True:
                     params = {
                         "part": "snippet", "channelId": prog["channel_id"], "type": "video",
