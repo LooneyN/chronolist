@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.10.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 42
+BUILD = 43
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -891,8 +891,11 @@ class Worker(threading.Thread):
                     why = L("DAILY SEARCH LIMIT", "SUCHLIMIT") if isinstance(e, SearchLimit) else L("API QUOTA", "API-KONTINGENT")
                     self.log(L(f"{y} NOT SCANNED YET ({why}) // SKIP AHEAD TO {nxt}", f"{y} NOCH NICHT GESUCHT ({why}) // WEITER MIT {nxt}"), "warn")
                     deferred.append(y)
+                    if nxt in queue_:
+                        queue_.remove(nxt)      # schon ausgewählt: nur nach vorne holen
+                    else:
+                        self.emit("select", nxt, None)
                     queue_.insert(0, nxt)
-                    self.emit("select", nxt, None)
                     continue
                 if self.fallback and self.mode == "api":
                     self.prefetch(y + 1)
@@ -1057,7 +1060,11 @@ class Worker(threading.Thread):
                              f"ZU VIELE FEHLVERSUCHE // {method} {path} // ZULETZT: {last}"))
 
     def next_ready_year(self, after, queue_):
-        """Nächstes Jahr nach `after`, dessen Videoliste schon fertig ist und das noch nicht voll ist."""
+        """Nächstes Jahr, dessen Videoliste schon fertig ist und das noch nicht voll ist.
+        Zuerst unter den ausgewählten Jahren in ihrer Reihenfolge, erst dann ein neues Jahr nach `after`."""
+        for y in queue_:
+            if year_info(y)["code"] in ("ready", "progress"):
+                return y
         for y in range(after + 1, datetime.date.today().year):
             if y in queue_:
                 continue
