@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 74
+BUILD = 75
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -115,7 +115,6 @@ BATCH_PAUSE = (5, 15)          # Sekunden zwischen zwei Paketen
 COOLDOWN_EVERY = 200            # nach so vielen Videos ein kurzer Cooldown
 COOLDOWN_PAUSE = (27, 33)       # Sekunden (~30 s)
 LONG_BREAK_EVERY = 1000         # nach so vielen Videos eine lange Pause
-CHECK_EVERY = 1000              # Zwischenprüfung der Playlist während eines Laufs
 LONG_BREAK_PAUSE = (270, 330)   # Sekunden (~5 min)
 PART_MAX = 5000                 # YouTube: höchstens 5.000 Videos pro Playlist -> danach Teil 2, 3, ...
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -235,9 +234,22 @@ def archive_cutoff():
     a = load(archive_file(), {})
     if not a.get("done") or not a.get("found"):
         return None
-    if a.get("seen", 0) >= a.get("total", 0) - 50:
+    if a.get("seen", 0) < CAP_SEEN:
         return None
     return min(int(p[:4]) for p in a["found"].values())
+
+
+CAP_SEEN = 19900      # YouTube liefert Upload-Listen nur bis ca. 20.000 Einträge
+
+
+def videos_only_list(uploads_id):
+    """Upload-Liste 'UU…' -> Liste nur mit normalen Videos 'UULF…' (ohne Shorts und Livestreams)."""
+    if uploads_id and uploads_id.startswith("UU") and not uploads_id.startswith("UULF"):
+        return "UULF" + uploads_id[2:]
+    return uploads_id
+
+
+def lf_file(): return CHAN_DIR / "videos_only.json"
 def videos_file(y): return CHAN_DIR / f"videos_{y}.json"
 def collect_file(y): return CHAN_DIR / f"collect_{y}.json"
 def state_file(y): return CHAN_DIR / f"state_{y}.json"
@@ -950,7 +962,7 @@ class BrowserUplink:
             tokens += new_tokens
             if progress:
                 progress(len(items))
-            time.sleep(1)
+            time.sleep(0.3)
         return items
 
     def resolve_channel(self, handle):
@@ -1038,6 +1050,35 @@ class BrowserUplink:
             if progress:
                 progress(min(i + 20, len(moves)))
             self.w.sleep(random.uniform(2, 4))
+
+    def remove_many(self, playlist_id, items):
+        acts = [{"action": "ACTION_REMOVE_VIDEO", "setVideoId": it["set"], "removedVideoId": it["vid"]} for it in items]
+        j = self.yt_call("browse/edit_playlist", {"playlistId": playlist_id, "actions": acts})
+        if j.get("status") != "STATUS_SUCCEEDED":
+            raise BrowserFailed(L(f"REMOVE FAILED // {j.get('status')}", f"ENTFERNEN FEHLGESCHLAGEN // {j.get('status')}"))
+
+    def contains(self, playlist_id, video_id):
+        """Steckt das Video in der Playlist? Über den 'Speichern in'-Dialog der Webseite.
+        None = konnte nicht festgestellt werden."""
+        try:
+            j = self.yt_call("playlist/get_add_to_playlist", {"videoIds": [video_id], "excludeWatchLater": True})
+        except BrowserFailed:
+            return None
+        found = []
+
+        def walk(n):
+            if isinstance(n, dict):
+                if n.get("playlistId") == playlist_id and "containsSelectedVideos" in n:
+                    found.append(n["containsSelectedVideos"])
+                for v in n.values():
+                    walk(v)
+            elif isinstance(n, list):
+                for v in n:
+                    walk(v)
+        walk(j)
+        if not found:
+            return None
+        return found[0] == "ALL"
 
     def remove(self, playlist_id, item):
         j = self.yt_call("browse/edit_playlist", {"playlistId": playlist_id, "actions": [
@@ -1373,9 +1414,9 @@ class Worker(threading.Thread):
                 items = self.call("GET", "channels", {"part": "contentDetails,statistics", **q}).get("items", [])
                 if not items:
                     return
-                prog = {"uploads": items[0]["contentDetails"]["relatedPlaylists"]["uploads"],
+                prog = {"uploads": videos_only_list(items[0]["contentDetails"]["relatedPlaylists"]["uploads"]),
                         "total": int(items[0]["statistics"]["videoCount"]),
-                        "found": {}, "page_token": None, "seen": 0}
+                        "found": {}, "page_token": None, "seen": 0, "videos_only": True}
                 save(archive_file(), prog)
             self.log(L(f"ARCHIVE SCAN // ALL YEARS IN ONE PASS // {prog['seen']}/{prog['total']} ...", f"ARCHIV-SCAN // ALLE JAHRE IN EINEM DURCHGANG // {prog['seen']}/{prog['total']} ..."))
             pages = 0
@@ -1408,7 +1449,7 @@ class Worker(threading.Thread):
         by_year = {}
         for vid, pub in prog["found"].items():
             by_year.setdefault(int(pub[:4]), []).append({"id": vid, "published": pub})
-        complete = prog["seen"] >= prog["total"] - 50
+        complete = prog["seen"] < CAP_SEEN
         oldest = min(by_year) if by_year else this_year
         written = []
         for y, vids in by_year.items():
@@ -1510,18 +1551,7 @@ class Worker(threading.Thread):
         web = self.web_index(year)
         if not web:
             raise BrowserFailed(L(f"{year} // NO VIDEOS FOUND ON THE CHANNEL PAGE", f"{year} // KEINE VIDEOS AUF DER KANALSEITE GEFUNDEN"))
-        merged = list(web)
-        if old:
-            have = set(merged)
-            prev = None
-            for v in old:
-                if v["id"] in have:
-                    prev = v["id"]
-                    continue
-                pos = merged.index(prev) + 1 if prev in merged else 0
-                merged.insert(pos, v["id"])
-                have.add(v["id"])
-                prev = v["id"]
+        merged = list(web)       # Kanalseite = nur normale Videos; Shorts/Livestreams aus alten Listen fallen raus
         videos = [{"id": v, "published": None} for v in merged]
         save(videos_file(year), videos)
         cf = collect_file(year)
@@ -1529,15 +1559,103 @@ class Worker(threading.Thread):
         prog.update(method="done", source="web")
         save(cf, prog)
         self.scanning = None
-        added = len(merged) - len(old or [])
         if old:
-            self.log(L(f"{year} // {len(merged)} VIDEOS // {added} MORE THAN BEFORE",
-                       f"{year} // {len(merged)} VIDEOS // {added} MEHR ALS VORHER"), "ok" if added else "info")
+            old_ids = {v["id"] for v in old}
+            plus = len(set(merged) - old_ids)
+            minus = len(old_ids - set(merged))
+            self.log(L(f"{year} // {len(merged)} VIDEOS // {plus} NEW, {minus} REMOVED (SHORTS/LIVESTREAMS)",
+                       f"{year} // {len(merged)} VIDEOS // {plus} NEU, {minus} ENTFERNT (SHORTS/LIVESTREAMS)"),
+                     "ok" if plus or minus else "info")
         else:
             self.log(L(f"{len(videos)} VIDEOS FROM {year} FOUND", f"{len(videos)} VIDEOS AUS {year} GEFUNDEN"), "ok")
         self.emit("progress", year)
         self.act(None, year)
         return videos
+
+    def lf_scan(self):
+        """Einmal die Liste 'nur normale Videos' des Kanals über die API lesen (1 Einheit pro 50).
+        Ergebnis: {Jahr: [IDs]} in videos_only.json. Wird fortgesetzt, falls das Kontingent ausgeht."""
+        data = load(lf_file(), {})
+        if data.get("done"):
+            return data
+        if not data.get("list"):
+            up = load(archive_file(), {}).get("uploads")
+            if not up:
+                q = {"id": CHANNEL["id"]} if CHANNEL.get("id") else {"forHandle": CHANNEL.get("handle", "")}
+                items = self.call("GET", "channels", {"part": "contentDetails", **q}).get("items", [])
+                up = items[0]["contentDetails"]["relatedPlaylists"]["uploads"] if items else None
+            if not up:
+                return None
+            data = {"list": videos_only_list(up), "token": None, "found": {}, "seen": 0}
+        self.log(L("VIDEOS ONLY // READING THE CHANNEL'S VIDEO LIST (WITHOUT SHORTS/LIVESTREAMS) ...",
+                   "NUR VIDEOS // LESE DIE VIDEOLISTE DES KANALS (OHNE SHORTS/LIVESTREAMS) ..."))
+        pages = 0
+        try:
+            while True:
+                self.check()
+                params = {"part": "contentDetails", "playlistId": data["list"], "maxResults": 50}
+                if data["token"]:
+                    params["pageToken"] = data["token"]
+                d = self.call("GET", "playlistItems", params)
+                for it in d.get("items", []):
+                    data["seen"] += 1
+                    pub = it["contentDetails"].get("videoPublishedAt")
+                    if pub:
+                        data["found"][it["contentDetails"]["videoId"]] = pub
+                data["token"] = d.get("nextPageToken")
+                pages += 1
+                if pages % 10 == 0:
+                    save(lf_file(), data)
+                    self.act(L(f"VIDEOS ONLY // {data['seen']} READ", f"NUR VIDEOS // {data['seen']} GELESEN"))
+                if not data["token"]:
+                    break
+        except QuotaExceeded:
+            save(lf_file(), data)
+            self.act()
+            raise
+        data["done"] = True
+        data["oldest"] = min((p[:4] for p in data["found"].values()), default=None)
+        data["capped"] = data["seen"] >= CAP_SEEN
+        save(lf_file(), data)
+        self.act()
+        self.log(L(f"VIDEOS ONLY // {len(data['found'])} VIDEOS", f"NUR VIDEOS // {len(data['found'])} VIDEOS"), "ok")
+        return data
+
+    def videos_only(self, year, videos):
+        """Shorts und Livestreams aus einer (älteren) Liste entfernen. Liefert die bereinigte Liste;
+        hat sich etwas geändert, wird die Playlist beim Füllen nachgetragen/bereinigt."""
+        cf = collect_file(year)
+        prog = load(cf, {})
+        if prog.get("videos_only") or prog.get("source") == "web":
+            return videos
+        allowed = None
+        try:
+            if not quota_blocked("units"):
+                data = self.lf_scan()
+                if data and data.get("done"):
+                    if not (data.get("capped") and year <= int(data.get("oldest") or 0)):
+                        allowed = {v for v, p in data["found"].items() if p[:4] == str(year)}
+            if allowed is None and self.fallback:
+                allowed = set(self.web_index(year))
+        except QuotaExceeded:
+            if self.fallback:
+                allowed = set(self.web_index(year))
+        if allowed is None:
+            return videos          # später noch einmal versuchen
+        cleaned = [v for v in videos if v["id"] in allowed]
+        prog["videos_only"] = True
+        save(cf, prog)
+        removed = len(videos) - len(cleaned)
+        if removed:
+            save(videos_file(year), cleaned)
+            st = load(state_file(year), {})
+            if st.get("playlist_id"):
+                st["repair"] = True
+                save(state_file(year), st)
+            self.log(L(f"{year} // {removed} SHORTS/LIVESTREAMS REMOVED FROM THE LIST",
+                       f"{year} // {removed} SHORTS/LIVESTREAMS AUS DER LISTE ENTFERNT"), "warn")
+            self.emit("progress", year)
+        return cleaned
 
     def refresh_new(self, year, videos):
         """Laufendes Jahr: neue Videos hinten anhängen. Mit Kontingent über die API (Upload-Liste,
@@ -1547,11 +1665,11 @@ class Worker(threading.Thread):
         new = []          # (id, published) neueste zuerst
         try:
             if not quota_blocked("units"):
-                up = load(archive_file(), {}).get("uploads") or load(collect_file(year), {}).get("uploads")
+                up = videos_only_list(load(archive_file(), {}).get("uploads") or load(collect_file(year), {}).get("uploads"))
                 if not up:
                     q = {"id": CHANNEL["id"]} if CHANNEL.get("id") else {"forHandle": CHANNEL.get("handle", "")}
                     items = self.call("GET", "channels", {"part": "contentDetails", **q}).get("items", [])
-                    up = items[0]["contentDetails"]["relatedPlaylists"]["uploads"] if items else None
+                    up = videos_only_list(items[0]["contentDetails"]["relatedPlaylists"]["uploads"]) if items else None
                 token, done = None, False
                 while up and not done:
                     params = {"part": "contentDetails", "playlistId": up, "maxResults": 50}
@@ -1609,12 +1727,13 @@ class Worker(threading.Thread):
             if self.fallback and searched and load(collect_file(year), {}).get("source") != "web":
                 # bisher über die lückenhafte Suche gefunden -> mit der Kanalseite abgleichen
                 videos = self.collect_web(year, cached)
-                if len(videos) > len(cached):
+                if [v["id"] for v in videos] != [v["id"] for v in cached]:
                     st = load(state_file(year), {})
                     if st.get("playlist_id"):
                         st["repair"] = True
                         save(state_file(year), st)
                 return videos
+            cached = self.videos_only(year, cached)
             if growing(year):
                 done = getattr(self, "_refreshed", set())
                 if year not in done:            # pro Lauf nur einmal nachsehen
@@ -1635,7 +1754,8 @@ class Worker(threading.Thread):
             ch = items[0]
             prog = {
                 "channel_id": ch["id"],
-                "uploads": ch["contentDetails"]["relatedPlaylists"]["uploads"],
+                "uploads": videos_only_list(ch["contentDetails"]["relatedPlaylists"]["uploads"]),
+                "videos_only": True,
                 "total": int(ch["statistics"]["videoCount"]),
                 "found": {}, "method": "uploads", "page_token": None,
                 "seen": 0, "done_months": [],
@@ -1675,7 +1795,7 @@ class Worker(threading.Thread):
                                f"{prog['seen']}/{prog['total']} UPLOADS DURCHSUCHT // {len(prog['found'])} AUS {year}"))
                 if reached_older or not prog["page_token"]:
                     break
-            if reached_older or prog["seen"] >= prog["total"] - 50:
+            if reached_older or prog["seen"] < CAP_SEEN:
                 prog["method"] = "done"
             else:
                 self.log(L("UPLOAD LIST CAPPED // SWITCHING TO DATE SEARCH", "UPLOAD-LISTE GEKAPPT // WECHSEL ZUR DATUMSSUCHE"), "warn")
@@ -2056,6 +2176,18 @@ class Worker(threading.Thread):
                 items = self.browser.list_items(pid, reading)
                 self.emit("checking", year, False)
                 self.log(L(f"REPAIR {tag} // PLAYLIST HAS {len(items)} VIDEOS", f"NACHTRAG {tag} // PLAYLIST HAT {len(items)} VIDEOS"))
+                wanted = set(order_all)
+                extras = [it for it in items if it["vid"] not in wanted]
+                if extras:
+                    self.log(L(f"REPAIR {tag} // REMOVING {len(extras)} VIDEO(S) THAT DON'T BELONG (SHORTS/LIVESTREAMS)",
+                               f"NACHTRAG {tag} // ENTFERNE {len(extras)} VIDEO(S), DIE NICHT HINGEHÖREN (SHORTS/LIVESTREAMS)"), "warn")
+                    for i in range(0, len(extras), BATCH_SIZE):
+                        self.check()
+                        self.browser.remove_many(pid, extras[i:i + BATCH_SIZE])
+                        self.act(L(f"REPAIR // {min(i + BATCH_SIZE, len(extras))}/{len(extras)} REMOVED",
+                                   f"NACHTRAG // {min(i + BATCH_SIZE, len(extras))}/{len(extras)} ENTFERNT"), year)
+                        self.sleep(random.uniform(*BATCH_PAUSE), "NEXT BATCH")
+                    items = [it for it in items if it["vid"] in wanted]
                 present = {it["vid"] for it in items}
                 last = max((i for i, v in enumerate(order) if v in present), default=-1)
                 missing = [v for v in order[:last + 1] if v not in present]
@@ -2123,6 +2255,50 @@ class Worker(threading.Thread):
             self.act(None, year)
         return state
 
+    def mark_inflight(self, year, state, pid, start, ids):
+        """Vor dem Senden merken, welches Paket unterwegs ist. Bricht etwas ab, wird nur dieses geprüft."""
+        state["inflight"] = {"pid": pid, "start": start, "ids": ids}
+        save(state_file(year), state)
+
+    def in_playlist(self, pid, vid):
+        """True/False, ob das Video in der Playlist ist; None = unbekannt."""
+        if self.browser:
+            r = self.browser.contains(pid, vid)
+            if r is not None:
+                return r
+        if not quota_blocked("units"):
+            try:
+                d = self.call("GET", "playlistItems", {"part": "id", "playlistId": pid, "videoId": vid})
+                return bool(d.get("items"))
+            except (QuotaExceeded, ApiError):
+                return None
+        return None
+
+    def resolve_inflight(self, year, state):
+        """Schnelle Prüfung statt die ganze Playlist zu lesen: Ist das zuletzt gesendete Paket angekommen?"""
+        inf = state.get("inflight")
+        if not inf:
+            return state
+        ids, start = inf.get("ids") or [], inf.get("start", state.get("next", 0))
+        self.log(L(f"{year} // CHECKING THE LAST BATCH ({len(ids)} VIDEOS) ...", f"{year} // PRÜFE DAS LETZTE PAKET ({len(ids)} VIDEOS) ..."))
+        first = self.in_playlist(inf["pid"], ids[0]) if ids else False
+        last = self.in_playlist(inf["pid"], ids[-1]) if ids else False
+        if first is None or last is None:
+            videos = load(videos_file(year), [])
+            state.pop("inflight", None)
+            return self.verify(year, videos, state, L("SYNC ON START", "ABGLEICH BEIM START"))
+        if first and last:
+            state["next"] = max(state.get("next", 0), start + len(ids))
+            self.log(L(f"{year} // LAST BATCH WAS ALREADY IN THE PLAYLIST", f"{year} // LETZTES PAKET WAR SCHON DRIN"), "warn")
+        elif first or last:
+            videos = load(videos_file(year), [])
+            state.pop("inflight", None)
+            return self.verify(year, videos, state, L("SYNC ON START", "ABGLEICH BEIM START"))
+        state.pop("inflight", None)
+        save(state_file(year), state)
+        self.emit("progress", year)
+        return state
+
     def final_check(self):
         """Nach STOP: aktuelles Jahr noch einmal prüfen (nicht durch STOP unterbrechbar)."""
         if not self.cur:
@@ -2133,7 +2309,10 @@ class Worker(threading.Thread):
             return
         self.ignore_stop = True
         try:
-            self.verify(year, videos, state, L("AFTER STOP", "NACH STOPP"))
+            if state.get("tracked"):
+                self.resolve_inflight(year, state)
+            else:
+                self.verify(year, videos, state, L("AFTER STOP", "NACH STOPP"))
         except Exception as e:  # noqa: BLE001
             self.log(L(f"PLAYLIST CHECK FAILED // {e}", f"PLAYLIST-PRÜFUNG FEHLGESCHLAGEN // {e}"), "err")
         finally:
@@ -2157,9 +2336,17 @@ class Worker(threading.Thread):
         state = self.ensure_playlist(year)
         self.cur = (year, videos)
         if state.get("repair"):
+            if not self.fallback:
+                self.log(L(f"{year} // PLAYLIST NEEDS A REPAIR (MISSING VIDEOS / SHORTS TO REMOVE) // TURN ON FALLBACK FOR IT",
+                           f"{year} // PLAYLIST MUSS NACHGETRAGEN/BEREINIGT WERDEN // DAFÜR FALLBACK EINSCHALTEN"), "warn")
+                return False
             state = self.repair(year, videos, state)
-        if 0 < state.get("next", 0) < len(videos):
+        if not state.get("tracked") and 0 < state.get("next", 0) < len(videos):
+            # einmalig für ältere Stände: volle Prüfung, danach reicht die schnelle
             state = self.verify(year, videos, state, L("SYNC ON START", "ABGLEICH BEIM START"))
+        state = self.resolve_inflight(year, state)
+        state["tracked"] = True
+        save(sf, state)
         i, added = state["next"], 0
         if i >= len(videos):
             self.log(L(f"{year} ALREADY COMPLETE", f"{year} IST SCHON FERTIG"))
@@ -2175,9 +2362,11 @@ class Worker(threading.Thread):
                 if self.limit:
                     n = min(n, self.limit - added)
                 chunk = [v["id"] for v in videos[i:i + n]]
+                self.mark_inflight(year, state, pid, i, chunk)
                 results = self.add_batch(pid, chunk)
             else:
                 chunk = [videos[i]["id"]]
+                self.mark_inflight(year, state, pid, i, chunk)
                 results = [self.add_video(pid, chunk[0])]   # kann auf Browser umschalten
             for vid, ok in zip(chunk, results):
                 if ok:
@@ -2186,14 +2375,9 @@ class Worker(threading.Thread):
                     state.setdefault("skipped", []).append(vid)
             i += len(chunk)
             state["next"] = i
+            state.pop("inflight", None)
             save(sf, state)
             self.emit("progress", year)
-            since_check = getattr(self, "_since_check", 0) + len(chunk)
-            self._since_check = since_check
-            if since_check >= CHECK_EVERY and i < len(videos):
-                self._since_check = 0
-                state = self.verify(year, videos, state, L("INTERVAL", "ZWISCHENPRÜFUNG"))
-                i = state["next"]
             if i < len(videos):
                 self.pace()
         state = self.verify(year, videos, state, L("FINAL FULL SCAN", "ABSCHLUSSPRÜFUNG"))
@@ -3401,8 +3585,12 @@ HELP_TEXT_DE = [
             "Chronolist merkt sich, wenn das Kontingent oder das Suchlimit an einem Tag aufgebraucht ist. Bis zum "
             "Reset fragt es nach einem Neustart nicht noch einmal nach, sondern nimmt gleich den Fallback. In dieser "
             "Zeit ist der API-Knopf gelb und zeigt LIMIT."),
-    ("num", "6.  Prüfen. Beim Start, alle 1000 Videos, nach STOPP und am Ende eines Jahres schaut Chronolist die "
-            "Playlist auf doppelte Videos durch. Doppelte werden entfernt und der Fortschritt wird abgeglichen."),
+    ("num", "6.  Prüfen. Doppelte Videos können nur entstehen, wenn ein Lauf mitten im Senden eines Pakets abbricht. "
+            "Chronolist merkt sich deshalb das Paket, das gerade unterwegs ist, und prüft nach STOPP oder beim "
+            "nächsten Start nur dieses. Das geht in Sekunden. Die ganze Playlist liest es nur am Ende eines Jahres "
+            "und beim Knopf PRÜFEN: Doppelte werden entfernt und der Fortschritt wird abgeglichen.\n"
+            "Shorts und Livestreams kommen nicht in die Playlists. Ältere Listen, in denen noch welche stehen, werden "
+            "beim nächsten Durchlauf des Jahres bereinigt (mit FALLBACK auch in der Playlist selbst)."),
     ("num", "7.  Nächstes Jahr. Ist ein Jahr fertig, geht es mit dem nächsten markierten Jahr in der Reihenfolge der "
             "Liste weiter. Wurden dessen Videos noch nicht gefunden und ist das Kontingent leer, hält Chronolist an. "
             "Mit VORZIEHEN nimmt es stattdessen das nächste markierte Jahr, das schon bereit ist, und holt das "
@@ -3615,8 +3803,12 @@ HELP_TEXT_EN = [
             "Chronolist remembers when the quota or the search limit was used up on a given day. Until the reset it "
             "won't ask again after a restart and goes straight to the fallback. During that time the API button is "
             "yellow and shows LIMIT."),
-    ("num", "6.  Check. On start, every 1000 videos, after STOP and at the end of each year, Chronolist checks the "
-            "playlist for duplicate videos. Duplicates are removed and the progress is synced."),
+    ("num", "6.  Check. Duplicates can only appear if a run stops while a batch is being sent. So Chronolist "
+            "remembers the batch in flight and after STOP or on the next start checks only that one, which takes "
+            "seconds. It reads the whole playlist only at the end of a year and with the CHECK button: duplicates "
+            "are removed and the progress is synced.\n"
+            "Shorts and livestreams are not added to the playlists. Older lists that still contain some are cleaned "
+            "up the next time the year runs (with FALLBACK also in the playlist itself)."),
     ("num", "7.  Next year. When a year is done, Chronolist moves on to the next selected year in the order of the "
             "list. If that year's videos haven't been found yet and the quota is used up, it stops. With SKIP AHEAD it "
             "takes the next selected year that is already ready instead and catches up later."),
