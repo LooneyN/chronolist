@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "2.11.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 77
+BUILD = 78
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -250,6 +250,41 @@ def videos_only_list(uploads_id):
 
 
 def lf_file(): return CHAN_DIR / "videos_only.json"
+def titles_file(): return CHAN_DIR / "titles.json"
+
+
+def removed_by_year():
+    """Videos, die gefunden, aber nicht (mehr) in der Jahresliste sind – also Shorts, Livestreams und
+    Fehltreffer der alten Suche. Ergibt sich aus den alten Scan-Daten im Vergleich zur heutigen Liste."""
+    cand = {}
+    for vid, pub in (load(archive_file(), {}).get("found") or {}).items():
+        cand.setdefault(int(pub[:4]), {})[vid] = pub
+    for f in (sorted(CHAN_DIR.glob("collect_*.json")) if CHAN_DIR.exists() else []):
+        for vid, pub in (load(f, {}).get("found") or {}).items():
+            cand.setdefault(int(pub[:4]), {})[vid] = pub
+    out = {}
+    for y, found in cand.items():
+        vids = load(videos_file(y), None)
+        if vids is None:
+            continue
+        have = {v["id"] for v in vids}
+        gone = sorted(((p, v) for v, p in found.items() if v not in have))
+        if gone:
+            out[y] = [{"id": v, "published": p} for p, v in gone]
+    return out
+
+
+def video_title(vid):
+    """Titel über oEmbed (öffentlich, ohne Kontingent). None, wenn nicht abrufbar (privat/gelöscht)."""
+    try:
+        r = requests.get("https://www.youtube.com/oembed",
+                         params={"url": f"https://www.youtube.com/watch?v={vid}", "format": "json"},
+                         timeout=10, headers={"User-Agent": f"{APP_NAME}/{VERSION}"})
+        if r.ok:
+            return r.json().get("title")
+    except (requests.RequestException, ValueError):
+        pass
+    return None
 def videos_file(y): return CHAN_DIR / f"videos_{y}.json"
 def collect_file(y): return CHAN_DIR / f"collect_{y}.json"
 def state_file(y): return CHAN_DIR / f"state_{y}.json"
@@ -3170,6 +3205,8 @@ class SettingsDialog(tk.Toplevel):
         CutButton(row, L("SAVE", "SPEICHERN"), self.save, width=120).pack(side="left")
         CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
         CutButton(row, L("RESET TO DEFAULT", "STANDARDWERTE"), self.reset, width=170).pack(side="right")
+        CutButton(row, L("LEFT OUT", "AUSSORTIERT"), lambda: app.show_removed(), width=140).pack(
+            side="right", padx=(0, px(8)))
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
 
@@ -4120,6 +4157,103 @@ class HelpWindow(tk.Toplevel):
         self.focus_force()
 
 
+class RemovedWindow(tk.Toplevel):
+    """Liste der nicht übernommenen Videos (Shorts, Livestreams, Fehltreffer), mit Titeln und Links."""
+
+    def __init__(self, master, focus_year=None):
+        super().__init__(master, bg="#16161f")
+        self.title(L("Left out videos", "Nicht übernommene Videos"))
+        self.geometry(f"{px(760)}x{px(720)}")
+        self.minsize(px(480), px(360))
+        base = "Segoe UI" if "Segoe UI" in tkfont.families(self) else "TkDefaultFont"
+        txt = tk.Text(self, wrap="word", bg="#16161f", fg="#e8e8ee", bd=0, relief="flat",
+                      highlightthickness=0, padx=px(28), pady=px(22), cursor="arrow",
+                      font=(base, -px(15)), spacing1=px(2), spacing3=px(4), selectbackground="#3a3a55")
+        sb = ttk.Scrollbar(self, orient="vertical", command=txt.yview, style="NC.Vertical.TScrollbar")
+        txt.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        txt.pack(side="left", fill="both", expand=True)
+        txt.tag_configure("h1", font=(base, -px(22), "bold"), foreground="#ffffff", spacing3=px(6))
+        txt.tag_configure("p", foreground="#c9c9d6", spacing3=px(10))
+        txt.tag_configure("h2", font=(base, -px(18), "bold"), foreground=CYAN, spacing1=px(16), spacing3=px(4))
+        txt.tag_configure("date", foreground="#8a8aa0", font=(base, -px(13)))
+        txt.tag_configure("link", foreground="#e8e8ee", lmargin1=px(12), lmargin2=px(12))
+        txt.tag_configure("hover", foreground=CYAN)
+        self.txt = txt
+        data = removed_by_year()
+        self.titles = load(titles_file(), {})
+        txt.insert("end", L("Left out videos", "Nicht übernommene Videos") + "\n", "h1")
+        txt.insert("end", L("Videos that were found but are not in the playlists: shorts, livestreams and wrong hits of "
+                            "the old search. Click a title to open it on YouTube.",
+                            "Videos, die gefunden wurden, aber nicht in den Playlists sind: Shorts, Livestreams und "
+                            "Fehltreffer der alten Suche. Klick auf einen Titel öffnet ihn auf YouTube.") + "\n", "p")
+        if not data:
+            txt.insert("end", L("Nothing left out so far.", "Bisher wurde nichts aussortiert.") + "\n", "p")
+        self.pending = []
+        jump = None
+        for y in sorted(data):
+            mark = f"y{y}"
+            txt.mark_set(mark, "end-1c")
+            txt.mark_gravity(mark, "left")
+            if y == focus_year:
+                jump = mark
+            n = len(data[y])
+            txt.insert("end", f"{y}  ·  {n} " + (L("video", "Video") if n == 1 else L("videos", "Videos")) + "\n", "h2")
+            for v in data[y]:
+                tag = "v_" + v["id"]
+                d = v.get("published") or ""
+                txt.insert("end", (d[8:10] + "." + d[5:7] + "." + d[:4] + "   ") if len(d) >= 10 else "", "date")
+                txt.insert("end", (self.titles.get(v["id"]) or v["id"]) + "\n", ("link", tag))
+                txt.tag_bind(tag, "<Button-1>", lambda e, vid=v["id"]: webbrowser.open(f"https://www.youtube.com/watch?v={vid}"))
+                txt.tag_bind(tag, "<Enter>", lambda e, t=tag: (txt.configure(cursor="hand2"), txt.tag_add("hover", f"{t}.first", f"{t}.last")))
+                txt.tag_bind(tag, "<Leave>", lambda e, t=tag: (txt.configure(cursor="arrow"), txt.tag_remove("hover", "1.0", "end")))
+                if v["id"] not in self.titles:
+                    self.pending.append(v["id"])
+        txt.configure(state="disabled")
+        if jump:
+            self.after(50, lambda: txt.see(jump) or txt.yview(jump))
+        style_window(self)
+        self.transient(master)
+        self.focus_force()
+        self.q = queue.Queue()
+        if self.pending:
+            threading.Thread(target=self.fetch_titles, args=(list(self.pending),), daemon=True).start()
+            self.after(300, self.apply_titles)
+
+    def fetch_titles(self, ids):
+        for vid in ids:
+            t = video_title(vid)
+            self.q.put((vid, t, bool(t)))
+
+    def apply_titles(self):
+        if not self.winfo_exists():
+            return
+        changed = False
+        try:
+            while True:
+                vid, t, ok = self.q.get_nowait()
+                if not ok:
+                    t = L("(unavailable) ", "(nicht verfügbar) ") + vid
+                tag = "v_" + vid
+                rng = self.txt.tag_ranges(tag)
+                if rng:
+                    self.txt.configure(state="normal")
+                    self.txt.delete(rng[0], rng[1])
+                    self.txt.insert(rng[0], t + "\n", ("link", tag))
+                    self.txt.configure(state="disabled")
+                if ok:
+                    self.titles[vid] = t       # nur echte Titel merken
+                    changed = True
+                if vid in self.pending:
+                    self.pending.remove(vid)
+        except queue.Empty:
+            pass
+        if changed:
+            save(titles_file(), self.titles)
+        if self.pending:
+            self.after(400, self.apply_titles)
+
+
 class LoginPanel(Panel):
     def __init__(self, master, on_url, on_copy):
         super().__init__(master, 116, state="frame")
@@ -4669,7 +4803,7 @@ class App(tk.Tk):
         lsb.bind("<B1-Motion>", update_follow, add="+")
         self.logbox.bind("<Configure>", keep_bottom, add="+")
         for tag, col in (("ts", RED_MILD), ("info", TEXT_DIM), ("ok", GREEN), ("warn", YELLOW),
-                         ("err", RED), ("sep", RED), ("leaf", GREEN)):
+                         ("err", RED), ("sep", RED), ("leaf", GREEN), ("loglink", YELLOW)):
             self.logbox.tag_configure(tag, foreground=col)
         self.log_panel.windows.append(
             lambda x0, y0, x1, y1, c: self.log_panel.create_window(
@@ -4982,6 +5116,12 @@ class App(tk.Tk):
             r.refresh_blocked()
         self.after(60000, self.api_tick)
 
+    def show_removed(self, year=None):
+        w = getattr(self, "removed_win", None)
+        if w is not None and w.winfo_exists():
+            w.destroy()
+        self.removed_win = RemovedWindow(self, year)
+
     def show_help(self):
         w = getattr(self, "help_win", None)
         if w is not None and w.winfo_exists():
@@ -5273,7 +5413,16 @@ class App(tk.Tk):
         self.logbox.config(state="normal")
         self.logbox.insert("end", f"[{stamp}] ", "ts")
         m = re.match(r"^((?:REPAIR|NACHTRAG) \d+ // )(420)(/\d+ (?:MOVED|VERSCHOBEN))$", text)
-        if m:
+        r = re.match(r"^(\d{4}) // .*SHORTS/LIVESTREAMS.*(?:REMOVED|ENTFERNT)", text)
+        if r:
+            y = int(r.group(1))
+            tag = f"rm{y}_{self.logbox.index('end')}"
+            self.logbox.insert("end", text, level)
+            self.logbox.insert("end", L("  // SHOW ›", "  // ANZEIGEN ›") + "\n", ("loglink", tag))
+            self.logbox.tag_bind(tag, "<Button-1>", lambda e, y=y: self.show_removed(y))
+            self.logbox.tag_bind(tag, "<Enter>", lambda e: self.logbox.configure(cursor="hand2"))
+            self.logbox.tag_bind(tag, "<Leave>", lambda e: self.logbox.configure(cursor=""))
+        elif m:
             # kleines Easter Egg
             self.logbox.insert("end", m.group(1), level)
             self.logbox.insert("end", m.group(2), "leaf")
