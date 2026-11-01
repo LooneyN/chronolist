@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 104
+BUILD = 105
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -5049,14 +5049,18 @@ class ListDialog(tk.Toplevel):
         pick = self.picked()
         ex = [p for p in pick if p[0] in ("hit", "add")]
         inc = [p for p in pick if p[0] in ("out", "skip")]
-        self.excl_btn.set_enabled(bool(ex))
-        self.incl_btn.set_enabled(bool(inc))
+        self.excl_btn.set_enabled(bool(pick))         # nie "tot": bei unpassender Auswahl erklärt eine Meldung, warum nichts passiert
+        self.incl_btn.set_enabled(bool(pick))
         self.excl_btn.set_text(L("EXCLUDE SELECTED", "AUSSCHLIESSEN") + (f" ({len(ex)})" if len(ex) > 1 else ""))
         self.incl_btn.set_text(L("INCLUDE SELECTED", "AUFNEHMEN") + (f" ({len(inc)})" if len(inc) > 1 else ""))
 
     def exclude_selected(self):
         cur = self.current()
         by_id = {v["id"]: v for v in self.pool}
+        if not any(st in ("hit", "add") for st, _ in self.picked()):
+            self.note.configure(text=L("NOTHING TO EXCLUDE: THE SELECTED VIDEOS ARE NOT IN THE LIST.",
+                                       "NICHTS ZUM AUSSCHLIESSEN: DIE MARKIERTEN VIDEOS SIND NICHT IN DER LISTE."), fg=YELLOW)
+            return
         for st, vid in self.picked():
             if st not in ("hit", "add"):
                 continue
@@ -5068,6 +5072,12 @@ class ListDialog(tk.Toplevel):
     def include_selected(self):
         cur = self.current()
         by_id = {v["id"]: v for v in self.pool}
+        if not any(st in ("out", "skip") for st, _ in self.picked()):
+            self.note.configure(text=L("NOTHING TO INCLUDE: THE SELECTED VIDEOS ARE ALREADY IN THE LIST. "
+                                       "TO ADD OTHERS, FIND THEM WITH THE FILTER OR IN ALL VIDEOS (GREY = NOT IN THE LIST).",
+                                       "NICHTS ZUM AUFNEHMEN: DIE MARKIERTEN VIDEOS SIND SCHON IN DER LISTE. ANDERE FINDEST DU "
+                                       "MIT DEM FILTER ODER IN ALLE VIDEOS (GRAU = NICHT IN DER LISTE)."), fg=YELLOW)
+            return
         for st, vid in self.picked():
             if st not in ("out", "skip"):
                 continue
