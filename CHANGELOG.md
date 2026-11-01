@@ -7,10 +7,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 - Video titles are now stored while scanning (API and channel page, no extra quota). This is the basis for keyword lists.
-- Keyword lists: NEW KEYWORD LIST under the years opens an editor with live preview (hit count and titles). Optionally limit a list to a range of years. Exclude single videos or add videos by link/ID. Lists are cards like years (right-click edits) and run after the years.
+- Keyword lists: CUSTOM LIST under the years opens an editor with live preview (hit count and titles). Optionally limit a list to a range of years. Exclude single videos or add videos by link/ID. Lists are cards like years (right-click edits) and run after the years.
 - Keyword lists (details): a list collects videos by title (any / all / exclude terms, plus single videos added or skipped) and is filled like a year in upload order. Missing titles are loaded from your own playlists (API) or via oEmbed. 
 
 ### Changed
+- The year list is now called TARGETS (lists and years sit side by side); the button is CUSTOM LIST. Loading missing titles shows count and percent on the list card.
 - Cleaner dashboard: only FALLBACK, PROGRAM and PLAYLISTS remain under options. AUTO-RUN and BOOT moved to the program settings.
 - Aligned layout: both columns share one grid. START / PAUSE / STOP / CHECK are large tiles as tall as the channel card, all list and option cards have the same height, and right edges line up.
 - Skipping ahead to the next ready year is now always on; the SKIP AHEAD switch is gone.

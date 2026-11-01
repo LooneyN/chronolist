@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 91
+BUILD = 92
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2156,18 +2156,35 @@ class Worker(threading.Thread):
         return videos
 
     # --- Stichwortlisten
-    def fetch_missing_titles(self):
-        """Fehlende Videotitel nachladen: erst aus den eigenen Playlists (API, 1 Einheit pro 50), den Rest per oEmbed."""
+    def fetch_missing_titles(self, key=None):
+        """Fehlende Videotitel nachladen: erst aus den eigenen Playlists (API, 1 Einheit pro 50), den Rest per oEmbed.
+        Fortschritt erscheint auf der Karte `key` (Zähler und Prozent) und alle 10 % im Protokoll."""
         pool = all_year_videos()
-        need = set(missing_titles(pool))
-        if not need:
+        left = set(missing_titles(pool))
+        total = len(left)
+        if not total:
             return
-        self.log(L(f"LISTS // LOADING {len(need)} MISSING VIDEO TITLES ...", f"LISTEN // LADE {len(need)} FEHLENDE VIDEOTITEL ..."))
+        self.log(L(f"LISTS // LOADING {total} MISSING VIDEO TITLES ...", f"LISTEN // LADE {total} FEHLENDE VIDEOTITEL ..."))
+        state = {"step": 0}
+
+        def progress():
+            done = total - len(left)
+            pct = done * 100 // total
+            self.act(L(f"LOADING TITLES // {done}/{total} ({pct}%)", f"LADE TITEL // {done}/{total} ({pct} %)"), key)
+            if pct // 10 > state["step"]:
+                state["step"] = pct // 10
+                self.log(L(f"TITLES // {done}/{total} ({pct}%)", f"TITEL // {done}/{total} ({pct} %)"))
+
+        def got_titles(t):
+            n = remember_titles(t)
+            left.difference_update(t)
+            return n
         by_year = {}
         for v in pool:
-            if v["id"] in need:
+            if v["id"] in left:
                 by_year.setdefault(v["year"], set()).add(v["id"])
         got = 0
+        progress()
         try:
             if self.mode == "api" and not quota_blocked("units"):
                 for y in sorted(by_year):
@@ -2179,33 +2196,37 @@ class Worker(threading.Thread):
                             if token:
                                 params["pageToken"] = token
                             d = self.call("GET", "playlistItems", params)
-                            t = item_titles(d.get("items"))
-                            got += remember_titles(t)
+                            got += got_titles(item_titles(d.get("items")))
+                            progress()
                             token = d.get("nextPageToken")
                             if not token:
                                 break
-                        self.act(L(f"LOADING TITLES // {y}", f"LADE TITEL // {y}"), y)
         except QuotaExceeded:
             self.log(L("TITLES // API QUOTA USED UP // CONTINUING WITHOUT IT", "TITEL // KONTINGENT AUFGEBRAUCHT // WEITER OHNE"), "warn")
-        left = [i for i in missing_titles(pool)]
-        if left:
-            self.log(L(f"TITLES // {len(left)} MORE VIA OEMBED (SLOW, NO QUOTA)", f"TITEL // NOCH {len(left)} ÜBER OEMBED (LANGSAM, KEIN KONTINGENT)"))
+        rest = [v["id"] for v in pool if v["id"] in left and v["id"] not in set(load(notitle_file(), []))]
+        if rest:
+            self.log(L(f"TITLES // {len(rest)} MORE VIA OEMBED (SLOW, NO QUOTA)", f"TITEL // NOCH {len(rest)} ÜBER OEMBED (LANGSAM, KEIN KONTINGENT)"))
         nt = set(load(notitle_file(), []))
         batch = {}
-        for n, vid in enumerate(left, 1):
-            self.check()
-            t = video_title(vid)
-            if t:
-                batch[vid] = t
-            else:
-                nt.add(vid)
-            if n % 100 == 0 or n == len(left):
-                got += remember_titles(batch)
-                batch = {}
-                save(notitle_file(), sorted(nt))
-                self.act(L(f"LOADING TITLES // {n}/{len(left)}", f"LADE TITEL // {n}/{len(left)}"), None)
-            self.sleep(random.uniform(0.1, 0.3))
-        self.act(None, None)
+        try:
+            for n, vid in enumerate(rest, 1):
+                self.check()
+                t = video_title(vid)
+                if t:
+                    batch[vid] = t
+                else:
+                    nt.add(vid)
+                    left.discard(vid)
+                if n % 25 == 0 or n == len(rest):
+                    got += got_titles(batch)
+                    batch = {}
+                    save(notitle_file(), sorted(nt))
+                    progress()
+                self.sleep(random.uniform(0.1, 0.3))
+        finally:
+            got += got_titles(batch)
+            save(notitle_file(), sorted(nt))
+            self.act(None, key)
         self.log(L(f"LISTS // {got} TITLES LOADED", f"LISTEN // {got} TITEL GELADEN"), "ok")
 
     def sync_list(self, key):
@@ -2226,7 +2247,8 @@ class Worker(threading.Thread):
     def run_lists(self, keys):
         if not keys:
             return
-        self.fetch_missing_titles()
+        self.emit("current", keys[0])
+        self.fetch_missing_titles(keys[0])
         for key in keys:
             self.check()
             lst = find_list(key)
@@ -4089,7 +4111,7 @@ HELP_TEXT_DE = [
            "PLAYLIST WIRD GEPRÜFT: Die Playlist wird gerade auf doppelte Videos geprüft."),
 
     ("h2", "Stichwortlisten"),
-    ("p", "Unter den Jahren legt EIGENE STICHWORTLISTE eine Playlist an, in die alle Videos kommen, deren Titel zu deinen "
+    ("p", "Unter den Jahren legt EIGENE LISTE eine Playlist an, in die alle Videos kommen, deren Titel zu deinen "
           "Stichwörtern passen, in Upload-Reihenfolge. Du gibst einen Namen ein (er wird der Playlist-Titel) und Begriffe: "
           "\"enthält eines davon\", \"und alle diese\" und \"aber keines dieser\". Gross-/Kleinschreibung zählt nicht. "
           "Optional grenzt du die Liste auf einen Zeitraum von Jahren ein (z. B. 2016 bis 2020). "
@@ -4310,7 +4332,7 @@ HELP_TEXT_EN = [
            "CHECKING PLAYLIST: the playlist is being checked for duplicates."),
 
     ("h2", "Keyword lists"),
-    ("p", "Below the years, NEW KEYWORD LIST creates a playlist of all videos whose title matches your keywords, in upload "
+    ("p", "Below the years, CUSTOM LIST creates a playlist of all videos whose title matches your keywords, in upload "
           "order. Enter a name (it becomes the playlist title) and terms: \"contains any of\", \"and all of these\" and "
           "\"but none of these\". Upper/lower case is ignored. Optionally limit the list to a range of years (e.g. 2016 to 2020). "
           "The preview shows right away how many videos match. "
@@ -4690,7 +4712,7 @@ class ListDialog(tk.Toplevel):
         lst = (find_list(key) if key else None) or {}
         self.lst_id = lst.get("id") or None
         self.add, self.skip = set(lst.get("add") or []), set(lst.get("skip") or [])
-        self.title(L("Keyword list", "Stichwortliste"))
+        self.title(L("Custom list", "Eigene Liste"))
         self.transient(app)
         self.minsize(px(700), px(640))
         self.geometry(f"{px(780)}x{px(820)}")
@@ -4711,7 +4733,7 @@ class ListDialog(tk.Toplevel):
             self.del_btn.pack(side="right")
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
-        Section(body, L("KEYWORD LIST", "STICHWORTLISTE"), "TITLE // FILTER").pack(fill="x", pady=(0, px(10)))
+        Section(body, L("CUSTOM LIST", "EIGENE LISTE"), "TITLE // FILTER").pack(fill="x", pady=(0, px(10)))
 
         self.name_var = tk.StringVar(value=lst.get("name", ""))
         self.field(body, L("NAME (BECOMES THE PLAYLIST TITLE)", "NAME (WIRD DER PLAYLIST-TITEL)"), self.name_var)
@@ -5398,7 +5420,7 @@ class App(tk.Tk):
         self.channel_card = ChannelCard(left, self.edit_channel)
         self.channel_card.grid(row=1, column=0, sticky="ew", pady=(0, px(16)))
         self.channel_card.update_state()
-        self.year_section = YearSection(left, L("TARGET YEARS", "JAHRE"), lambda: self.select_all(True),
+        self.year_section = YearSection(left, L("TARGETS", "ZIELE"), lambda: self.select_all(True),
                                         lambda: self.select_all(False))
         self.year_section.grid(row=2, column=0, sticky="ew", pady=(0, px(6)))
         self.scroll = ScrollArea(left)
@@ -5407,11 +5429,11 @@ class App(tk.Tk):
         sbw = self.scroll.sb.winfo_reqwidth() + px(6)
         self.channel_card.grid_configure(padx=(0, sbw))
         self.year_section.grid_configure(padx=(0, sbw))
-        self.new_list_btn = CutButton(left, L("+  NEW KEYWORD LIST", "+  EIGENE STICHWORTLISTE"), self.new_list, height=px(36))
+        self.new_list_btn = CutButton(left, L("+  CUSTOM LIST", "+  EIGENE LISTE"), self.new_list, height=px(36))
         self.new_list_btn.set_color(CYAN)
         self.new_list_btn.grid(row=4, column=0, sticky="ew", pady=(px(8), 0), padx=(0, sbw))
-        Tooltip(self.new_list_btn, L("Creates a playlist from all videos whose title contains your keywords, in upload order.",
-                                     "Legt eine Playlist aus allen Videos an, in deren Titel deine Stichwörter vorkommen, in Upload-Reihenfolge."))
+        Tooltip(self.new_list_btn, L("Your own playlist besides the years: collects all videos whose title contains your keywords (e.g. a series), in upload order.",
+                                     "Eine eigene Playlist neben den Jahren: sammelt alle Videos, in deren Titel deine Stichwörter vorkommen (z. B. eine Serie), in Upload-Reihenfolge."))
         self.rows = {}
         self.order = []
         self.build_rows()
@@ -5965,7 +5987,7 @@ class App(tk.Tk):
             return
         years = self.selected_years()
         if not years:
-            self.write_log(L("NO TARGET SELECTED // CLICK A YEAR ON THE LEFT", "KEIN JAHR AUSGEWÄHLT // LINKS EIN JAHR ANKLICKEN"), "err")
+            self.write_log(L("NO TARGET SELECTED // CLICK A CARD ON THE LEFT", "KEIN ZIEL AUSGEWÄHLT // LINKS EINE KARTE ANKLICKEN"), "err")
             return
         self.save_settings()
         self.write_log(f"START // {', '.join(map(year_label, years))}", "sep")
@@ -5990,7 +6012,7 @@ class App(tk.Tk):
             return
         years = self.selected_years()
         if not years:
-            self.write_log(L("NO TARGET SELECTED // CLICK A YEAR ON THE LEFT", "KEIN JAHR AUSGEWÄHLT // LINKS EIN JAHR ANKLICKEN"), "err")
+            self.write_log(L("NO TARGET SELECTED // CLICK A CARD ON THE LEFT", "KEIN ZIEL AUSGEWÄHLT // LINKS EINE KARTE ANKLICKEN"), "err")
             return
         names = ", ".join(map(year_label, years))
         self.write_log(L(f"PLAYLIST CHECK // {names}", f"PLAYLIST-PRÜFUNG // {names}"), "sep")
