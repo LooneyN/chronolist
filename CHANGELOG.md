@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+- SCAN button: loads all videos and titles of the channel without creating or changing any playlist. This makes SUGGESTIONS and custom lists usable right away, for example with a new channel.
+
 ## [3.0.1] - 2026-11-01
 
 ### Added

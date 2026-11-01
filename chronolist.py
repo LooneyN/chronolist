@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 125
+BUILD = 126
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1400,10 +1400,11 @@ class BrowserUplink:
 
 
 class Worker(threading.Thread):
-    def __init__(self, years, limit, out, fallback=False, resolve=None, check_only=False):
+    def __init__(self, years, limit, out, fallback=False, resolve=None, check_only=False, scan_only=False):
         super().__init__(daemon=True)
         self.resolve_target = resolve
         self.check_only = check_only
+        self.scan_only = scan_only
         self.ignore_stop = False     # für den Abschluss-Check nach STOP
         self.skip_ahead = False      # nicht scanbare Jahre überspringen
         self.cur = None              # (jahr, videos) des laufenden Jahres
@@ -1489,6 +1490,12 @@ class Worker(threading.Thread):
                 return
             if self.check_only:
                 self.manual_check()
+                return
+            if self.scan_only:
+                self.scan_archive()
+                self.fetch_missing_titles()
+                self.log(L("SCAN COMPLETE // VIDEOS AND TITLES STORED // NO PLAYLIST CHANGED",
+                           "SCAN FERTIG // VIDEOS UND TITEL GESPEICHERT // KEINE PLAYLIST GEÄNDERT"), "ok")
                 return
             for kind, label in (("units", L("API QUOTA", "API-KONTINGENT")), ("search", L("SEARCH LIMIT", "SUCHLIMIT"))):
                 r = quota_blocked(kind)
@@ -5650,17 +5657,18 @@ class App(tk.Tk):
         Section(right, L("CONTROL", "STEUERUNG"), "HUD // STATUS").grid(row=0, column=0, sticky="ew", pady=(0, px(6)))
         btns = tk.Frame(right, bg=BG)
         btns.grid(row=1, column=0, sticky="ew", pady=(0, px(16)))
-        for i in range(4):
+        for i in range(5):
             btns.columnconfigure(i, weight=1, uniform="ctl")
         self.start_btn = CutButton(btns, "▶  START", self.start, height=DECK_H, size=15)
         self.pause_btn = CutButton(btns, L("❚❚  PAUSE", "❚❚  PAUSE"), self.toggle_pause, height=DECK_H, size=15)
         self.pause_btn.set_enabled(False)
         self.stop_btn = CutButton(btns, L("■  STOP", "■  STOPP"), self.stop, height=DECK_H, size=15)
         self.check_btn = CutButton(btns, L("✓  CHECK", "✓  PRÜFEN"), self.run_check, height=DECK_H, size=15)
-        for i, b in enumerate((self.start_btn, self.pause_btn, self.stop_btn, self.check_btn)):
+        self.scan_btn = CutButton(btns, L("⌕  SCAN", "⌕  SCAN"), self.run_scan, height=DECK_H, size=15)
+        for i, b in enumerate((self.start_btn, self.pause_btn, self.stop_btn, self.check_btn, self.scan_btn)):
             b.configure(width=1)
-            b.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else px(3), 0 if i == 3 else px(3)))
-        for b in (self.start_btn, self.pause_btn, self.stop_btn, self.check_btn):
+            b.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else px(3), 0 if i == 4 else px(3)))
+        for b in (self.start_btn, self.pause_btn, self.stop_btn, self.check_btn, self.scan_btn):
             b.set_color(YELLOW)   # Hauptsteuerung in Cyberpunk-Gelb
         self.setup_btn = CutButton(self.header, L("API // MISSING", "API // ANMELDEN"), self.edit_credentials, width=150)
         self.header.api_btn = self.setup_btn
@@ -6100,6 +6108,10 @@ class App(tk.Tk):
                                   "the progress.",
                                   "Prüft die Playlists der ausgewählten Jahre: entfernt doppelte Videos und gleicht "
                                   "den Fortschritt ab."))
+        Tooltip(self.scan_btn, L("Loads all videos and titles of the channel without creating or changing any playlist. "
+                                 "Needed for SUGGESTIONS and custom lists, for example with a new channel.",
+                                 "Lädt alle Videos und Titel des Kanals, ohne eine Playlist anzulegen oder zu ändern. "
+                                 "Nötig für SUGGESTIONS und eigene Listen, zum Beispiel bei einem neuen Kanal."))
         Tooltip(self.fallback_card, L("When the daily YouTube quota is used up, continue in a separate Edge window. "
                                       "Warning: this breaks YouTube's rules and puts your account at risk.",
                                       "Wenn das tägliche YouTube-Kontingent leer ist, über ein eigenes Edge-Fenster "
@@ -6239,6 +6251,7 @@ class App(tk.Tk):
         self.worker.start()
         self.start_btn.set_enabled(False)
         self.check_btn.set_enabled(False)
+        self.scan_btn.set_enabled(False)
         self.stop_btn.set_enabled(True)
         self.pause_btn.set_enabled(True)
         self.pause_btn.set_text(L("❚❚  PAUSE", "❚❚  PAUSE"))
@@ -6263,8 +6276,30 @@ class App(tk.Tk):
         self.worker.start()
         self.start_btn.set_enabled(False)
         self.check_btn.set_enabled(False)
+        self.scan_btn.set_enabled(False)
         self.stop_btn.set_enabled(True)
         self.set_status("checking")
+
+    def run_scan(self):
+        """Nur scannen: Archiv und Videotitel laden, ohne Playlists anzulegen oder zu ändern."""
+        if self.busy():
+            return
+        if not all(get_creds()):
+            self.edit_credentials()
+            return
+        if not CHANNEL:
+            self.edit_channel()
+            return
+        self.write_log(L("SCAN ONLY // ARCHIVE AND TITLES, NO PLAYLISTS", "NUR SCANNEN // ARCHIV UND TITEL, KEINE PLAYLISTS"), "sep")
+        self.worker = Worker([], 0, self.out, fallback=self.fallback, scan_only=True)
+        self.run_mode = "running"
+        self.pause_info = None
+        self.worker.start()
+        self.start_btn.set_enabled(False)
+        self.check_btn.set_enabled(False)
+        self.scan_btn.set_enabled(False)
+        self.stop_btn.set_enabled(True)
+        self.set_status("running")
 
     def toggle_pause(self):
         if not (self.worker and self.worker.is_alive()):
@@ -6578,6 +6613,7 @@ class App(tk.Tk):
                 elif kind == "done":
                     self.start_btn.set_enabled(True)
                     self.check_btn.set_enabled(True)
+                    self.scan_btn.set_enabled(True)
                     self.stop_btn.set_enabled(False)
                     self.pause_btn.set_enabled(False)
                     self.pause_btn.set_text(L("❚❚  PAUSE", "❚❚  PAUSE"))
