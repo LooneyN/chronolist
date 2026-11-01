@@ -22,7 +22,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - BATCH LIMIT (videos per year and run).
 
 ### Fixed
-- Thumbnail upload: the API refused the request with HTTP 400 ("'id'"). The image request now carries the id YouTube expects (`<playlist id>_hero`) and no longer queries with an unsupported field.
+- Thumbnail upload: YouTube refused the lookup of the existing image with HTTP 400 ("'id'"). The lookup now uses the `parent` parameter the API expects, and the image request carries `kind` as documented.
+- The progress display no longer freezes (log, PAUSE/STOP stuck) when a custom list reports progress.
 - A card no longer says COMPLETE while the run is still working on it (e.g. repairing a playlist). It shows SYNCING, and the repair shows what it is doing from the first moment.
 - Thumbnails that failed to upload are retried on the next run, and each upload attempt is logged.
 - Window position is now remembered reliably on Windows (also on a second monitor and when maximized). Before, often only the size was restored.

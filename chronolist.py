@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 98
+BUILD = 99
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2412,25 +2412,15 @@ class Worker(threading.Thread):
             self.log(L(f"THUMBNAIL {year_label(y)} // UPLOADING ...", f"THUMBNAIL {year_label(y)} // WIRD HOCHGELADEN ..."))
             try:
                 for pid in pids:
-                    try:
-                        existing = self.call("GET", "playlistImages", {"part": "snippet", "playlistId": pid}).get("items", [])
-                    except ApiError as e:
-                        if e.status != 400:
-                            raise
-                        existing = []          # Abfrage nicht möglich -> anlegen, bei Konflikt aktualisieren
-                    meta = {"snippet": {"playlistId": pid, "type": "hero"}}
-                    # laut YouTube-Doku besteht die id aus Playlist-ID und Bildtyp ("<Playlist-ID>_hero"); sie wird auch beim Anlegen verlangt
-                    meta["id"] = existing[0]["id"] if existing else f"{pid}_hero"
+                    # list: die Playlist heißt hier "parent" (nicht "playlistId")
+                    existing = self.call("GET", "playlistImages", {"part": "snippet", "parent": pid}).get("items", [])
+                    meta = {"kind": "youtube#playlistImage", "snippet": {"playlistId": pid, "type": "hero"}}
                     data = path.read_bytes()
                     if existing:
+                        meta["id"] = existing[0]["id"]
                         self.upload_call("PUT", {"part": "snippet"}, meta, data, mime)
                     else:
-                        try:
-                            self.upload_call("POST", {"part": "snippet"}, meta, data, mime)
-                        except ApiError as e:
-                            if e.status != 400:
-                                raise
-                            self.upload_call("PUT", {"part": "snippet"}, meta, data, mime)    # Bild gibt es evtl. schon
+                        self.upload_call("POST", {"part": "snippet"}, meta, data, mime)
                 t.update(status="done", error="", parts=len(pids))
                 self.log(L(f"THUMBNAIL {year_label(y)} UPLOADED", f"THUMBNAIL {year_label(y)} HOCHGELADEN"), "ok")
             except QuotaExceeded:
@@ -6277,7 +6267,7 @@ class App(tk.Tk):
                 if kind == "log":
                     self.write_log(msg[1], msg[2])
                 elif kind == "progress":
-                    y = int(msg[1])
+                    y = msg[1]
                     if y in self.rows:
                         self.rows[y].refresh(info=year_info(y))
                     self.update_total()
@@ -6369,6 +6359,12 @@ class App(tk.Tk):
                         r.refresh(info=year_info(y))
         except queue.Empty:
             pass
+        except Exception as e:  # noqa: BLE001
+            # ein fehlerhafte Meldung darf die Anzeige nicht stilllegen (sonst bleiben Log und Knöpfe stehen)
+            try:
+                self.write_log(f"UI ERROR // {type(e).__name__}: {e}", "err")
+            except Exception:  # noqa: BLE001
+                pass
         self.after(200, self.poll)
 
 
