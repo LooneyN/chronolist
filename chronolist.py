@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 117
+BUILD = 118
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -470,6 +470,44 @@ def list_videos(lst, titles=None, pool=None):
         if vid in add or (in_years(lst, v["year"]) and title_matches(lst, titles.get(vid, ""))):
             out.append({"id": vid, "published": v.get("published")})
     return out
+
+
+SERIES_MIN = 5          # ab so vielen Videos mit gleichem Titelanfang gilt etwas als Serie
+_EP_MARK = re.compile(r"(?:#|\b(?:folge|teil|episode|ep|part|e|nr)\.?\s*#?)\s*\d{1,4}\b", re.I)
+_EP_TAIL = re.compile(r"^(.*?[^\W\d_].*?)[\s\-\u2013|:]+\d{1,3}\s*$")
+
+
+def series_stem(title):
+    """Titelanfang vor der Folgennummer ("Minecraft Season 04 #12 - Haus" -> "Minecraft Season 04"), sonst None."""
+    t = (title or "").strip()
+    m = _EP_MARK.search(t)
+    stem = t[:m.start()] if m else (_EP_TAIL.match(t).group(1) if _EP_TAIL.match(t) else "")
+    stem = stem.strip(" \t-\u2013|:·•/[](){}")
+    return stem if len(stem) >= 3 and re.search(r"[^\W\d_]", stem) else None
+
+
+def suggest_series(pool=None, titles=None, lists=None, minimum=SERIES_MIN):
+    """Serien aus wiederkehrenden Titelanfängen: [{'name','count','from','to'}], größte zuerst.
+    Serien, die eine vorhandene Liste schon zu mindestens 80 % abdeckt, werden weggelassen."""
+    pool = pool if pool is not None else all_year_videos()
+    titles = titles if titles is not None else load(titles_file(), {})
+    lists = lists if lists is not None else load_lists()
+    groups = {}
+    for v in pool:
+        stem = series_stem(titles.get(v["id"], ""))
+        if stem:
+            g = groups.setdefault(norm_text(stem), {"name": stem, "ids": set(), "years": []})
+            g["ids"].add(v["id"])
+            g["years"].append(v["year"])
+    covered = [{x["id"] for x in list_videos(lst, titles, pool)} for lst in lists]
+    out = []
+    for g in groups.values():
+        if len(g["ids"]) < minimum:
+            continue
+        if any(len(g["ids"] & c) >= 0.8 * len(g["ids"]) for c in covered):
+            continue
+        out.append({"name": g["name"], "count": len(g["ids"]), "from": min(g["years"]), "to": max(g["years"])})
+    return sorted(out, key=lambda x: (-x["count"], x["name"].lower()))
 
 
 def missing_titles(pool=None):
@@ -4531,6 +4569,73 @@ class RemovedWindow(tk.Toplevel):
             self.after(400, self.apply_titles)
 
 
+class SuggestDialog(tk.Toplevel):
+    """Serien-Vorschläge aus den Titeln: Auswahl öffnet den Listen-Editor mit ausgefüllten Feldern."""
+
+    def __init__(self, app):
+        super().__init__(app, bg=BG)
+        self.app = app
+        self.title(L("List suggestions", "Listen-Vorschläge"))
+        self.transient(app)
+        self.minsize(px(560), px(420))
+        self.geometry(f"{px(620)}x{px(560)}")
+        pad = px(18)
+        row = tk.Frame(self, bg=BG)
+        row.pack(side="bottom", fill="x", padx=pad, pady=pad)
+        self.make_btn = CutButton(row, L("CREATE LIST", "LISTE ANLEGEN"), self.make, width=170)
+        self.make_btn.pack(side="left")
+        CutButton(row, L("CLOSE", "SCHLIESSEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
+        Section(body, L("SERIES IN YOUR TITLES", "SERIEN IN DEINEN TITELN"), "SUGGESTIONS").pack(fill="x", pady=(0, px(8)))
+        self.items = suggest_series()
+        titles = load(titles_file(), {})
+        if self.items:
+            txt = L("TITLES THAT START THE SAME WAY AND END IN AN EPISODE NUMBER. LISTS YOU ALREADY HAVE ARE LEFT OUT. "
+                    "PICK ONE: THE EDITOR OPENS WITH NAME AND KEYWORD FILLED IN.",
+                    "TITEL, DIE GLEICH ANFANGEN UND MIT EINER FOLGENNUMMER WEITERGEHEN. VORHANDENE LISTEN FEHLEN HIER. "
+                    "WÄHLE EINE AUS: DER EDITOR ÖFFNET SICH MIT NAME UND STICHWORT.")
+        elif not titles:
+            txt = L("NO TITLES STORED YET. THEY ARE LOADED ON THE NEXT START.", "NOCH KEINE TITEL GESPEICHERT. SIE WERDEN BEIM NÄCHSTEN START GELADEN.")
+        else:
+            txt = L("NO NEW SERIES FOUND.", "KEINE NEUEN SERIEN GEFUNDEN.")
+        tk.Label(body, text=txt, bg=BG, fg=TEXT_MUTED, font=F("mono", 10, False), anchor="w", justify="left",
+                 wraplength=px(560)).pack(fill="x", pady=(0, px(8)))
+        wrap = tk.Frame(body, bg=BG)
+        wrap.pack(fill="both", expand=True)
+        sb = tk.Scrollbar(wrap, orient="vertical")
+        self.lb = tk.Listbox(wrap, bg=BG2, fg=TEXT, selectbackground=mix(CYAN, BG, 0.3), selectforeground=TEXT,
+                             font=F("mono", 11, False), relief="flat", highlightthickness=1,
+                             highlightbackground=mix(CYAN, BG, 0.3), activestyle="none", exportselection=False,
+                             selectmode="browse", yscrollcommand=sb.set)
+        sb.configure(command=self.lb.yview)
+        sb.pack(side="right", fill="y")
+        self.lb.pack(side="left", fill="both", expand=True)
+        for it in self.items:
+            yrs = str(it["from"]) if it["from"] == it["to"] else f"{it['from']}–{it['to']}"
+            self.lb.insert("end", f"{it['count']:>5}  {it['name']}   ({yrs})")
+        self.lb.bind("<Double-Button-1>", lambda e: self.make())
+        self.lb.bind("<<ListboxSelect>>", lambda e: self.make_btn.set_enabled(bool(self.lb.curselection())))
+        self.make_btn.set_enabled(False)
+        self.bind("<Escape>", lambda e: self.destroy())
+        style_window(self)
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - self.winfo_height()) // 3)
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.grab_set()
+        self.focus_force()
+
+    def make(self):
+        sel = self.lb.curselection()
+        if not sel:
+            return
+        it = self.items[sel[0]]
+        app = self.app
+        self.destroy()
+        ListDialog(app, None, template={"name": it["name"], "any": [it["name"]]})
+
+
 class ListDialog(tk.Toplevel):
     """Stichwortliste anlegen/bearbeiten: Suchbegriffe, Live-Vorschau, einzelne Videos ausschließen/hinzufügen."""
     SHOW_MAX = 4000
@@ -5413,9 +5518,18 @@ class App(tk.Tk):
         sbw = self.scroll.sb.winfo_reqwidth() + px(6)
         self.channel_card.grid_configure(padx=(0, sbw))
         self.year_section.grid_configure(padx=(0, sbw))
-        self.new_list_btn = CutButton(left, L("+  CUSTOM LIST", "+  EIGENE LISTE"), self.new_list, height=px(36))
+        btn_row = tk.Frame(left, bg=BG)
+        btn_row.grid(row=4, column=0, sticky="ew", pady=(px(8), 0), padx=(0, sbw))
+        btn_row.columnconfigure(0, weight=3, uniform="lb")
+        btn_row.columnconfigure(1, weight=2, uniform="lb")
+        self.new_list_btn = CutButton(btn_row, L("+  CUSTOM LIST", "+  EIGENE LISTE"), self.new_list, height=px(36))
         self.new_list_btn.set_color(CYAN)
-        self.new_list_btn.grid(row=4, column=0, sticky="ew", pady=(px(8), 0), padx=(0, sbw))
+        self.new_list_btn.grid(row=0, column=0, sticky="ew", padx=(0, px(6)))
+        self.suggest_btn = CutButton(btn_row, L("SUGGESTIONS", "VORSCHLÄGE"), self.suggest_lists, height=px(36))
+        self.suggest_btn.set_color(CYAN)
+        self.suggest_btn.grid(row=0, column=1, sticky="ew")
+        Tooltip(self.suggest_btn, L("Finds series in your video titles (e.g. \"Minecraft Season 04 #12\") and offers to create a list for each.",
+                                    "Findet Serien in deinen Videotiteln (z. B. \"Minecraft Season 04 #12\") und bietet an, für jede eine Liste anzulegen."))
         Tooltip(self.new_list_btn, L("Your own playlist besides the years: collects all videos whose title contains your keywords (e.g. a series), in upload order.",
                                      "Eine eigene Playlist neben den Jahren: sammelt alle Videos, in deren Titel deine Stichwörter vorkommen (z. B. eine Serie), in Upload-Reihenfolge."))
         self.rows = {}
@@ -5572,6 +5686,9 @@ class App(tk.Tk):
 
     def new_list(self):
         ListDialog(self, None)
+
+    def suggest_lists(self):
+        SuggestDialog(self)
 
     def edit_list(self, key):
         if find_list(key):
