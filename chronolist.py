@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 122
+BUILD = 123
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2794,8 +2794,9 @@ TEXT, TEXT_DIM, TEXT_MUTED = "#FFFFFF", "#B4ECF2", "#94B8C2"
 FLUFF = None  # wird nach mix() gesetzt
 
 S = 1.0                 # Skalierung = Windows-DPI * eingestellte Textgröße
-UI_SCALES = (100, 105, 110, 115, 120, 125, 150)
-UI_SCALE_DEFAULT = 110
+UI_SCALES = (90, 95, 100, 105, 110, 115, 135)
+UI_SCALE_DEFAULT = 100
+UI_SCALE_BASE = 1.1  # 100 % in the settings = 110 % of the Windows scale
 FONT_UI = "Segoe UI"
 FONT_MONO = "Consolas"
 
@@ -5533,7 +5534,7 @@ def setup_theme(root):
     global S, FONT_UI, FONT_MONO
     ui = load(SETTINGS_FILE, {}).get("ui_scale", UI_SCALE_DEFAULT)
     ui = ui if ui in UI_SCALES else UI_SCALE_DEFAULT
-    S = max(1.0, root.winfo_fpixels("1i") / 96) * ui / 100
+    S = max(1.0, root.winfo_fpixels("1i") / 96) * ui / 100 * UI_SCALE_BASE
     fams = set(tkfont.families(root))
     FONT_UI = next((f for f in ("Rajdhani", "Orbitron", "Segoe UI") if f in fams), "TkDefaultFont")
     FONT_MONO = next((f for f in ("Consolas", "Cascadia Mono", "Courier New") if f in fams), "TkFixedFont")
