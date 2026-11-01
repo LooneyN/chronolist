@@ -6,6 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
+- Custom lists can have their own DESCRIPTION (optional). Empty = the description template from the PLAYLISTS settings.
 - New list editor offers a TEMPLATE selection when lists already exist (name and filter are copied, not single videos).
 - HIDE DONE / SHOW DONE in the TARGETS bar collapses all completed cards.
 - Links in the log copy to the clipboard on click (with a short "link copied" hint).

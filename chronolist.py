@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 115
+BUILD = 116
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -536,7 +536,10 @@ def growing(y):
         return True                       # Listen werden bei jedem Lauf neu abgeglichen
     t = datetime.date.today()
     return y >= t.year or (y == t.year - 1 and t.month == 1)
-def playlist_description(y): return fill_template(DESCRIPTION_TEMPLATE, y)
+def playlist_description(y):
+    """Jahre: Beschreibungs-Vorlage. Eigene Listen: eigene Beschreibung, sonst die Vorlage."""
+    own = ((find_list(y) or {}).get("desc") or "").strip() if is_list_key(y) else ""
+    return own or fill_template(DESCRIPTION_TEMPLATE, y)
 
 
 def load(path, default):
@@ -4538,13 +4541,13 @@ class ListDialog(tk.Toplevel):
         lst = (find_list(key) if key else None) or {}
         if template and not lst:
             # Vorlage: Name und Regeln übernehmen, aber nicht einzeln aufgenommene/ausgeschlossene Videos
-            lst = {k: template[k] for k in ("name", "any", "all", "none", "from", "to") if k in template}
+            lst = {k: template[k] for k in ("name", "desc", "any", "all", "none", "from", "to") if k in template}
         self.lst_id = lst.get("id") or None
         self.add, self.skip = set(lst.get("add") or []), set(lst.get("skip") or [])
         self.title(L("Custom list", "Eigene Liste"))
         self.transient(parent or app)
         self.minsize(px(700), px(640))
-        self.geometry(f"{px(780)}x{px(1000)}")
+        self.geometry(f"{px(780)}x{px(1060)}")
         self.pool = all_year_videos()
         self.titles = load(titles_file(), {})
         self.shown = []          # (typ, id) je Zeile: "hit" | "add" | "skip"
@@ -4580,6 +4583,16 @@ class ListDialog(tk.Toplevel):
             self.tpl_lb.bind("<<ListboxSelect>>", lambda e, t=templates: self.pick_template(t))
         self.name_var = tk.StringVar(value=lst.get("name", ""))
         self.field(body, L("NAME (USED AS THE PLAYLIST TITLE)", "NAME (WIRD ZUM PLAYLIST-TITEL)"), self.name_var)
+        self.lbl_desc = tk.Label(body, text=L("DESCRIPTION  (OPTIONAL, EMPTY = DESCRIPTION FROM THE PLAYLISTS SETTINGS)",
+                                              "BESCHREIBUNG  (OPTIONAL, LEER = BESCHREIBUNG AUS DEN PLAYLIST-EINSTELLUNGEN)"),
+                                 bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w")
+        self.lbl_desc.pack(fill="x")
+        self.desc_box = tk.Text(body, height=3, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat", wrap="word",
+                                font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
+                                highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), padx=px(6), pady=px(4))
+        self.desc_box.insert("1.0", lst.get("desc", ""))
+        self.desc_box.pack(fill="x", pady=(px(3), px(12)))
+
         Section(body, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
         self.any_var = tk.StringVar(value=", ".join(lst.get("any") or []))
         self.field(body, L("TITLE CONTAINS ANY OF  (SEPARATE WITH COMMAS)", "TITEL ENTHÄLT EINES DAVON  (MIT KOMMA TRENNEN)"), self.any_var)
@@ -4680,6 +4693,8 @@ class ListDialog(tk.Toplevel):
             return
         t = templates[sel[0] - 1]
         self.name_var.set(t.get("name", ""))
+        self.desc_box.delete("1.0", "end")
+        self.desc_box.insert("1.0", t.get("desc", ""))
         self.any_var.set(", ".join(t.get("any") or []))
         self.all_var.set(", ".join(t.get("all") or []))
         self.none_var.set(", ".join(t.get("none") or []))
@@ -4889,7 +4904,7 @@ class ListDialog(tk.Toplevel):
         if lst is None:
             lst = {"id": self.lst_id or new_list_id()}
             lists.append(lst)
-        lst.update(name=name, **cur)
+        lst.update(name=name, desc=self.desc_box.get("1.0", "end").strip(), **cur)
         save_lists(lists)
         key = list_key(lst)
         self.app.lists_changed(select_key=key if not self.lst_id else None)
