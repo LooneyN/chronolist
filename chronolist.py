@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 127
+BUILD = 128
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1493,6 +1493,13 @@ class Worker(threading.Thread):
                 return
             if self.scan_only:
                 self.scan_archive()
+                if self.fallback:
+                    # Archiv-Scan braucht API; was fehlt, kommt (nur mit FALLBACK) über die Kanalseite, ohne Kontingent
+                    for y in YEARS:
+                        if load(videos_file(y), None) is None:
+                            self.check()
+                            self.emit("current", y)
+                            self.collect(y)
                 self.fetch_missing_titles()
                 this_year = datetime.date.today().year
                 if any(load(videos_file(y), None) is None for y in YEARS if y < this_year):
