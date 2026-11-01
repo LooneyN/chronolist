@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 119
+BUILD = 120
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -4717,15 +4717,20 @@ class ListDialog(tk.Toplevel):
         self.desc_box.pack(fill="x", pady=(px(3), px(12)))
 
         Section(body, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
+        tk.Label(body, text=L("A VIDEO IS INCLUDED IF ITS TITLE CONTAINS ...", "EIN VIDEO KOMMT IN DIE LISTE, WENN SEIN TITEL ... ENTHÄLT"),
+                 bg=BG, fg=CYAN, font=F("mono", 11), anchor="w").pack(fill="x", pady=(0, px(6)))
         self.any_var = tk.StringVar(value=", ".join(lst.get("any") or []))
-        self.field(body, L("TITLE CONTAINS ANY OF  (SEPARATE WITH COMMAS)", "TITEL ENTHÄLT EINES DAVON  (MIT KOMMA TRENNEN)"), self.any_var)
+        self.rule_field(body, L("ANY OF", "EINES VON"), L("at least one, comma = or, e.g. minecraft, zelda",
+                                                          "mindestens eines, Komma = oder, z. B. minecraft, zelda"), self.any_var)
         self.all_var = tk.StringVar(value=", ".join(lst.get("all") or []))
-        self.field(body, L("AND ALL OF THESE  (OPTIONAL)", "UND ALLE DIESE  (OPTIONAL)"), self.all_var)
+        self.rule_field(body, L("ALL OF", "ALLE VON"), L("(optional) every one of them, e.g. season 1",
+                                                         "(optional) jedes davon, z. B. season 1"), self.all_var)
         self.none_var = tk.StringVar(value=", ".join(lst.get("none") or []))
-        self.field(body, L("BUT NONE OF THESE  (OPTIONAL)", "ABER KEINES DIESER  (OPTIONAL)"), self.none_var)
+        self.rule_field(body, L("NONE OF", "KEINES VON"), L("(optional) not a single one, e.g. live",
+                                                            "(optional) kein einziges davon, z. B. live"), self.none_var)
         yr = tk.Frame(body, bg=BG)
         yr.pack(fill="x", pady=(0, px(8)))
-        tk.Label(yr, text=L("ONLY YEARS  (OPTIONAL)", "NUR JAHRE  (OPTIONAL)"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11),
+        tk.Label(yr, text=L("YEARS  (OPTIONAL)", "JAHRE  (OPTIONAL)"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11),
                  anchor="w").pack(side="left")
         self.from_var = tk.StringVar(value=str(lst.get("from") or ""))
         self.to_var = tk.StringVar(value=str(lst.get("to") or ""))
@@ -4739,6 +4744,9 @@ class ListDialog(tk.Toplevel):
                               "GROSS-/KLEINSCHREIBUNG ZÄHLT NICHT. EIN BEGRIFF PASST ÜBERALL IM TITEL."),
                  bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w").pack(fill="x", pady=(0, px(8)))
 
+        self.rule_sum = tk.Label(body, text="", bg=BG, fg=TEXT_DIM, font=F("mono", 11, False), anchor="w", justify="left",
+                                 wraplength=px(700))
+        self.rule_sum.pack(fill="x", pady=(0, px(6)))
         self.count = tk.Label(body, text="", bg=BG, fg=CYAN, font=F("mono", 12), anchor="w")
         self.count.pack(fill="x")
         self.note = tk.Label(body, text="", bg=BG, fg=YELLOW, font=F("mono", 10, False), anchor="w", justify="left",
@@ -4837,6 +4845,33 @@ class ListDialog(tk.Toplevel):
             except tk.TclError:
                 pass
 
+    def rule_field(self, parent, label, hint, var):
+        """Filterzeile: kurze Bezeichnung (ANY OF / ALL OF / NONE OF) plus grauer Hinweis, darunter das Eingabefeld."""
+        fr = tk.Frame(parent, bg=BG)
+        fr.pack(fill="x")
+        tk.Label(fr, text=label, bg=BG, fg=TEXT, font=F("mono", 11), anchor="w").pack(side="left")
+        tk.Label(fr, text=hint, bg=BG, fg=TEXT_MUTED, font=F("mono", 10, False), anchor="w").pack(side="left", padx=(px(12), 0))
+        e = tk.Entry(parent, textvariable=var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                     font=F("mono", 13, False), highlightthickness=1, highlightcolor=CYAN,
+                     highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3))
+        e.pack(fill="x", pady=(px(3), px(8)), ipady=px(5))
+        return e
+
+    def rule_text(self, cur):
+        """Die Regeln als lesbarer Satz, damit man sieht, was die Eingabe bedeutet."""
+        parts = []
+        if cur["any"]:
+            parts.append("(" + " OR ".join(cur["any"]) + ")" if len(cur["any"]) > 1 else cur["any"][0])
+        parts += list(cur["all"])
+        txt = " AND ".join(parts) if parts else ""
+        if not txt:
+            return ""
+        if cur["none"]:
+            txt += L(", but NOT ", ", aber NICHT ") + " / ".join(cur["none"])
+        if cur["from"] or cur["to"]:
+            txt += L(f"  //  years {cur['from'] or '…'} to {cur['to'] or '…'}", f"  //  Jahre {cur['from'] or '…'} bis {cur['to'] or '…'}")
+        return L("Matches: ", "Passt auf: ") + txt.replace(" OR ", L(" OR ", " ODER ")).replace(" AND ", L(" AND ", " UND "))
+
     def field(self, parent, label, var):
         tk.Label(parent, text=label, bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w").pack(fill="x")
         e = tk.Entry(parent, textvariable=var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
@@ -4885,6 +4920,7 @@ class ListDialog(tk.Toplevel):
     def refresh(self):
         self.after_id = None
         cur = self.current()
+        self.rule_sum.configure(text=self.rule_text(cur))
         sel = {self.shown[i][1] for i in self.lb.curselection() if i < len(self.shown)}
         top = self.lb.yview()[0]
         self.lb.delete(0, "end")

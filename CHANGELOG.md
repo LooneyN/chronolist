@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+- Custom list editor: the keyword fields are now ANY OF / ALL OF / NONE OF under one sentence ("a video is included if its title contains ..."), each with a short hint, and a line below sums up what your input means (e.g. "Matches: (minecraft OR zelda) AND season 1, but NOT live").
+
 ## [3.0.0] - 2026-11-01
 
 ### Highlights
