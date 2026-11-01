@@ -14,6 +14,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Keyword lists (details): a list collects videos by title (any / all / exclude terms, plus single videos added or skipped) and is filled like a year in upload order. Missing titles are loaded from your own playlists (API) or via oEmbed. 
 
 ### Changed
+- The name of a custom list is now the whole playlist title; the title template from the PLAYLISTS settings only applies to years. Lists that already have a playlist keep their current title.
 - Custom list editor: FILTER RESULTS / ALL CHANNEL VIDEOS view, a title search, separate LIST SETTINGS (name) and FILTER (keywords, years) sections, and separate EXCLUDE and INCLUDE buttons. The FILTER always searches all videos (several terms separated by commas), so videos that do not match your keywords can be found and included from either view.
 - In the custom list editor you can select several videos (Ctrl/Shift+click, Ctrl+A) and exclude or restore them at once.
 - The year list is now called TARGETS (lists and years sit side by side); the button is CUSTOM LIST. Loading missing titles shows count and percent on the list card.

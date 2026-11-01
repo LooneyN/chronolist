@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 114
+BUILD = 115
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -512,7 +512,9 @@ def fill_template(t, y, count=None):
         return t
 
 
-def playlist_title(y): return fill_template(PLAYLIST_TEMPLATE, y)
+def playlist_title(y):
+    """Jahre: Titel-Vorlage. Eigene Listen: der Listenname allein ist der Titel."""
+    return (list_name(y) if is_list_key(y) else None) or fill_template(PLAYLIST_TEMPLATE, y)
 
 
 def part_title(y, n, total_parts):
@@ -4577,7 +4579,7 @@ class ListDialog(tk.Toplevel):
             self.tpl_lb.pack(fill="x", pady=(px(3), px(8)))
             self.tpl_lb.bind("<<ListboxSelect>>", lambda e, t=templates: self.pick_template(t))
         self.name_var = tk.StringVar(value=lst.get("name", ""))
-        self.field(body, L("NAME (REPLACES {year} IN THE PLAYLIST TITLE)", "NAME (ERSETZT {year} IM PLAYLIST-TITEL)"), self.name_var)
+        self.field(body, L("NAME (USED AS THE PLAYLIST TITLE)", "NAME (WIRD ZUM PLAYLIST-TITEL)"), self.name_var)
         Section(body, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
         self.any_var = tk.StringVar(value=", ".join(lst.get("any") or []))
         self.field(body, L("TITLE CONTAINS ANY OF  (SEPARATE WITH COMMAS)", "TITEL ENTHÄLT EINES DAVON  (MIT KOMMA TRENNEN)"), self.any_var)
