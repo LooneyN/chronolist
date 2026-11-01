@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 94
+BUILD = 95
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -4129,7 +4129,7 @@ HELP_TEXT_DE = [
           "Stichwörtern passen, in Upload-Reihenfolge. Du gibst einen Namen ein (er wird der Playlist-Titel) und Begriffe: "
           "\"enthält eines davon\", \"und alle diese\" und \"aber keines dieser\". Gross-/Kleinschreibung zählt nicht. "
           "Optional grenzt du die Liste auf einen Zeitraum von Jahren ein (z. B. 2016 bis 2020). "
-          "Die Vorschau zeigt sofort, wie viele Videos passen. Einzelne Videos schließt du aus (Auswahl, dann AUSSCHLIESSEN) "
+          "Die Vorschau zeigt sofort, wie viele Videos passen. Videos schließt du aus (mit Strg/Umschalt+Klick mehrere wählen, dann AUSSCHLIESSEN) "
           "oder nimmst sie über Link oder Video-ID fest hinzu.\n"
           "Eine Liste ist eine Karte wie ein Jahr: anklicken zum Markieren, Rechtsklick zum Bearbeiten. Sie wird nach den Jahren "
           "bearbeitet und bei jedem Lauf neu abgeglichen, also kommen neue Videos automatisch dazu. Ändern sich die "
@@ -4350,7 +4350,7 @@ HELP_TEXT_EN = [
           "order. Enter a name (it becomes the playlist title) and terms: \"contains any of\", \"and all of these\" and "
           "\"but none of these\". Upper/lower case is ignored. Optionally limit the list to a range of years (e.g. 2016 to 2020). "
           "The preview shows right away how many videos match. "
-          "Exclude single videos (select, then EXCLUDE) or add them for good with a link or video ID.\n"
+          "Exclude videos (select with Ctrl/Shift+click, then EXCLUDE) or add them for good with a link or video ID.\n"
           "A list is a card like a year: click to select, right-click to edit. It runs after the years and is matched again "
           "on every run, so new videos are added automatically. If you change the terms, the playlist is adjusted on the "
           "next run (this needs FALLBACK on). Chronolist needs the titles of all videos for this. Missing ones are loaded "
@@ -4799,11 +4799,12 @@ class ListDialog(tk.Toplevel):
         self.lb = tk.Listbox(wrap, bg=BG2, fg=TEXT, selectbackground=mix(CYAN, BG, 0.3), selectforeground=TEXT,
                              font=F("mono", 11, False), relief="flat", highlightthickness=1,
                              highlightbackground=mix(CYAN, BG, 0.3), activestyle="none", exportselection=False,
-                             yscrollcommand=sb.set)
+                             selectmode="extended", yscrollcommand=sb.set)
         sb.configure(command=self.lb.yview)
         sb.pack(side="right", fill="y")
         self.lb.pack(side="left", fill="both", expand=True)
         self.lb.bind("<<ListboxSelect>>", lambda e: self.update_tool())
+        self.lb.bind("<Control-a>", lambda e: (self.lb.selection_set(0, "end"), self.update_tool(), "break")[2])
 
         for v in (self.name_var, self.any_var, self.all_var, self.none_var, self.from_var, self.to_var):
             v.trace_add("write", lambda *a: self.schedule())
@@ -4857,9 +4858,8 @@ class ListDialog(tk.Toplevel):
     def refresh(self):
         self.after_id = None
         cur = self.current()
-        sel = None
-        if self.lb.curselection() and self.shown:
-            sel = self.shown[self.lb.curselection()[0]][1]
+        sel = {self.shown[i][1] for i in self.lb.curselection() if i < len(self.shown)}
+        top = self.lb.yview()[0]
         self.lb.delete(0, "end")
         self.shown = []
         hits = skipped = 0
@@ -4897,33 +4897,39 @@ class ListDialog(tk.Toplevel):
             notes.append(L(f"MORE THAN {PART_MAX} VIDEOS ARE SPLIT INTO SEVERAL PLAYLIST PARTS.",
                            f"AB {PART_MAX} VIDEOS WIRD DIE PLAYLIST IN TEILE AUFGETEILT."))
         self.note.configure(text="\n".join(notes))
-        if sel:
-            for i, (_, vid) in enumerate(self.shown):
-                if vid == sel:
-                    self.lb.selection_set(i)
-                    break
+        for i, (_, vid) in enumerate(self.shown):
+            if vid in sel:
+                self.lb.selection_set(i)
+        self.lb.yview_moveto(top)
         self.update_tool()
 
+    def picked(self):
+        return [self.shown[i] for i in self.lb.curselection() if i < len(self.shown)]
+
     def update_tool(self):
-        c = self.lb.curselection()
-        if not c:
+        pick = self.picked()
+        if not pick:
             self.toggle_btn.set_enabled(False)
+            self.toggle_btn.set_text(L("EXCLUDE SELECTED", "AUSWAHL AUSSCHLIESSEN"))
             return
-        typ = self.shown[c[0]][0]
         self.toggle_btn.set_enabled(True)
-        self.toggle_btn.set_text(L("RESTORE SELECTED", "AUSWAHL WIEDERHERSTELLEN") if typ == "skip"
-                                 else L("EXCLUDE SELECTED", "AUSWAHL AUSSCHLIESSEN"))
+        n = f" ({len(pick)})" if len(pick) > 1 else ""
+        restore = all(t == "skip" for t, _ in pick)
+        self.toggle_btn.set_text((L("RESTORE SELECTED", "AUSWAHL WIEDERHERSTELLEN") if restore
+                                  else L("EXCLUDE SELECTED", "AUSWAHL AUSSCHLIESSEN")) + n)
 
     def toggle_selected(self):
-        c = self.lb.curselection()
-        if not c:
+        pick = self.picked()
+        if not pick:
             return
-        typ, vid = self.shown[c[0]]
-        if typ == "skip":
-            self.skip.discard(vid)
+        if all(t == "skip" for t, _ in pick):
+            for _, vid in pick:
+                self.skip.discard(vid)
         else:
-            self.skip.add(vid)
-            self.add.discard(vid)
+            for t, vid in pick:
+                if t != "skip":
+                    self.skip.add(vid)
+                    self.add.discard(vid)
         self.refresh()
 
     def add_video(self):
