@@ -7,7 +7,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 - Video titles are now stored while scanning (API and channel page, no extra quota). This is the basis for keyword lists.
-- Keyword lists (engine): a list collects videos by title (any / all / exclude terms, plus single videos added or skipped) and is filled like a year in upload order. Missing titles are loaded from your own playlists (API) or via oEmbed. Editor and list cards follow.
+- Keyword lists: NEW KEYWORD LIST under the years opens an editor with live preview (hit count and titles). Exclude single videos or add videos by link/ID. Lists are cards like years (right-click edits) and run after the years.
+- Keyword lists (details): a list collects videos by title (any / all / exclude terms, plus single videos added or skipped) and is filled like a year in upload order. Missing titles are loaded from your own playlists (API) or via oEmbed. 
 
 ### Changed
 - Cleaner dashboard: only FALLBACK, PROGRAM and PLAYLISTS remain under options. AUTO-RUN and BOOT moved to the program settings.
