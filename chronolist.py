@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 118
+BUILD = 119
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -4601,6 +4601,17 @@ class SuggestDialog(tk.Toplevel):
             txt = L("NO NEW SERIES FOUND.", "KEINE NEUEN SERIEN GEFUNDEN.")
         tk.Label(body, text=txt, bg=BG, fg=TEXT_MUTED, font=F("mono", 10, False), anchor="w", justify="left",
                  wraplength=px(560)).pack(fill="x", pady=(0, px(8)))
+        fb = tk.Frame(body, bg=BG)
+        fb.pack(fill="x", pady=(0, px(6)))
+        tk.Label(fb, text=L("SEARCH", "SUCHE"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="left", padx=(0, px(8)))
+        self.q = tk.StringVar()
+        qe = tk.Entry(fb, textvariable=self.q, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                      font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
+                      highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3))
+        qe.pack(side="left", fill="x", expand=True, ipady=px(5))
+        Tooltip(qe, L("Shows only series whose name contains this text (several terms separated by commas: any of them).",
+                      "Zeigt nur Serien, deren Name diesen Text enthält (mehrere Begriffe mit Komma: einer davon genügt)."))
+        self.q.trace_add("write", lambda *a: self.fill())
         wrap = tk.Frame(body, bg=BG)
         wrap.pack(fill="both", expand=True)
         sb = tk.Scrollbar(wrap, orient="vertical")
@@ -4611,12 +4622,10 @@ class SuggestDialog(tk.Toplevel):
         sb.configure(command=self.lb.yview)
         sb.pack(side="right", fill="y")
         self.lb.pack(side="left", fill="both", expand=True)
-        for it in self.items:
-            yrs = str(it["from"]) if it["from"] == it["to"] else f"{it['from']}–{it['to']}"
-            self.lb.insert("end", f"{it['count']:>5}  {it['name']}   ({yrs})")
+        self.shown = []
+        self.fill()
         self.lb.bind("<Double-Button-1>", lambda e: self.make())
         self.lb.bind("<<ListboxSelect>>", lambda e: self.make_btn.set_enabled(bool(self.lb.curselection())))
-        self.make_btn.set_enabled(False)
         self.bind("<Escape>", lambda e: self.destroy())
         style_window(self)
         self.update_idletasks()
@@ -4626,11 +4635,20 @@ class SuggestDialog(tk.Toplevel):
         self.grab_set()
         self.focus_force()
 
+    def fill(self):
+        qs = parse_terms(self.q.get())
+        self.shown = [it for it in self.items if not qs or any(t in norm_text(it["name"]) for t in qs)]
+        self.lb.delete(0, "end")
+        for it in self.shown:
+            yrs = str(it["from"]) if it["from"] == it["to"] else f"{it['from']}–{it['to']}"
+            self.lb.insert("end", f"{it['count']:>5}  {it['name']}   ({yrs})")
+        self.make_btn.set_enabled(False)
+
     def make(self):
         sel = self.lb.curselection()
         if not sel:
             return
-        it = self.items[sel[0]]
+        it = self.shown[sel[0]]
         app = self.app
         self.destroy()
         ListDialog(app, None, template={"name": it["name"], "any": [it["name"]]})

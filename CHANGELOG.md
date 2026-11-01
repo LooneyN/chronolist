@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
-- SUGGESTIONS button: finds series in the stored titles (same beginning, then an episode number such as "#12", "Folge 3", "Teil 7") and opens the list editor with name and keyword filled in. Series that an existing list already covers are left out.
+- SUGGESTIONS button: finds series in the stored titles (same beginning, then an episode number such as "#12", "Folge 3", "Teil 7") and opens the list editor with name and keyword filled in. Series that an existing list already covers are left out. A search box narrows the suggestions by keyword.
 - Custom lists can have their own DESCRIPTION (optional). Empty = the description template from the PLAYLISTS settings.
 - New list editor offers a TEMPLATE selection when lists already exist (name and filter are copied, not single videos).
 - HIDE DONE / SHOW DONE in the TARGETS bar collapses completed cards that are not ticked. Ticked ones (current year, lists) stay visible because they are synced on every start.
