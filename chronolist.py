@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 123
+BUILD = 124
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2794,7 +2794,7 @@ TEXT, TEXT_DIM, TEXT_MUTED = "#FFFFFF", "#B4ECF2", "#94B8C2"
 FLUFF = None  # wird nach mix() gesetzt
 
 S = 1.0                 # Skalierung = Windows-DPI * eingestellte Textgröße
-UI_SCALES = (90, 95, 100, 105, 110, 115, 135)
+UI_SCALES = (90, 95, 100, 105, 110)
 UI_SCALE_DEFAULT = 100
 UI_SCALE_BASE = 1.1  # 100 % in the settings = 110 % of the Windows scale
 FONT_UI = "Segoe UI"

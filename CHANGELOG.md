@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
-- TEXT SIZE in the PROGRAM settings (90, 95, 100, 105, 110, 115 or 135 %). The default 100 % is larger than before, so text is easier to read on large screens; dialogs never grow larger than the screen. The list editor now uses two columns so it stays compact.
+- TEXT SIZE in the PROGRAM settings (90, 95, 100, 105 or 110 %). The default 100 % is larger than before, so text is easier to read on large screens; dialogs never grow larger than the screen. The list editor now uses two columns so it stays compact.
 
 ### Changed
 - Custom list editor: the keyword fields are now ANY OF / ALL OF / NONE OF under one sentence ("a video is included if its title contains ..."), each with a short hint, and a line below sums up what your input means (e.g. "Matches: (minecraft OR zelda) AND season 1, but NOT live").
