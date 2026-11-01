@@ -89,10 +89,9 @@ DESCRIPTION_TEMPLATE = "All videos by {channel} from {year} in upload order."
 PRIVACY = "public"              # public / unlisted / private
 PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
-THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
-VERSION = "2.11.0"
-BUILD = 84
+VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
+BUILD = 119
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -117,6 +116,8 @@ COOLDOWN_PAUSE = (17, 23)       # Sekunden (~20 s)
 LONG_BREAK_EVERY = 1500         # nach so vielen Videos eine lange Pause
 LONG_BREAK_PAUSE = (210, 270)   # Sekunden (~4 min)
 REMOVE_EXTRAS = True            # nur Videos, die nachweislich Shorts sind, werden aus Playlists entfernt
+CARD_H = 62                     # Höhe aller Listen-/Optionskarten
+DECK_H = 72                     # Höhe der Kanalkarte und der Steuerkacheln (gleiche Linie links/rechts)
 PART_MAX = 5000                 # YouTube: höchstens 5.000 Videos pro Playlist -> danach Teil 2, 3, ...
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -266,6 +267,35 @@ def known_shorts():
 def titles_file(): return CHAN_DIR / "titles.json"
 
 
+_titles_lock = threading.Lock()
+HIDDEN_TITLES = ("Private video", "Deleted video", "Privates Video", "Gelöschtes Video")
+
+
+def remember_titles(new):
+    """Videotitel zu titles.json hinzufügen (aus API/Kanalseite, ohne Zusatzkosten). Gibt die Anzahl neuer/geänderter zurück."""
+    new = {k: v for k, v in (new or {}).items() if v and v not in HIDDEN_TITLES}
+    if not new:
+        return 0
+    with _titles_lock:
+        cur = load(titles_file(), {})
+        changed = {k: v for k, v in new.items() if cur.get(k) != v}
+        if changed:
+            cur.update(changed)
+            save(titles_file(), cur)
+        return len(changed)
+
+
+def item_titles(items):
+    """{videoId: Titel} aus playlistItems-Antworten mit part=snippet."""
+    out = {}
+    for it in items or []:
+        sn = it.get("snippet") or {}
+        vid = (sn.get("resourceId") or {}).get("videoId") or (it.get("contentDetails") or {}).get("videoId")
+        if vid and sn.get("title"):
+            out[vid] = sn["title"]
+    return out
+
+
 def merge_keep(base_ids, old_items):
     """base_ids (Reihenfolge der Kanalseite) plus alle Einträge aus old_items, die dort fehlen,
     jeweils hinter ihrem Vorgänger aus der alten Liste eingefügt."""
@@ -328,6 +358,165 @@ def removed_by_year():
     return out
 
 
+# ------------------------------------------------------------------ Stichwortlisten
+# Eine Liste ist wie ein Jahr eine Playlist in Upload-Reihenfolge, nur dass die Videos nach ihrem
+# Titel gewählt werden. Gespeichert pro Kanal in lists.json; der Schlüssel "k_<id>" steht dort,
+# wo bei Jahren die Jahreszahl steht (videos_k_<id>.json, state_k_<id>.json).
+def lists_file(): return CHAN_DIR / "lists.json"
+def notitle_file(): return CHAN_DIR / "notitle.json"
+
+
+def load_lists():
+    d = load(lists_file(), [])
+    return d if isinstance(d, list) else []
+
+
+def save_lists(lists):
+    save(lists_file(), lists)
+
+
+def list_key(lst): return "k_" + lst["id"]
+def is_list_key(y): return isinstance(y, str)
+
+
+def find_list(key):
+    for lst in load_lists():
+        if list_key(lst) == key:
+            return lst
+    return None
+
+
+def list_name(key):
+    lst = find_list(key) if isinstance(key, str) else None
+    return (lst or {}).get("name") or str(key)
+
+
+def year_label(y):
+    """Anzeigename einer Karte: Jahreszahl oder Listenname."""
+    return list_name(y) if is_list_key(y) else str(y)
+
+
+def new_list_id():
+    have = {lst["id"] for lst in load_lists()}
+    while True:
+        i = "%06x" % random.randrange(16 ** 6)
+        if i not in have:
+            return i
+
+
+def norm_text(s):
+    return " ".join(str(s or "").casefold().split())
+
+
+def parse_terms(text):
+    """'a, b' oder Zeilen -> ['a', 'b'] (klein geschrieben, ohne Leereinträge)."""
+    if isinstance(text, (list, tuple)):
+        text = "\n".join(text)
+    out = []
+    for part in re.split(r"[,\n;]", str(text or "")):
+        t = norm_text(part)
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def title_matches(lst, title):
+    """Passt ein Titel zur Liste? any = mindestens eins, all = alle, none = keins davon."""
+    t = norm_text(title)
+    any_t, all_t, none_t = (lst.get("any") or []), (lst.get("all") or []), (lst.get("none") or [])
+    if not (any_t or all_t):
+        return False                      # ohne Suchbegriff keine Treffer
+    if any_t and not any(x in t for x in any_t):
+        return False
+    if all_t and not all(x in t for x in all_t):
+        return False
+    return not any(x in t for x in none_t)
+
+
+def year_files():
+    """[(Jahr, Pfad)] aller Jahreslisten, älteste zuerst."""
+    out = []
+    for f in (CHAN_DIR.glob("videos_*.json") if CHAN_DIR.exists() else []):
+        m_ = re.fullmatch(r"videos_(\d{4})\.json", f.name)
+        if m_:
+            out.append((int(m_.group(1)), f))
+    return sorted(out)
+
+
+def all_year_videos():
+    """Alle Videos aller Jahre in Upload-Reihenfolge: [{'id','published','year'}]."""
+    out = []
+    for y, f in year_files():
+        for v in load(f, []) or []:
+            out.append({"id": v["id"], "published": v.get("published"), "year": y})
+    return out
+
+
+def in_years(lst, year):
+    """Liegt das Jahr im eingestellten Zeitraum der Liste (leer = unbegrenzt)?"""
+    a, b = lst.get("from"), lst.get("to")
+    return (not a or year >= a) and (not b or year <= b)
+
+
+def list_videos(lst, titles=None, pool=None):
+    """Treffer einer Liste in Upload-Reihenfolge. Einzelne Videos lassen sich fest hinzufügen/ausschließen."""
+    titles = titles if titles is not None else load(titles_file(), {})
+    add, skip = set(lst.get("add") or []), set(lst.get("skip") or [])
+    out = []
+    for v in (pool if pool is not None else all_year_videos()):
+        vid = v["id"]
+        if vid in skip:
+            continue
+        if vid in add or (in_years(lst, v["year"]) and title_matches(lst, titles.get(vid, ""))):
+            out.append({"id": vid, "published": v.get("published")})
+    return out
+
+
+SERIES_MIN = 5          # ab so vielen Videos mit gleichem Titelanfang gilt etwas als Serie
+_EP_MARK = re.compile(r"(?:#|\b(?:folge|teil|episode|ep|part|e|nr)\.?\s*#?)\s*\d{1,4}\b", re.I)
+_EP_TAIL = re.compile(r"^(.*?[^\W\d_].*?)[\s\-\u2013|:]+\d{1,3}\s*$")
+
+
+def series_stem(title):
+    """Titelanfang vor der Folgennummer ("Minecraft Season 04 #12 - Haus" -> "Minecraft Season 04"), sonst None."""
+    t = (title or "").strip()
+    m = _EP_MARK.search(t)
+    stem = t[:m.start()] if m else (_EP_TAIL.match(t).group(1) if _EP_TAIL.match(t) else "")
+    stem = stem.strip(" \t-\u2013|:·•/[](){}")
+    return stem if len(stem) >= 3 and re.search(r"[^\W\d_]", stem) else None
+
+
+def suggest_series(pool=None, titles=None, lists=None, minimum=SERIES_MIN):
+    """Serien aus wiederkehrenden Titelanfängen: [{'name','count','from','to'}], größte zuerst.
+    Serien, die eine vorhandene Liste schon zu mindestens 80 % abdeckt, werden weggelassen."""
+    pool = pool if pool is not None else all_year_videos()
+    titles = titles if titles is not None else load(titles_file(), {})
+    lists = lists if lists is not None else load_lists()
+    groups = {}
+    for v in pool:
+        stem = series_stem(titles.get(v["id"], ""))
+        if stem:
+            g = groups.setdefault(norm_text(stem), {"name": stem, "ids": set(), "years": []})
+            g["ids"].add(v["id"])
+            g["years"].append(v["year"])
+    covered = [{x["id"] for x in list_videos(lst, titles, pool)} for lst in lists]
+    out = []
+    for g in groups.values():
+        if len(g["ids"]) < minimum:
+            continue
+        if any(len(g["ids"] & c) >= 0.8 * len(g["ids"]) for c in covered):
+            continue
+        out.append({"name": g["name"], "count": len(g["ids"]), "from": min(g["years"]), "to": max(g["years"])})
+    return sorted(out, key=lambda x: (-x["count"], x["name"].lower()))
+
+
+def missing_titles(pool=None):
+    titles = load(titles_file(), {})
+    nt = set(load(notitle_file(), []))
+    return [v["id"] for v in (pool if pool is not None else all_year_videos())
+            if v["id"] not in titles and v["id"] not in nt]
+
+
 def video_title(vid):
     """Titel über oEmbed (öffentlich, ohne Kontingent). None, wenn nicht abrufbar (privat/gelöscht)."""
     try:
@@ -343,6 +532,11 @@ def videos_file(y): return CHAN_DIR / f"videos_{y}.json"
 def collect_file(y): return CHAN_DIR / f"collect_{y}.json"
 def state_file(y): return CHAN_DIR / f"state_{y}.json"
 def template_values(y, count=None):
+    if is_list_key(y):
+        if count is None:
+            vids = load(videos_file(y), None)
+            count = len(vids) if vids is not None else "?"
+        return {"channel": channel_name(), "handle": CHANNEL.get("handle", ""), "year": list_name(y), "count": count}
     if count is None:
         vids = load(videos_file(y), None)
         count = len(vids) if vids is not None else "?"
@@ -356,7 +550,9 @@ def fill_template(t, y, count=None):
         return t
 
 
-def playlist_title(y): return fill_template(PLAYLIST_TEMPLATE, y)
+def playlist_title(y):
+    """Jahre: Titel-Vorlage. Eigene Listen: der Listenname allein ist der Titel."""
+    return (list_name(y) if is_list_key(y) else None) or fill_template(PLAYLIST_TEMPLATE, y)
 
 
 def part_title(y, n, total_parts):
@@ -374,11 +570,14 @@ def part_ids(state):
 
 def growing(y):
     """Kann in diesem Jahr noch etwas dazukommen? Laufendes Jahr, im Januar auch das Vorjahr."""
+    if is_list_key(y):
+        return True                       # Listen werden bei jedem Lauf neu abgeglichen
     t = datetime.date.today()
     return y >= t.year or (y == t.year - 1 and t.month == 1)
-def playlist_description(y): return fill_template(DESCRIPTION_TEMPLATE, y)
-def thumbs_dir(): return CHAN_DIR / "thumbs"
-def thumbs_file(): return CHAN_DIR / "thumbs.json"
+def playlist_description(y):
+    """Jahre: Beschreibungs-Vorlage. Eigene Listen: eigene Beschreibung, sonst die Vorlage."""
+    own = ((find_list(y) or {}).get("desc") or "").strip() if is_list_key(y) else ""
+    return own or fill_template(DESCRIPTION_TEMPLATE, y)
 
 
 def load(path, default):
@@ -611,6 +810,7 @@ class SearchLimit(QuotaExceeded):
 class ApiError(Exception):
     def __init__(self, status, reasons, text):
         super().__init__(f"HTTP {status}: {text[:300]}")
+        self.status = status
         self.reasons = reasons
 
 
@@ -747,17 +947,27 @@ def find_chips(node, out):
             find_chips(v, out)
 
 
-def find_channel_videos(node, ids, tokens):
-    """Video-IDs (in Seitenreihenfolge) und das Fortsetzungs-Token einer Kanal-Videoseite."""
+def find_channel_videos(node, ids, tokens, titles=None):
+    """Video-IDs (in Seitenreihenfolge) und das Fortsetzungs-Token einer Kanal-Videoseite.
+    Mit `titles` (dict) werden zusätzlich die Titel eingesammelt."""
     if isinstance(node, dict):
         for key in ("videoRenderer", "gridVideoRenderer"):
             r = node.get(key)
             if isinstance(r, dict) and r.get("videoId"):
                 ids.append(r["videoId"])
+                if titles is not None:
+                    t = text_of(r.get("title")).strip()
+                    if t:
+                        titles[r["videoId"]] = t
                 return
         lv = node.get("lockupViewModel")
         if isinstance(lv, dict) and lv.get("contentId") and "VIDEO" in str(lv.get("contentType", "VIDEO")):
             ids.append(lv["contentId"])
+            if titles is not None:
+                m = (lv.get("metadata") or {}).get("lockupMetadataViewModel") or {}
+                t = text_of(m.get("title")).strip()
+                if t:
+                    titles[lv["contentId"]] = t
             return
         ci = node.get("continuationItemRenderer")
         if isinstance(ci, dict):
@@ -766,10 +976,10 @@ def find_channel_videos(node, ids, tokens):
                 tokens.append(t)
             return
         for v in node.values():
-            find_channel_videos(v, ids, tokens)
+            find_channel_videos(v, ids, tokens, titles)
     elif isinstance(node, list):
         for v in node:
-            find_channel_videos(v, ids, tokens)
+            find_channel_videos(v, ids, tokens, titles)
 
 
 OLDEST_WORDS = ("oldest", "älteste", "ältest", "plus anciennes", "más antiguos", "più vecchi", "oudste")
@@ -1074,22 +1284,25 @@ class BrowserUplink:
 
     def latest_videos(self, channel_id, known, limit_pages=40):
         """Neueste Videos der Kanalseite (neueste zuerst), bis ein bekanntes Video kommt."""
-        ids, tokens = [], []
+        ids, tokens, titles = [], [], {}
         find_channel_videos(self.yt_call("browse", {"browseId": channel_id, "params": "EgZ2aWRlb3PyBgQKAjoA"}),
-                            ids, tokens)
+                            ids, tokens, titles)
         out = []
         for _ in range(limit_pages):
             for v in ids:
                 if v in known:
+                    remember_titles(titles)
                     return out
                 if v not in out:
                     out.append(v)
             if not tokens:
+                remember_titles(titles)
                 return out
             ids, new_tokens = [], []
-            find_channel_videos(self.yt_call("browse", {"continuation": tokens[-1]}), ids, new_tokens)
+            find_channel_videos(self.yt_call("browse", {"continuation": tokens[-1]}), ids, new_tokens, titles)
             tokens = new_tokens
             time.sleep(random.uniform(0.8, 1.6))
+        remember_titles(titles)
         return out
 
     def oldest_token(self, channel_id):
@@ -1105,8 +1318,9 @@ class BrowserUplink:
         raise BrowserFailed(L("CHANNEL PAGE // NO 'OLDEST' SORTING FOUND", "KANALSEITE // KEINE SORTIERUNG 'ÄLTESTE' GEFUNDEN"))
 
     def video_page(self, token):
-        ids, tokens = [], []
-        find_channel_videos(self.yt_call("browse", {"continuation": token}), ids, tokens)
+        ids, tokens, titles = [], [], {}
+        find_channel_videos(self.yt_call("browse", {"continuation": token}), ids, tokens, titles)
+        remember_titles(titles)
         return ids, (tokens[-1] if tokens else None)
 
     def video_date(self, vid):
@@ -1280,13 +1494,9 @@ class Worker(threading.Thread):
                 r = quota_blocked(kind)
                 if r:
                     self.log(L(f"{label} ALREADY USED UP TODAY // SKIPPING IT UNTIL RESET {fmt_reset(r)}", f"{label} HEUTE SCHON AUFGEBRAUCHT // WIRD BIS ZUM RESET {fmt_reset(r)} ÜBERSPRUNGEN"), "warn")
-            try:
-                self.apply_thumbnails()
-            except Exception as e:  # noqa: BLE001
-                self.log(L(f"THUMBNAILS SKIPPED // {str(e)[:120]}", f"THUMBNAILS ÜBERSPRUNGEN // {str(e)[:120]}"), "warn")
             if self.fallback:
                 self.scan_archive()
-            queue_ = list(self.years)
+            queue_ = [y for y in self.years if not is_list_key(y)]
             deferred = []
             while queue_ or deferred:
                 if not queue_:
@@ -1315,6 +1525,7 @@ class Worker(threading.Thread):
                     self.prefetch(y + 1)
                 if self.fill(y, videos) and not growing(y):
                     self.emit("select", None, y)    # fertig -> abwählen (laufendes Jahr bleibt für neue Videos)
+            self.run_lists([y for y in self.years if is_list_key(y)])
             self.log(L("ALL TARGETS PROCESSED", "ALLE AUSGEWÄHLTEN JAHRE BEARBEITET"), "ok")
         except Stopped:
             reason = "gestoppt"
@@ -1511,10 +1722,11 @@ class Worker(threading.Thread):
             pages = 0
             while True:
                 self.check()
-                params = {"part": "contentDetails", "playlistId": prog["uploads"], "maxResults": 50}
+                params = {"part": "contentDetails,snippet", "playlistId": prog["uploads"], "maxResults": 50}
                 if prog["page_token"]:
                     params["pageToken"] = prog["page_token"]
                 d = self.call("GET", "playlistItems", params)
+                remember_titles(item_titles(d.get("items")))
                 for it in d.get("items", []):
                     prog["seen"] += 1
                     pub = it["contentDetails"].get("videoPublishedAt")
@@ -1634,12 +1846,12 @@ class Worker(threading.Thread):
         """Videoliste eines Jahres über die Kanalseite. Videos aus einer alten Liste (Suche), die dort
         fehlen, bleiben an ihrer bisherigen Stelle erhalten."""
         self.scanning = year
-        self.log(L(f"{year} // READING THE CHANNEL PAGE (NO API QUOTA NEEDED) ...",
-                   f"{year} // LESE DIE KANALSEITE (OHNE API-KONTINGENT) ..."))
+        self.log(L(f"{year_label(year)} // READING THE CHANNEL PAGE (NO API QUOTA NEEDED) ...",
+                   f"{year_label(year)} // LESE DIE KANALSEITE (OHNE API-KONTINGENT) ..."))
         self.act(L("CHANNEL PAGE // OPENING ...", "KANALSEITE // WIRD GEÖFFNET ..."), year)
         web = self.web_index(year)
         if not web:
-            raise BrowserFailed(L(f"{year} // NO VIDEOS FOUND ON THE CHANNEL PAGE", f"{year} // KEINE VIDEOS AUF DER KANALSEITE GEFUNDEN"))
+            raise BrowserFailed(L(f"{year_label(year)} // NO VIDEOS FOUND ON THE CHANNEL PAGE", f"{year_label(year)} // KEINE VIDEOS AUF DER KANALSEITE GEFUNDEN"))
         merged = merge_keep(web, old or [])   # Kanalseite ergänzt nur; sie zeigt nicht alle Videos, also nie etwas entfernen
         videos = [{"id": v, "published": None} for v in merged]
         save(videos_file(year), videos)
@@ -1652,11 +1864,11 @@ class Worker(threading.Thread):
             old_ids = {v["id"] for v in old}
             plus = len(set(merged) - old_ids)
             minus = len(old_ids - set(merged))
-            self.log(L(f"{year} // {len(merged)} VIDEOS // {plus} NEW",
-                       f"{year} // {len(merged)} VIDEOS // {plus} NEU"),
+            self.log(L(f"{year_label(year)} // {len(merged)} VIDEOS // {plus} NEW",
+                       f"{year_label(year)} // {len(merged)} VIDEOS // {plus} NEU"),
                      "ok" if plus or minus else "info")
         else:
-            self.log(L(f"{len(videos)} VIDEOS FROM {year} FOUND", f"{len(videos)} VIDEOS AUS {year} GEFUNDEN"), "ok")
+            self.log(L(f"{len(videos)} VIDEOS FROM {year_label(year)} FOUND", f"{len(videos)} VIDEOS AUS {year_label(year)} GEFUNDEN"), "ok")
         self.emit("progress", year)
         self.act(None, year)
         return videos
@@ -1747,8 +1959,8 @@ class Worker(threading.Thread):
         if extra:
             videos = insert_by_date(videos, extra, dates)
             save(videos_file(year), videos)
-            self.log(L(f"{year} // {len(extra)} VIDEO(S) RESTORED TO THE LIST (WRONGLY LEFT OUT BEFORE)",
-                       f"{year} // {len(extra)} VIDEO(S) WIEDER IN DIE LISTE (VORHER FÄLSCHLICH AUSSORTIERT)"), "warn")
+            self.log(L(f"{year_label(year)} // {len(extra)} VIDEO(S) RESTORED TO THE LIST (WRONGLY LEFT OUT BEFORE)",
+                       f"{year_label(year)} // {len(extra)} VIDEO(S) WIEDER IN DIE LISTE (VORHER FÄLSCHLICH AUSSORTIERT)"), "warn")
             self.emit("progress", year)
         st = load(state_file(year), {})
         if st.get("playlist_id"):
@@ -1786,7 +1998,7 @@ class Worker(threading.Thread):
         if st.get("playlist_id"):
             st["repair"] = True
             save(state_file(year), st)
-        self.log(L(f"{year} // {removed} SHORTS REMOVED FROM THE LIST", f"{year} // {removed} SHORTS AUS DER LISTE ENTFERNT"), "warn")
+        self.log(L(f"{year_label(year)} // {removed} SHORTS REMOVED FROM THE LIST", f"{year_label(year)} // {removed} SHORTS AUS DER LISTE ENTFERNT"), "warn")
         self.emit("progress", year)
         return cleaned
 
@@ -1805,10 +2017,11 @@ class Worker(threading.Thread):
                     up = full_uploads(items[0]["contentDetails"]["relatedPlaylists"]["uploads"]) if items else None
                 token, done = None, False
                 while up and not done:
-                    params = {"part": "contentDetails", "playlistId": up, "maxResults": 50}
+                    params = {"part": "contentDetails,snippet", "playlistId": up, "maxResults": 50}
                     if token:
                         params["pageToken"] = token
                     d = self.call("GET", "playlistItems", params)
+                    remember_titles(item_titles(d.get("items")))
                     for it in d.get("items", []):
                         cd = it["contentDetails"]
                         pub = cd.get("videoPublishedAt")
@@ -1837,18 +2050,18 @@ class Worker(threading.Thread):
                             if d[:4] == str(year):
                                 new.append((v, d))
             else:
-                self.log(L(f"{year} // CHECK FOR NEW VIDEOS SKIPPED // NEEDS API QUOTA OR FALLBACK",
-                           f"{year} // NEUE VIDEOS NICHT GEPRÜFT // BRAUCHT API-KONTINGENT ODER FALLBACK"), "warn")
+                self.log(L(f"{year_label(year)} // CHECK FOR NEW VIDEOS SKIPPED // NEEDS API QUOTA OR FALLBACK",
+                           f"{year_label(year)} // NEUE VIDEOS NICHT GEPRÜFT // BRAUCHT API-KONTINGENT ODER FALLBACK"), "warn")
         except QuotaExceeded:
-            self.log(L(f"{year} // CHECK FOR NEW VIDEOS SKIPPED // QUOTA", f"{year} // NEUE VIDEOS NICHT GEPRÜFT // KONTINGENT"), "warn")
+            self.log(L(f"{year_label(year)} // CHECK FOR NEW VIDEOS SKIPPED // QUOTA", f"{year_label(year)} // NEUE VIDEOS NICHT GEPRÜFT // KONTINGENT"), "warn")
         finally:
             self.act(None, year)
         if not new:
-            self.log(L(f"{year} // NO NEW VIDEOS", f"{year} // KEINE NEUEN VIDEOS"))
+            self.log(L(f"{year_label(year)} // NO NEW VIDEOS", f"{year_label(year)} // KEINE NEUEN VIDEOS"))
             return videos
         videos = videos + [{"id": v, "published": p} for v, p in reversed(new)]
         save(videos_file(year), videos)
-        self.log(L(f"{year} // {len(new)} NEW VIDEO(S) FOUND", f"{year} // {len(new)} NEUE(S) VIDEO(S) GEFUNDEN"), "ok")
+        self.log(L(f"{year_label(year)} // {len(new)} NEW VIDEO(S) FOUND", f"{year_label(year)} // {len(new)} NEUE(S) VIDEO(S) GEFUNDEN"), "ok")
         self.emit("progress", year)
         return videos
 
@@ -1900,16 +2113,17 @@ class Worker(threading.Thread):
         if prog.get("method") == "uploads" and cut is not None and year <= cut:
             prog["method"] = "search"
             save(cf, prog)
-            self.log(L(f"{year} IS BEYOND YOUTUBE'S 20,000 UPLOAD LIMIT // DATE SEARCH (~100 UNITS PER 50 VIDEOS)", f"{year} LIEGT HINTER DER 20.000-UPLOAD-GRENZE // DATUMSSUCHE (~100 EINHEITEN PRO 50 VIDEOS)"))
+            self.log(L(f"{year_label(year)} IS BEYOND YOUTUBE'S 20,000 UPLOAD LIMIT // DATE SEARCH (~100 UNITS PER 50 VIDEOS)", f"{year_label(year)} LIEGT HINTER DER 20.000-UPLOAD-GRENZE // DATUMSSUCHE (~100 EINHEITEN PRO 50 VIDEOS)"))
         prefix = str(year)
         if prog["method"] == "uploads":
-            self.log(L(f"SCANNING CHANNEL UPLOADS FOR {year} ...", f"DURCHSUCHE UPLOADS NACH {year} ..."))
+            self.log(L(f"SCANNING CHANNEL UPLOADS FOR {year_label(year)} ...", f"DURCHSUCHE UPLOADS NACH {year_label(year)} ..."))
             reached_older, pages = False, 0
             while True:
-                params = {"part": "contentDetails", "playlistId": prog["uploads"], "maxResults": 50}
+                params = {"part": "contentDetails,snippet", "playlistId": prog["uploads"], "maxResults": 50}
                 if prog["page_token"]:
                     params["pageToken"] = prog["page_token"]
                 d = self.call("GET", "playlistItems", params)
+                remember_titles(item_titles(d.get("items")))
                 for it in d.get("items", []):
                     prog["seen"] += 1
                     cd = it["contentDetails"]
@@ -1924,8 +2138,8 @@ class Worker(threading.Thread):
                 save(cf, prog)
                 pages += 1
                 if pages % 20 == 0:
-                    self.log(L(f"{prog['seen']}/{prog['total']} UPLOADS SCANNED // {len(prog['found'])} FROM {year}",
-                               f"{prog['seen']}/{prog['total']} UPLOADS DURCHSUCHT // {len(prog['found'])} AUS {year}"))
+                    self.log(L(f"{prog['seen']}/{prog['total']} UPLOADS SCANNED // {len(prog['found'])} FROM {year_label(year)}",
+                               f"{prog['seen']}/{prog['total']} UPLOADS DURCHSUCHT // {len(prog['found'])} AUS {year_label(year)}"))
                 if reached_older or not prog["page_token"]:
                     break
             if reached_older or prog["seen"] < CAP_SEEN:
@@ -1939,10 +2153,10 @@ class Worker(threading.Thread):
             for m in range(1, 13):
                 if m in prog["done_months"]:
                     continue
-                start = f"{year}-{m:02d}-01T00:00:00Z"
-                end = f"{year + 1}-01-01T00:00:00Z" if m == 12 else f"{year}-{m + 1:02d}-01T00:00:00Z"
+                start = f"{year_label(year)}-{m:02d}-01T00:00:00Z"
+                end = f"{year + 1}-01-01T00:00:00Z" if m == 12 else f"{year_label(year)}-{m + 1:02d}-01T00:00:00Z"
                 token, count = None, 0
-                self.act(L(f"DATE SEARCH // {m:02d}/{year}", f"DATUMSSUCHE // {m:02d}/{year}"), year)
+                self.act(L(f"DATE SEARCH // {m:02d}/{year_label(year)}", f"DATUMSSUCHE // {m:02d}/{year_label(year)}"), year)
                 while True:
                     params = {
                         "part": "snippet", "channelId": prog["channel_id"], "type": "video",
@@ -1952,6 +2166,7 @@ class Worker(threading.Thread):
                     if token:
                         params["pageToken"] = token
                     d = self.call("GET", "search", params)
+                    remember_titles({it["id"]["videoId"]: it["snippet"].get("title") for it in d.get("items", [])})
                     for it in d.get("items", []):
                         prog["found"][it["id"]["videoId"]] = it["snippet"]["publishedAt"]
                         count += 1
@@ -1959,10 +2174,10 @@ class Worker(threading.Thread):
                     if not token:
                         break
                 if count >= 500:
-                    self.log(L(f"WARNING // {m:02d}/{year} HAS 500+ HITS, MAY BE INCOMPLETE", f"WARNUNG // {m:02d}/{year} HAT ÜBER 500 TREFFER, EVTL. UNVOLLSTÄNDIG"), "warn")
+                    self.log(L(f"WARNING // {m:02d}/{year_label(year)} HAS 500+ HITS, MAY BE INCOMPLETE", f"WARNUNG // {m:02d}/{year_label(year)} HAT ÜBER 500 TREFFER, EVTL. UNVOLLSTÄNDIG"), "warn")
                 prog["done_months"].append(m)
                 save(cf, prog)
-                self.log(f"{m:02d}/{year} // {count} VIDEOS")
+                self.log(f"{m:02d}/{year_label(year)} // {count} VIDEOS")
             prog["method"] = "done"
             save(cf, prog)
             self.act(None, year)
@@ -1973,9 +2188,118 @@ class Worker(threading.Thread):
         )
         save(videos_file(year), videos)
         self.scanning = None
-        self.log(L(f"{len(videos)} VIDEOS FROM {year} FOUND", f"{len(videos)} VIDEOS AUS {year} GEFUNDEN"), "ok")
+        self.log(L(f"{len(videos)} VIDEOS FROM {year_label(year)} FOUND", f"{len(videos)} VIDEOS AUS {year_label(year)} GEFUNDEN"), "ok")
         self.emit("progress", year)
         return videos
+
+    # --- Stichwortlisten
+    def fetch_missing_titles(self, key=None):
+        """Fehlende Videotitel nachladen: erst aus den eigenen Playlists (API, 1 Einheit pro 50), den Rest per oEmbed.
+        Fortschritt erscheint auf der Karte `key` (Zähler und Prozent) und alle 10 % im Protokoll."""
+        pool = all_year_videos()
+        left = set(missing_titles(pool))
+        total = len(left)
+        if not total:
+            return
+        self.log(L(f"LISTS // LOADING {total} MISSING VIDEO TITLES ...", f"LISTEN // LADE {total} FEHLENDE VIDEOTITEL ..."))
+        state = {"step": 0}
+
+        def progress():
+            done = total - len(left)
+            pct = done * 100 // total
+            self.act(L(f"LOADING TITLES // {done}/{total} ({pct}%)", f"LADE TITEL // {done}/{total} ({pct} %)"), key)
+            if pct // 10 > state["step"]:
+                state["step"] = pct // 10
+                self.log(L(f"TITLES // {done}/{total} ({pct}%)", f"TITEL // {done}/{total} ({pct} %)"))
+
+        def got_titles(t):
+            n = remember_titles(t)
+            left.difference_update(t)
+            return n
+        by_year = {}
+        for v in pool:
+            if v["id"] in left:
+                by_year.setdefault(v["year"], set()).add(v["id"])
+        got = 0
+        progress()
+        try:
+            if self.mode == "api" and not quota_blocked("units"):
+                for y in sorted(by_year):
+                    for pid in part_ids(load(state_file(y), {})):
+                        token = None
+                        while True:
+                            self.check()
+                            params = {"part": "snippet", "playlistId": pid, "maxResults": 50}
+                            if token:
+                                params["pageToken"] = token
+                            d = self.call("GET", "playlistItems", params)
+                            got += got_titles(item_titles(d.get("items")))
+                            progress()
+                            token = d.get("nextPageToken")
+                            if not token:
+                                break
+        except QuotaExceeded:
+            self.log(L("TITLES // API QUOTA USED UP // CONTINUING WITHOUT IT", "TITEL // KONTINGENT AUFGEBRAUCHT // WEITER OHNE"), "warn")
+        rest = [v["id"] for v in pool if v["id"] in left and v["id"] not in set(load(notitle_file(), []))]
+        if rest:
+            self.log(L(f"TITLES // {len(rest)} MORE VIA OEMBED (SLOW, NO QUOTA)", f"TITEL // NOCH {len(rest)} ÜBER OEMBED (LANGSAM, KEIN KONTINGENT)"))
+        nt = set(load(notitle_file(), []))
+        batch = {}
+        try:
+            for n, vid in enumerate(rest, 1):
+                self.check()
+                t = video_title(vid)
+                if t:
+                    batch[vid] = t
+                else:
+                    nt.add(vid)
+                    left.discard(vid)
+                if n % 25 == 0 or n == len(rest):
+                    got += got_titles(batch)
+                    batch = {}
+                    save(notitle_file(), sorted(nt))
+                    progress()
+                self.sleep(random.uniform(0.1, 0.3))
+        finally:
+            got += got_titles(batch)
+            save(notitle_file(), sorted(nt))
+            self.act(None, key)
+        self.log(L(f"LISTS // {got} TITLES LOADED", f"LISTEN // {got} TITEL GELADEN"), "ok")
+
+    def sync_list(self, key):
+        """Treffer der Liste neu berechnen und als Videoliste speichern. Ändert sich mehr als ein Anhängen
+        am Ende, muss die Playlist einmal repariert (einsortiert/bereinigt) werden."""
+        lst = find_list(key)
+        new = list_videos(lst)
+        old = load(videos_file(key), None)
+        state = load(state_file(key), {})
+        if old is not None and state.get("playlist_id"):
+            oldids, newids = [v["id"] for v in old], [v["id"] for v in new]
+            if newids[:len(oldids)] != oldids:
+                state["repair"] = True
+                save(state_file(key), state)
+        save(videos_file(key), new)
+        return new
+
+    def run_lists(self, keys):
+        if not keys:
+            return
+        self.emit("current", keys[0])
+        self.fetch_missing_titles(keys[0])
+        for key in keys:
+            self.check()
+            lst = find_list(key)
+            if not lst:
+                continue
+            self.emit("current", key)
+            self.log(L(f"// LIST {lst['name']}", f"// LISTE {lst['name']}"), "sep")
+            videos = self.sync_list(key)
+            self.log(L(f"{len(videos)} VIDEOS MATCH", f"{len(videos)} VIDEOS PASSEN"), "ok")
+            self.emit("progress", key)
+            if not videos and not load(state_file(key), {}).get("playlist_id"):
+                self.log(L("NO MATCHES // NO PLAYLIST CREATED YET", "KEINE TREFFER // NOCH KEINE PLAYLIST ANGELEGT"), "warn")
+                continue
+            self.fill(key, videos)
 
     # --- Playlist befüllen
     def prefetch(self, year):
@@ -1984,23 +2308,23 @@ class Worker(threading.Thread):
             return
         try:
             if load(videos_file(year), None) is None:
-                self.log(L(f"PRE-SCAN {year} FOR BROWSER FALLBACK", f"VORAB-SUCHE {year} FÜR DEN FALLBACK"))
+                self.log(L(f"PRE-SCAN {year_label(year)} FOR BROWSER FALLBACK", f"VORAB-SUCHE {year_label(year)} FÜR DEN FALLBACK"))
             self.collect(year)
             self.ensure_playlist(year)
         except SearchLimit:
             self.scanning = None
-            self.log(L(f"PRE-SCAN {year} PAUSED // DAILY SEARCH LIMIT (~100 SEARCHES) REACHED // "
+            self.log(L(f"PRE-SCAN {year_label(year)} PAUSED // DAILY SEARCH LIMIT (~100 SEARCHES) REACHED // "
                        f"CONTINUES AFTER RESET {quota_reset_local()}",
-                       f"VORAB-SUCHE {year} PAUSIERT // SUCHLIMIT (~100 SUCHEN) ERREICHT // "
+                       f"VORAB-SUCHE {year_label(year)} PAUSIERT // SUCHLIMIT (~100 SUCHEN) ERREICHT // "
                        f"GEHT NACH DEM RESET {quota_reset_local()} WEITER"), "warn")
         except QuotaExceeded:
             self.scanning = None
-            self.log(L(f"PRE-SCAN {year} SKIPPED // QUOTA", f"VORAB-SUCHE {year} ÜBERSPRUNGEN // KONTINGENT"), "warn")
+            self.log(L(f"PRE-SCAN {year_label(year)} SKIPPED // QUOTA", f"VORAB-SUCHE {year_label(year)} ÜBERSPRUNGEN // KONTINGENT"), "warn")
         except (Stopped, BrowserFailed):
             raise
         except Exception as e:  # noqa: BLE001
             self.scanning = None
-            self.log(L(f"PRE-SCAN {year} INTERRUPTED // {e} // PROGRESS SAVED, CONTINUES NEXT RUN", f"VORAB-SUCHE {year} UNTERBROCHEN // {e} // GESPEICHERT, GEHT BEIM NÄCHSTEN MAL WEITER"), "warn")
+            self.log(L(f"PRE-SCAN {year_label(year)} INTERRUPTED // {e} // PROGRESS SAVED, CONTINUES NEXT RUN", f"VORAB-SUCHE {year_label(year)} UNTERBROCHEN // {e} // GESPEICHERT, GEHT BEIM NÄCHSTEN MAL WEITER"), "warn")
         finally:
             self.act(None, year)
 
@@ -2050,14 +2374,10 @@ class Worker(threading.Thread):
             state["parts"] = parts
             state["playlist_id"] = parts[0]
             save(state_file(year), state)
-            self.log(L(f"{year} HAS MORE THAN {PART_MAX} VIDEOS // PLAYLIST PART {n} CREATED // {title}",
-                       f"{year} HAT MEHR ALS {PART_MAX} VIDEOS // PLAYLIST TEIL {n} ANGELEGT // {title}"), "ok")
+            self.log(L(f"{year_label(year)} HAS MORE THAN {PART_MAX} VIDEOS // PLAYLIST PART {n} CREATED // {title}",
+                       f"{year_label(year)} HAT MEHR ALS {PART_MAX} VIDEOS // PLAYLIST TEIL {n} ANGELEGT // {title}"), "ok")
             if n == 2:
                 self.rename_playlist(parts[0], part_title(year, 1, 2), playlist_description(year))
-        try:
-            self.apply_thumbnails(only_year=year)
-        except Exception as e:  # noqa: BLE001
-            self.log(L(f"THUMBNAIL {year} FAILED // {str(e)[:120]}", f"THUMBNAIL {year} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
         return parts[k]
 
     def ensure_playlist(self, year):
@@ -2068,77 +2388,7 @@ class Worker(threading.Thread):
             state = {"playlist_id": pid, "parts": [pid], "next": 0, "skipped": []}
             save(sf, state)
             self.log(L(f"PLAYLIST CREATED // {playlist_title(year)}", f"PLAYLIST ANGELEGT // {playlist_title(year)}"), "ok")
-            try:
-                self.apply_thumbnails(only_year=year)
-            except Exception as e:  # noqa: BLE001
-                self.log(L(f"THUMBNAIL {year} FAILED // {str(e)[:120]}", f"THUMBNAIL {year} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
         return state
-
-    # --- Playlist-Thumbnails (eigenes Bild pro Jahr)
-    def upload_call(self, method, params, meta, data, mime):
-        """Multipart-Upload an /upload/youtube/v3/playlistImages (Metadaten + Bild)."""
-        if quota_blocked("units"):
-            raise QuotaExceeded()
-        boundary = "chronolist" + str(random.randint(10 ** 8, 10 ** 9))
-        body = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
-                f"{json.dumps(meta)}\r\n--{boundary}\r\nContent-Type: {mime}\r\n\r\n").encode() + data + \
-            f"\r\n--{boundary}--\r\n".encode()
-        for _ in range(3):
-            if time.time() > self.tok.get("expires_at", 0):
-                self.refresh()
-            r = requests.request(method, "https://www.googleapis.com/upload/youtube/v3/playlistImages",
-                                 params={**params, "uploadType": "multipart"}, data=body, timeout=60,
-                                 headers={"Authorization": f"Bearer {self.tok['access_token']}",
-                                          "Content-Type": f"multipart/related; boundary={boundary}"})
-            if r.ok:
-                return r.json() if r.content else {}
-            if r.status_code == 401:
-                self.refresh()
-                continue
-            try:
-                errs = r.json().get("error", {})
-            except ValueError:
-                errs = {}
-            reasons = {e.get("reason") for e in errs.get("errors", [])}
-            if reasons & {"quotaExceeded", "dailyLimitExceeded"}:
-                mark_quota("units")
-                raise QuotaExceeded()
-            raise ApiError(r.status_code, reasons, errs.get("message") or r.text)
-        raise RuntimeError(L("THUMBNAIL UPLOAD FAILED // AUTH", "THUMBNAIL-UPLOAD FEHLGESCHLAGEN // ANMELDUNG"))
-
-    def apply_thumbnails(self, only_year=None):
-        """Wartende Thumbnails hochladen, sobald die Playlist existiert. Nur über die API (50 Einheiten pro Bild)."""
-        info = load(thumbs_file(), {})
-        todo = [(int(y), t) for y, t in info.items()
-                if t.get("status") == "queued" and (only_year is None or int(y) == only_year)]
-        for y, t in sorted(todo):
-            pids = part_ids(load(state_file(y), {}))
-            path = thumbs_dir() / t.get("file", "")
-            if not pids or not path.exists():
-                continue
-            if self.mode != "api" or quota_blocked("units"):
-                self.log(L(f"THUMBNAIL {y} WAITING // NEEDS API QUOTA", f"THUMBNAIL {y} WARTET // BRAUCHT API-KONTINGENT"), "warn")
-                return
-            mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
-            try:
-                for pid in pids:
-                    existing = self.call("GET", "playlistImages", {"part": "id,snippet", "playlistId": pid}).get("items", [])
-                    meta = {"snippet": {"playlistId": pid, "type": "hero"}}
-                    if existing:
-                        meta["id"] = existing[0]["id"]
-                        self.upload_call("PUT", {"part": "snippet"}, meta, path.read_bytes(), mime)
-                    else:
-                        self.upload_call("POST", {"part": "snippet"}, meta, path.read_bytes(), mime)
-                t.update(status="done", error="", parts=len(pids))
-                self.log(L(f"THUMBNAIL {y} UPLOADED", f"THUMBNAIL {y} HOCHGELADEN"), "ok")
-            except QuotaExceeded:
-                self.log(L(f"THUMBNAIL {y} WAITING // NEEDS API QUOTA", f"THUMBNAIL {y} WARTET // BRAUCHT API-KONTINGENT"), "warn")
-                return
-            except (ApiError, RuntimeError, requests.RequestException) as e:
-                t.update(status="error", error=str(e)[:200])
-                self.log(L(f"THUMBNAIL {y} FAILED // {str(e)[:120]}", f"THUMBNAIL {y} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
-            info[str(y)] = t
-            save(thumbs_file(), info)
 
     def switch_to_browser(self):
         self.log(L("DAILY API QUOTA REACHED // SWITCHING TO BROWSER FALLBACK", "TAGESKONTINGENT ERREICHT // WECHSEL ZUM FALLBACK"), "warn")
@@ -2249,7 +2499,7 @@ class Worker(threading.Thread):
         if not pids:
             return state
         self.emit("checking", year, True)
-        self.log(L(f"PLAYLIST CHECK {year} // {why} ...", f"PLAYLIST-PRÜFUNG {year} // {why} ..."))
+        self.log(L(f"PLAYLIST CHECK {year_label(year)} // {why} ...", f"PLAYLIST-PRÜFUNG {year_label(year)} // {why} ..."))
         try:
             removed = 0
             seen = set()
@@ -2281,11 +2531,11 @@ class Worker(threading.Thread):
                 state["next"] = n
                 save(state_file(year), state)
                 self.emit("progress", year)
-                self.log(L(f"RESYNC {year} // {moved} VIDEO(S) WERE ALREADY IN THE PLAYLIST", f"ABGLEICH {year} // {moved} VIDEO(S) WAREN SCHON IN DER PLAYLIST"), "warn")
+                self.log(L(f"RESYNC {year_label(year)} // {moved} VIDEO(S) WERE ALREADY IN THE PLAYLIST", f"ABGLEICH {year_label(year)} // {moved} VIDEO(S) WAREN SCHON IN DER PLAYLIST"), "warn")
             msg = L(f"{removed} DUPLICATE(S) REMOVED", f"{removed} DOPPELTE ENTFERNT") if removed else L("NO DUPLICATES", "KEINE DOPPELTEN")
-            self.log(L(f"PLAYLIST CHECK {year} // {len(seen)} VIDEOS // {msg}", f"PLAYLIST-PRÜFUNG {year} // {len(seen)} VIDEOS // {msg}"), "ok")
+            self.log(L(f"PLAYLIST CHECK {year_label(year)} // {len(seen)} VIDEOS // {msg}", f"PLAYLIST-PRÜFUNG {year_label(year)} // {len(seen)} VIDEOS // {msg}"), "ok")
         except QuotaExceeded:
-            self.log(L(f"PLAYLIST CHECK {year} SKIPPED // QUOTA", f"PLAYLIST-PRÜFUNG {year} ÜBERSPRUNGEN // KONTINGENT"), "warn")
+            self.log(L(f"PLAYLIST CHECK {year_label(year)} SKIPPED // QUOTA", f"PLAYLIST-PRÜFUNG {year_label(year)} ÜBERSPRUNGEN // KONTINGENT"), "warn")
         finally:
             self.emit("checking", year, False)
         return state
@@ -2293,6 +2543,7 @@ class Worker(threading.Thread):
     def repair(self, year, videos, state):
         """Fehlende Videos in eine schon (teilweise) gefüllte Playlist nachtragen und an die
         richtige Stelle schieben, Teil für Teil. Danach geht es mit dem normalen Füllen weiter."""
+        self.act(L("REPAIR // OPENING BROWSER ...", "NACHTRAG // ÖFFNE BROWSER ..."), year)
         self.ensure_browser()
         order_all = [v["id"] for v in videos]
         pids = part_ids(state)
@@ -2300,7 +2551,7 @@ class Worker(threading.Thread):
         try:
             for k, pid in enumerate(pids):
                 order = order_all[k * PART_MAX:(k + 1) * PART_MAX]
-                tag = f"{year}" + (L(f" PART {k + 1}", f" TEIL {k + 1}") if len(pids) > 1 else "")
+                tag = f"{year_label(year)}" + (L(f" PART {k + 1}", f" TEIL {k + 1}") if len(pids) > 1 else "")
 
                 def reading(n, tag=tag):
                     self.act(L(f"READING PLAYLIST // {n} READ", f"LESE PLAYLIST // {n} GELESEN"), year)
@@ -2311,9 +2562,12 @@ class Worker(threading.Thread):
                 self.log(L(f"REPAIR {tag} // PLAYLIST HAS {len(items)} VIDEOS", f"NACHTRAG {tag} // PLAYLIST HAT {len(items)} VIDEOS"))
                 wanted = set(order_all)
                 extras = [it for it in items if it["vid"] not in wanted]
-                shorts = known_shorts() or set()
-                keep = [it for it in extras if it["vid"] not in shorts]
-                extras = [it for it in extras if it["vid"] in shorts]     # nur Shorts werden entfernt
+                if is_list_key(year):
+                    keep = []                                              # Listen enthalten genau die Treffer
+                else:
+                    shorts = known_shorts() or set()
+                    keep = [it for it in extras if it["vid"] not in shorts]
+                    extras = [it for it in extras if it["vid"] in shorts]     # nur Shorts werden entfernt
                 if keep:
                     self.log(L(f"REPAIR {tag} // {len(keep)} VIDEO(S) NOT IN THE LIST // LEFT IN THE PLAYLIST",
                                f"NACHTRAG {tag} // {len(keep)} VIDEO(S) NICHT IN DER LISTE // BLEIBEN IN DER PLAYLIST"), "info")
@@ -2322,8 +2576,8 @@ class Worker(threading.Thread):
                                f"NACHTRAG {tag} // {len(extras)} VIDEO(S) NICHT IN DER LISTE // BLEIBEN VORERST IN DER PLAYLIST"), "warn")
                     extras = []
                 if extras:
-                    self.log(L(f"REPAIR {tag} // REMOVING {len(extras)} SHORT(S)",
-                               f"NACHTRAG {tag} // ENTFERNE {len(extras)} SHORT(S)"), "warn")
+                    self.log(L(f"REPAIR {tag} // REMOVING {len(extras)} {'VIDEO(S)' if is_list_key(year) else 'SHORT(S)'}",
+                               f"NACHTRAG {tag} // ENTFERNE {len(extras)} {'VIDEO(S)' if is_list_key(year) else 'SHORT(S)'}"), "warn")
                     for i in range(0, len(extras), BATCH_SIZE):
                         self.check()
                         self.browser.remove_many(pid, extras[i:i + BATCH_SIZE])
@@ -2423,7 +2677,7 @@ class Worker(threading.Thread):
         if not inf:
             return state
         ids, start = inf.get("ids") or [], inf.get("start", state.get("next", 0))
-        self.log(L(f"{year} // CHECKING THE LAST BATCH ({len(ids)} VIDEOS) ...", f"{year} // PRÜFE DAS LETZTE PAKET ({len(ids)} VIDEOS) ..."))
+        self.log(L(f"{year_label(year)} // CHECKING THE LAST BATCH ({len(ids)} VIDEOS) ...", f"{year_label(year)} // PRÜFE DAS LETZTE PAKET ({len(ids)} VIDEOS) ..."))
         first = self.in_playlist(inf["pid"], ids[0]) if ids else False
         last = self.in_playlist(inf["pid"], ids[-1]) if ids else False
         if first is None or last is None:
@@ -2432,7 +2686,7 @@ class Worker(threading.Thread):
             return self.verify(year, videos, state, L("SYNC ON START", "ABGLEICH BEIM START"))
         if first and last:
             state["next"] = max(state.get("next", 0), start + len(ids))
-            self.log(L(f"{year} // LAST BATCH WAS ALREADY IN THE PLAYLIST", f"{year} // LETZTES PAKET WAR SCHON DRIN"), "warn")
+            self.log(L(f"{year_label(year)} // LAST BATCH WAS ALREADY IN THE PLAYLIST", f"{year_label(year)} // LETZTES PAKET WAR SCHON DRIN"), "warn")
         elif first or last:
             videos = load(videos_file(year), [])
             state.pop("inflight", None)
@@ -2467,7 +2721,7 @@ class Worker(threading.Thread):
             videos = load(videos_file(y), None)
             state = load(state_file(y), {})
             if videos is None or not state.get("playlist_id"):
-                self.log(L(f"{y} // NO PLAYLIST YET, NOTHING TO CHECK", f"{y} // NOCH KEINE PLAYLIST, NICHTS ZU PRÜFEN"))
+                self.log(L(f"{year_label(y)} // NO PLAYLIST YET, NOTHING TO CHECK", f"{year_label(y)} // NOCH KEINE PLAYLIST, NICHTS ZU PRÜFEN"))
                 continue
             self.emit("current", y)
             self.verify(y, videos, state, L("FULL SCAN", "KOMPLETT"))
@@ -2480,8 +2734,8 @@ class Worker(threading.Thread):
         self.cur = (year, videos)
         if state.get("repair"):
             if not self.fallback:
-                self.log(L(f"{year} // PLAYLIST NEEDS A REPAIR (MISSING VIDEOS / SHORTS TO REMOVE) // TURN ON FALLBACK FOR IT",
-                           f"{year} // PLAYLIST MUSS NACHGETRAGEN/BEREINIGT WERDEN // DAFÜR FALLBACK EINSCHALTEN"), "warn")
+                self.log(L(f"{year_label(year)} // PLAYLIST NEEDS A REPAIR (MISSING VIDEOS / SHORTS TO REMOVE) // TURN ON FALLBACK FOR IT",
+                           f"{year_label(year)} // PLAYLIST MUSS NACHGETRAGEN/BEREINIGT WERDEN // DAFÜR FALLBACK EINSCHALTEN"), "warn")
                 return False
             state = self.repair(year, videos, state)
         if not state.get("tracked") and 0 < state.get("next", 0) < len(videos):
@@ -2492,11 +2746,11 @@ class Worker(threading.Thread):
         save(sf, state)
         i, added = state["next"], 0
         if i >= len(videos):
-            self.log(L(f"{year} ALREADY COMPLETE", f"{year} IST SCHON FERTIG"))
+            self.log(L(f"{year_label(year)} ALREADY COMPLETE", f"{year_label(year)} IST SCHON FERTIG"))
             return True
         while i < len(videos):
             if self.limit and added >= self.limit:
-                self.log(L(f"{year} // RUN LIMIT OF {self.limit} VIDEOS REACHED", f"{year} // LIMIT VON {self.limit} VIDEOS FÜR DIESEN LAUF ERREICHT"))
+                self.log(L(f"{year_label(year)} // RUN LIMIT OF {self.limit} VIDEOS REACHED", f"{year_label(year)} // LIMIT VON {self.limit} VIDEOS FÜR DIESEN LAUF ERREICHT"))
                 return False
             self.check()
             pid = self.ensure_part(year, state, i // PART_MAX)     # ab 5.000 Videos: nächster Teil
@@ -2525,7 +2779,7 @@ class Worker(threading.Thread):
                 self.pace()
         state = self.verify(year, videos, state, L("FINAL FULL SCAN", "ABSCHLUSSPRÜFUNG"))
         links = " // ".join(f"https://www.youtube.com/playlist?list={p}" for p in part_ids(state))
-        self.log(L(f"{year} COMPLETE // {links}", f"{year} FERTIG // {links}"), "ok")
+        self.log(L(f"{year_label(year)} COMPLETE // {links}", f"{year_label(year)} FERTIG // {links}"), "ok")
         return True
 
 
@@ -2814,7 +3068,7 @@ def wait_label(label):
 
 class YearRow(Panel):
     def __init__(self, master, year, command, pause_command=None):
-        super().__init__(master, 62, cut=10, command=command)
+        super().__init__(master, CARD_H, cut=10, command=command)
         self.pause_command = pause_command
         self.icon_geo = None       # (x0, y0, x1, y1) des Symbols, klickbar während des Laufs
         self.year = year
@@ -2845,10 +3099,15 @@ class YearRow(Panel):
         if self.blocked and not run:
             t = self.blocked.astimezone().strftime("%H:%M")
             return L(f"NEEDS API // FROM {t}", f"BRAUCHT API // AB {t}"), False
+        if is_list_key(self.year) and code in ("none", "scanning"):
+            return (L("MATCHING...", "TREFFER WERDEN GESUCHT...") if run
+                    else L("NEW LIST // FILLS ON START", "NEUE LISTE // WIRD BEIM START GEFÜLLT")), run
         if code in ("none", "scanning"):
             return (L("SCANNING...", "SUCHE LÄUFT...") if run else L("SCAN PAUSED", "SUCHE PAUSIERT")
                     if code == "scanning" else L("NOT SCANNED", "NICHT GESUCHT")), run
         if code == "done":
+            if run:
+                return L("SYNCING...", "WIRD ABGEGLICHEN..."), False     # läuft noch (z. B. Nachtrag), nicht schon "fertig"
             return L("COMPLETE", "FERTIG"), False
         if run:
             return L("UPLINK ACTIVE", "WIRD GEFÜLLT"), False
@@ -2891,7 +3150,7 @@ class YearRow(Panel):
 
         tx = self.right_tag(x0, y0, x1, y1, c, px(116), role, on)
         nx = ix + isz + px(12)
-        self.create_text(nx, y0 + h * 0.32, text=str(self.year), anchor="w", font=F("ui", 16),
+        self.create_text(nx, y0 + h * 0.32, text=year_label(self.year), anchor="w", font=F("ui", 16),
                          fill=TEXT if on else mix(TEXT_DIM, BG, 0.5) if faded else mix(TEXT_DIM, BG, 0.75))
         text, blinking = self.status_text()
         scol = (CYAN if self.activity else
@@ -2993,7 +3252,7 @@ class YearRow(Panel):
             self.redraw()
 
     def refresh_blocked(self):
-        b = None if self.running else year_blocked(self.info)
+        b = None if self.running or is_list_key(self.year) else year_blocked(self.info)
         if b != self.blocked:
             self.refresh()
 
@@ -3025,7 +3284,7 @@ class YearRow(Panel):
                 self.itemconfigure("cnt", text=f"{done} / {total}")
                 return
         manual = self.running and self.pause and self.pause["kind"] == "manual"
-        self.blocked = None if self.running else year_blocked(self.info)
+        self.blocked = None if self.running or is_list_key(self.year) else year_blocked(self.info)
         self.role = status_role(self.info["code"], self.running)
         faded = self.info["code"] == "done" and not self.selected and not self.running
         self.st = ("active" if manual else "running" if self.running else "active" if self.selected
@@ -3036,7 +3295,7 @@ class YearRow(Panel):
 
 
 class ToggleCard(Panel):
-    def __init__(self, master, name, sub, value, command, available=True, height=54, compact=False):
+    def __init__(self, master, name, sub, value, command, available=True, height=CARD_H, compact=False):
         super().__init__(master, height, command=command if available else None,
                          state="inactive" if available else "unavailable")
         self.name, self.sub, self.value, self.available = name, sub, value, available
@@ -3076,32 +3335,6 @@ class ToggleCard(Panel):
         tag = (L("ON", "AN") if self.value else L("OFF", "AUS")) if self.available else "--"
         self.create_text((tx + x1) / 2, mid, text=tag, font=F("mono", 13),
                          fill=role if on else TEXT_MUTED)
-
-
-class LimitPanel(Panel):
-    def __init__(self, master, value):
-        super().__init__(master, 58)
-        self.value = value
-
-    def draw_content(self, x0, y0, x1, y1, c, role):
-        h = y1 - y0
-        cy = (y0 + y1) / 2
-        isz = px(32)
-        ix = x0 + px(10)
-        self.icon_box(ix, cy, isz, role, False)
-        col = mix(role, BG, 0.8)
-        u = isz / 32
-        top = cy - isz / 2
-        for k, hh in enumerate((8, 14, 11, 18)):
-            xx = ix + (8 + k * 5) * u
-            self.create_rectangle(xx, top + (24 - hh) * u, xx + 3 * u, top + 24 * u, fill=col, outline="")
-        nx = ix + isz + px(12)
-        self.create_text(nx, y0 + h * 0.34, text=L("BATCH LIMIT", "LIMIT PRO LAUF"), anchor="w", font=F("ui", 15),
-                         fill=TEXT_DIM)
-        self.create_text(nx, y0 + h * 0.66, text=L("VIDEOS / YEAR / RUN", "VIDEOS / JAHR / LAUF"), anchor="w", font=F("mono", 11),
-                         fill=TEXT_MUTED)
-        val = L("UNLIMITED", "UNBEGRENZT") if self.value == 0 else str(self.value)
-        self.create_text(x1 - px(18), y0 + h * 0.45, text=val, anchor="e", font=F("mono", 14), fill=CYAN)
 
 
 class StatusChip(Panel):
@@ -3157,7 +3390,7 @@ class ChannelCard(Panel):
     Klickbar ist nur der cyan EDIT-Bereich rechts."""
 
     def __init__(self, master, command):
-        super().__init__(master, 84, state="frame", cut=16)
+        super().__init__(master, DECK_H, state="frame", cut=16)
         self.on_edit = command
         self.resolving = False
         self.edit_hover = False
@@ -3172,14 +3405,14 @@ class ChannelCard(Panel):
             self.create_line(ax, ay, ax + sx * k, ay, fill=RED, width=t)
             self.create_line(ax, ay, ax, ay + sy * k, fill=RED, width=t)
         # @-Icon
-        isz = px(42)
+        isz = px(38)
         ix = x0 + px(20)
         icx = ix + isz / 2
         self.create_rectangle(ix, cy - isz / 2, ix + isz, cy + isz / 2, fill=mix(RED, BG, 0.12),
                               outline=mix(RED, BG, 0.7))
         self.create_text(icx, cy, text="@", font=F("mono", 22), fill=RED)
         # EDIT-Bereich (cyan = klickbar)
-        tw = px(96)
+        tw = px(116)            # so breit wie der Prozentblock der Jahreskarten
         tx = x1 - tw
         pts = [(tx, y0 + 1), (x1 - 1, y0 + 1), (x1 - 1, y1 - c), (x1 - c, y1 - 1), (tx, y1 - 1)]
         gradient(self, pts, tx, y0, x1, y1, YELLOW, 0.30 if self.edit_hover else 0.16, steps=6)
@@ -3279,7 +3512,7 @@ class NCDialog(tk.Toplevel):
 
 
 class SettingsDialog(tk.Toplevel):
-    """Playlist-Einstellungen: Titel, Beschreibung, Sichtbarkeit, Thumbnails pro Jahr."""
+    """Playlist-Einstellungen: Titel, Beschreibung, Sichtbarkeit."""
 
     CHIPS = (("CHANNEL", "{channel}"), ("HANDLE", "{handle}"), ("YEAR", "{year}"), ("COUNT", "{count}"))
 
@@ -3288,8 +3521,8 @@ class SettingsDialog(tk.Toplevel):
         self.app = app
         self.title(L("Playlist settings", "Playlist-Einstellungen"))
         self.transient(app)
-        self.minsize(px(640), px(560))
-        self.geometry(f"{px(720)}x{px(800)}")
+        self.minsize(px(640), px(520))
+        self.geometry(f"{px(720)}x{px(600)}")
         self.focus_field = None
         pad = px(18)
         st = app.settings
@@ -3317,8 +3550,8 @@ class SettingsDialog(tk.Toplevel):
         chips.pack(fill="x", pady=(px(2), px(6)))
         tk.Label(chips, text=L("INSERT:", "EINFÜGEN:"), bg=BG, fg=TEXT_MUTED, font=F("mono", 10)).pack(side="left", padx=(0, px(6)))
         tips = {"{channel}": L("channel name", "Name des Kanals"), "{handle}": L("@handle of the channel", "@Handle des Kanals"),
-                "{year}": L("year of the playlist", "Jahr der Playlist"),
-                "{count}": L("number of videos in that year", "Anzahl der Videos in diesem Jahr")}
+                "{year}": L("year of the playlist (name of the list for custom lists)", "Jahr der Playlist (bei eigenen Listen der Listenname)"),
+                "{count}": L("number of videos in the playlist", "Anzahl der Videos in der Playlist")}
         chip_names = {"{channel}": L("CHANNEL", "KANAL"), "{handle}": "HANDLE", "{year}": L("YEAR", "JAHR"),
                       "{count}": L("COUNT", "ANZAHL")}
         for label, tok in self.CHIPS:
@@ -3359,25 +3592,6 @@ class SettingsDialog(tk.Toplevel):
                               "TITEL, BESCHREIBUNG UND SICHTBARKEIT GELTEN FÜR PLAYLISTS, DIE AB JETZT ANGELEGT WERDEN."),
                  bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w").pack(fill="x", pady=(px(2), px(12)))
 
-        Section(body, L("THUMBNAILS (OPTIONAL, EXPERIMENTAL)", "THUMBNAILS (OPTIONAL, EXPERIMENTELL)"), "JPG/PNG // MAX 2 MB").pack(fill="x", pady=(0, px(6)))
-        tk.Label(body, text=L("PICK AN IMAGE PER YEAR, ALSO FOR PLAYLISTS THAT DON'T EXIST YET. IT IS UPLOADED VIA "
-                              "THE API (50 UNITS) AS SOON AS THE PLAYLIST EXISTS AND QUOTA IS AVAILABLE. "
-                              "RECOMMENDED: 1280×720.",
-                              "WÄHLE PRO JAHR EIN BILD, AUCH FÜR PLAYLISTS, DIE ES NOCH NICHT GIBT. ES WIRD ÜBER DIE "
-                              "API HOCHGELADEN (50 EINHEITEN), SOBALD DIE PLAYLIST EXISTIERT UND KONTINGENT DA IST. "
-                              "EMPFOHLEN: 1280×720."),
-                 bg=BG, fg=TEXT_MUTED, font=F("mono", 10, False), justify="left", anchor="w",
-                 wraplength=px(660)).pack(fill="x", pady=(0, px(6)))
-        wrap = tk.Frame(body, bg=BG)
-        wrap.pack(fill="both", expand=True)
-        self.thumb_area = ScrollArea(wrap)
-        self.thumb_area.pack(fill="both", expand=True)
-        self.thumbs = load(thumbs_file(), {})
-        self.pending = {}      # jahr -> neuer Dateipfad oder None (= entfernen)
-        self.thumb_rows = {}
-        for y in YEARS:
-            self.build_thumb_row(y)
-
         self.bind("<Escape>", lambda e: self.destroy())
         self.preview()
         style_window(self)
@@ -3415,7 +3629,7 @@ class SettingsDialog(tk.Toplevel):
         t, d = self.title_var.get(), self.desc.get("1.0", "end").strip()
         ok_t, ok_d = _template_ok(t), _template_ok(d) if d else True
         y = self.sample_year
-        lines = [f"{L('PREVIEW', 'VORSCHAU')} {y}: " + (fill_template(t, y) if ok_t else L("INVALID PLACEHOLDER IN TITLE", "UNGÜLTIGER PLATZHALTER IM TITEL"))]
+        lines = [f"{L('PREVIEW', 'VORSCHAU')} {year_label(y)}: " + (fill_template(t, y) if ok_t else L("INVALID PLACEHOLDER IN TITLE", "UNGÜLTIGER PLATZHALTER IM TITEL"))]
         if d:
             short = fill_template(d, y) if ok_d else L("INVALID PLACEHOLDER IN DESCRIPTION", "UNGÜLTIGER PLATZHALTER IN DER BESCHREIBUNG")
             lines.append(L("DESCRIPTION: ", "BESCHREIBUNG: ") + (short if len(short) < 140 else short[:137] + "..."))
@@ -3423,62 +3637,6 @@ class SettingsDialog(tk.Toplevel):
             lines.append(L("DESCRIPTION: (NONE)", "BESCHREIBUNG: (KEINE)"))
         self.prev.configure(text="\n".join(lines), fg=TEXT if ok_t and ok_d else RED)
         return ok_t and ok_d
-
-    def thumb_state(self, y):
-        if y in self.pending:
-            return ("NEW", Path(self.pending[y]).name) if self.pending[y] else ("REMOVE", "")
-        t = self.thumbs.get(str(y))
-        if not t:
-            return ("NONE", "")
-        status = {"queued": "QUEUED", "done": "UPLOADED", "error": "ERROR"}.get(t.get("status"), "?")
-        return (status, t.get("file", ""))
-
-    def build_thumb_row(self, y):
-        fr = tk.Frame(self.thumb_area.inner, bg=BG)
-        fr.pack(fill="x", pady=(0, px(4)))
-        tk.Label(fr, text=str(y), bg=BG, fg=TEXT, font=F("ui", 14), width=6, anchor="w").pack(side="left")
-        info = tk.Label(fr, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w")
-        info.pack(side="left", fill="x", expand=True)
-        rm = CutButton(fr, L("REMOVE", "ENTFERNEN"), lambda: self.remove_thumb(y), width=110)
-        rm.pack(side="right")
-        CutButton(fr, L("CHOOSE…", "AUSWÄHLEN…"), lambda: self.choose_thumb(y), width=120).pack(side="right", padx=(0, px(6)))
-        self.thumb_area.wheel(fr)
-        self.thumb_rows[y] = (info, rm)
-        self.refresh_thumb_row(y)
-
-    def refresh_thumb_row(self, y):
-        info, rm = self.thumb_rows[y]
-        status, name = self.thumb_state(y)
-        col = {"UPLOADED": GREEN, "QUEUED": YELLOW, "NEW": CYAN, "ERROR": RED, "REMOVE": RED}.get(status, TEXT_MUTED)
-        shown = {"NEW": L("NEW", "NEU"), "REMOVE": L("REMOVE", "WIRD ENTFERNT"), "NONE": L("NONE", "KEINS"),
-                 "QUEUED": L("QUEUED", "WARTET"), "UPLOADED": L("UPLOADED", "HOCHGELADEN"),
-                 "ERROR": L("ERROR", "FEHLER")}.get(status, status)
-        txt = f"{shown}" + (f" // {name}" if name else "")
-        t = self.thumbs.get(str(y)) or {}
-        if status == "ERROR" and t.get("error"):
-            txt += f" // {t['error'][:60]}"
-        info.configure(text=txt, fg=col)
-        rm.set_enabled(status not in ("NONE", "REMOVE"))
-
-    def choose_thumb(self, y):
-        f = filedialog.askopenfilename(parent=self, title=f"Thumbnail {y}",
-                                       filetypes=[(L("Images", "Bilder"), "*.jpg *.jpeg *.png"),
-                                                  (L("All files", "Alle Dateien"), "*.*")])
-        if not f:
-            return
-        p_ = Path(f)
-        if p_.suffix.lower() not in (".jpg", ".jpeg", ".png"):
-            self.app.write_log(L(f"THUMBNAIL {y} // ONLY JPG OR PNG", f"THUMBNAIL {y} // NUR JPG ODER PNG"), "err")
-            return
-        if p_.stat().st_size > THUMB_MAX_BYTES:
-            self.app.write_log(L(f"THUMBNAIL {y} // FILE TOO LARGE (MAX 2 MB)", f"THUMBNAIL {y} // DATEI ZU GROSS (MAX 2 MB)"), "err")
-            return
-        self.pending[y] = str(p_)
-        self.refresh_thumb_row(y)
-
-    def remove_thumb(self, y):
-        self.pending[y] = None
-        self.refresh_thumb_row(y)
 
     def reset(self):
         self.title_var.set(default_playlist_template())
@@ -3499,21 +3657,6 @@ class SettingsDialog(tk.Toplevel):
         st["privacy"] = self.privacy
         save(SETTINGS_FILE, st)
         apply_templates(st)
-        # Thumbnails übernehmen (Kopie im Kanal-Ordner)
-        if self.pending:
-            thumbs_dir().mkdir(parents=True, exist_ok=True)
-            for y, src in self.pending.items():
-                old = self.thumbs.pop(str(y), None)
-                if old and old.get("file") and (thumbs_dir() / old["file"]).exists():
-                    try:
-                        (thumbs_dir() / old["file"]).unlink()
-                    except OSError:
-                        pass
-                if src:
-                    name = f"{y}{Path(src).suffix.lower()}"
-                    shutil.copyfile(src, thumbs_dir() / name)
-                    self.thumbs[str(y)] = {"file": name, "status": "queued", "error": ""}
-            save(thumbs_file(), self.thumbs)
         self.app.write_log(L("PLAYLIST SETTINGS SAVED", "PLAYLIST-EINSTELLUNGEN GESPEICHERT"), "ok")
         self.app.settings_card.redraw()
         self.destroy()
@@ -3528,7 +3671,7 @@ class SettingsCard(Panel):
     """Kompakte Karte unter den Optionen. name/sub sind Funktionen, damit sie immer aktuell sind."""
 
     def __init__(self, master, command, name, sub, icon="lines"):
-        super().__init__(master, 54, command=command)
+        super().__init__(master, CARD_H, command=command)
         self.name_fn, self.sub_fn, self.icon = name, sub, icon
 
     def draw_content(self, x0, y0, x1, y1, c, role):
@@ -3600,7 +3743,7 @@ class UpdateDialog(tk.Toplevel):
 
 
 class AppSettingsDialog(tk.Toplevel):
-    """Programm-Einstellungen: Sprache und Update-Check."""
+    """Programm-Einstellungen: Sprache, Start-Verhalten und Update-Check."""
 
     def __init__(self, app):
         super().__init__(app, bg=BG)
@@ -3627,6 +3770,23 @@ class AppSettingsDialog(tk.Toplevel):
                  wraplength=px(460)).pack(fill="x", pady=(px(2), px(14)))
         self.set_language(LANG)
 
+        Section(body, L("START", "START"), "SYSTEM // BOOT").pack(fill="x", pady=(0, px(6)))
+        self.autorun = app.autorun
+        self.auto_card = ToggleCard(body, L("AUTO-RUN", "AUTOSTART"), L("START WORKING WHEN CHRONOLIST OPENS",
+                                                                       "BEIM ÖFFNEN SOFORT LOSLEGEN"),
+                                    self.autorun, self.toggle_auto, compact=True)
+        self.auto_card.pack(fill="x", pady=(0, px(4)))
+        Tooltip(self.auto_card, L("Start working automatically when Chronolist opens.",
+                                  "Beim Öffnen von Chronolist automatisch starten."))
+        self.boot = app.win_on
+        self.boot_card = ToggleCard(body, "BOOT", L("START CHRONOLIST WITH WINDOWS", "CHRONOLIST MIT WINDOWS STARTEN"),
+                                    self.boot, self.toggle_boot, available=winreg is not None, compact=True)
+        self.boot_card.pack(fill="x", pady=(0, px(14)))
+        Tooltip(self.boot_card, L("Start Chronolist automatically with Windows. Together with AUTO-RUN everything "
+                                  "runs by itself.",
+                                  "Chronolist automatisch mit Windows starten. Zusammen mit AUTOSTART läuft alles "
+                                  "von allein."))
+
         Section(body, "UPDATES", "GITHUB // RELEASES").pack(fill="x", pady=(0, px(6)))
         self.updates = bool(app.settings.get("check_updates", True))
         self.upd_card = ToggleCard(body, L("UPDATE CHECK", "UPDATE-PRÜFUNG"),
@@ -3644,7 +3804,7 @@ class AppSettingsDialog(tk.Toplevel):
         CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<Return>", lambda e: self.save())
-        self.geometry(f"{px(500)}x{px(300)}")
+        self.geometry(f"{px(500)}x{px(450)}")
         style_window(self)
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -3659,6 +3819,14 @@ class AppSettingsDialog(tk.Toplevel):
             b.set_color(GREEN if c == code else YELLOW)
             b.set_text(("● " if c == code else "") + LANGUAGES[c])
 
+    def toggle_auto(self):
+        self.autorun = not self.autorun
+        self.auto_card.update_value(self.autorun)
+
+    def toggle_boot(self):
+        self.boot = not self.boot
+        self.boot_card.update_value(self.boot)
+
     def toggle_updates(self):
         self.updates = not self.updates
         self.upd_card.update_value(self.updates)
@@ -3666,6 +3834,9 @@ class AppSettingsDialog(tk.Toplevel):
     def save(self):
         st = self.app.settings
         st["check_updates"] = self.updates
+        self.app.set_windows(self.boot)
+        self.app.autorun = self.autorun
+        st["autorun"] = self.autorun
         lang_changed = self.language != LANG
         if lang_changed:
             # Standard-Vorlagen wechseln mit der Sprache, eigene Vorlagen bleiben
@@ -3745,9 +3916,8 @@ HELP_TEXT_DE = [
             "einmal über die API gelesen, sobald etwas Kontingent da ist. Mit FALLBACK werden Shorts auch aus "
             "bestehenden Playlists entfernt. Die Kanalseite ergänzt nur fehlende Videos, entfernt aber nie welche."),
     ("num", "7.  Nächstes Jahr. Ist ein Jahr fertig, geht es mit dem nächsten markierten Jahr in der Reihenfolge der "
-            "Liste weiter. Wurden dessen Videos noch nicht gefunden und ist das Kontingent leer, hält Chronolist an. "
-            "Mit VORZIEHEN nimmt es stattdessen das nächste markierte Jahr, das schon bereit ist, und holt das "
-            "fehlende später nach."),
+            "Liste weiter. Kann ein Jahr gerade nicht gesucht werden, weil das Kontingent leer ist, nimmt Chronolist "
+            "das nächste markierte Jahr, das schon bereit ist, und holt das fehlende später nach."),
     ("num", "8.  Laufendes Jahr. Das aktuelle Jahr bleibt markiert, auch wenn es fertig ist. Bei jedem Lauf schaut "
             "Chronolist nach neuen Videos und hängt sie hinten an. Mit Kontingent kostet das nur ein paar Einheiten, "
             "ohne geht es mit FALLBACK über die Kanalseite. Im Januar gilt das auch noch für das Vorjahr.\n"
@@ -3767,7 +3937,6 @@ HELP_TEXT_DE = [
     ("li", "Ein Video einfügen: 50 Einheiten"),
     ("li", "Playlist prüfen: 1 Einheit pro 50 Videos"),
     ("li", "Ein doppeltes Video entfernen: 50 Einheiten"),
-    ("li", "Ein Thumbnail hochladen: 50 Einheiten"),
 
     ("h2", "Oben im Fenster"),
     ("dt", "HILFE"),
@@ -3816,6 +3985,19 @@ HELP_TEXT_DE = [
            "WIRD GEFÜLLT: Wird gerade gefüllt (grün).\n"
            "PLAYLIST WIRD GEPRÜFT: Die Playlist wird gerade auf doppelte Videos geprüft."),
 
+    ("h2", "Stichwortlisten"),
+    ("p", "Unter den Jahren legt EIGENE LISTE eine Playlist an, in die alle Videos kommen, deren Titel zu deinen "
+          "Stichwörtern passen, in Upload-Reihenfolge. Du gibst einen Namen ein (er wird der Playlist-Titel) und Begriffe: "
+          "\"enthält eines davon\", \"und alle diese\" und \"aber keines dieser\". Gross-/Kleinschreibung zählt nicht. "
+          "Optional grenzt du die Liste auf einen Zeitraum von Jahren ein (z. B. 2016 bis 2020). "
+          "Die Vorschau zeigt sofort, wie viele Videos passen. Videos schließt du aus (mit Strg/Umschalt+Klick mehrere wählen, dann AUSSCHLIESSEN), und in der Ansicht ALLE CHANNEL-VIDEOS nimmst du auch Videos auf, die nicht passen "
+          "oder nimmst sie über Link oder Video-ID fest hinzu.\n"
+          "Eine Liste ist eine Karte wie ein Jahr: anklicken zum Markieren, Rechtsklick zum Bearbeiten. Sie wird nach den Jahren "
+          "bearbeitet und bei jedem Lauf neu abgeglichen, also kommen neue Videos automatisch dazu. Ändern sich die "
+          "Begriffe, wird die Playlist beim nächsten Lauf angepasst (dafür muss FALLBACK an sein). Dafür braucht Chronolist "
+          "die Titel aller Videos. Fehlende werden beim Start aus deinen Playlists nachgeladen (kostet wenig Kontingent) "
+          "oder sonst einzeln und langsam ohne Kontingent. Eine gelöschte Liste bleibt auf YouTube bestehen, bis du sie dort löschst."),
+
     ("h2", "Steuerung"),
     ("dt", "START"),
     ("dd", "Arbeitet die markierten Jahre nacheinander ab, in der Reihenfolge der Liste."),
@@ -3827,10 +4009,6 @@ HELP_TEXT_DE = [
     ("dt", "PRÜFEN"),
     ("dd", "Prüft die Playlists der ausgewählten Jahre komplett. Doppelte Videos werden entfernt, wobei immer das "
            "erste stehen bleibt, damit die Reihenfolge stimmt. Außerdem wird der Fortschritt abgeglichen."),
-    ("dt", "LIMIT PRO LAUF"),
-    ("dd", "So viele Videos werden pro Jahr und Durchlauf höchstens eingefügt. Mit den Knöpfen oder dem Mausrad "
-           "änderst du den Wert in 50er-Schritten. UNBEGRENZT heißt: keine Grenze. Das ist praktisch, wenn du bei "
-           "mehreren Jahren erst einmal nur die ersten Videos haben willst."),
 
     ("h2", "Optionen"),
     ("dt", "FALLBACK"),
@@ -3840,18 +4018,12 @@ HELP_TEXT_DE = [
            "Wichtig: Das ist eine automatische Nutzung der YouTube-Webseite und laut den Nutzungsbedingungen von "
            "YouTube nicht erlaubt. Im schlimmsten Fall kann dein Konto gesperrt werden. Deshalb ist der Schalter am "
            "Anfang aus."),
-    ("dt", "VORZIEHEN"),
-    ("dd", "Kann ein Jahr gerade nicht gesucht werden, weil das Kontingent oder das Suchlimit aufgebraucht ist, "
-           "macht Chronolist mit dem nächsten markierten Jahr weiter, das schon bereit ist. Das übersprungene Jahr kommt später "
-           "dran. Ist der Schalter aus, hält Chronolist in diesem Fall an."),
-    ("dt", "AUTOSTART"),
-    ("dd", "Startet automatisch, sobald du das Programm öffnest."),
-    ("dt", "BOOT"),
-    ("dd", "Startet Chronolist zusammen mit Windows. Zusammen mit AUTOSTART läuft dann alles von allein."),
     ("dt", "PROGRAMM"),
     ("dd", "Einstellungen für das Programm selbst.\n"
            "Sprache: Englisch oder Deutsch. Das gilt für die ganze Oberfläche, die Tooltips, diese Hilfe und das "
            "Protokoll. Nach dem Speichern startet Chronolist kurz neu.\n"
+           "Autostart: legt beim Öffnen von Chronolist sofort los.\n"
+           "Boot: startet Chronolist zusammen mit Windows. Zusammen mit Autostart läuft dann alles von allein.\n"
            "Update-Prüfung: ob Chronolist beim Start bei GitHub nach einer neuen Version fragt."),
     ("dt", "PLAYLISTS"),
     ("dd", "Titel und Beschreibung: Du kannst Platzhalter verwenden, die beim Anlegen ersetzt werden. {channel} wird "
@@ -3859,10 +4031,6 @@ HELP_TEXT_DE = [
            "Die Knöpfe unter dem Titelfeld fügen sie an der Stelle ein, an der der Cursor steht. Darunter siehst du "
            "eine Vorschau. Lässt du die Beschreibung leer, bekommt die Playlist keine.\n"
            "Sichtbarkeit: öffentlich, nicht gelistet (nur mit Link) oder privat.\n"
-           "Thumbnails: Für jedes Jahr kannst du ein eigenes Bild auswählen, auch schon bevor es die Playlist gibt. "
-           "Es wird hochgeladen, sobald die Playlist existiert und Kontingent da ist (50 Einheiten pro Bild). "
-           "Erlaubt sind JPG und PNG bis 2 MB, am besten im Format 1280×720. Diese Funktion ist noch neu und "
-           "nicht mit allen Konten getestet.\n"
            "Titel, Beschreibung und Sichtbarkeit gelten für Playlists, die ab jetzt angelegt werden. Schon "
            "vorhandene Playlists bleiben so, wie sie sind."),
 
@@ -3890,7 +4058,7 @@ HELP_TEXT_DE = [
     ("h2", "Wo liegen meine Daten?"),
     ("p", "Alles liegt im Ordner des Programms: credentials.json (Zugangsdaten), token.json (Anmeldung), "
           "settings.json (Einstellungen), quota.json (gemerktes Tageslimit), der Ordner data mit dem Fortschritt "
-          "und den Thumbnails pro Kanal und Jahr und der Ordner browser_profile mit der Anmeldung im Edge-Fenster. "
+          "pro Kanal und der Ordner browser_profile mit der Anmeldung im Edge-Fenster. "
           "Nichts davon wird irgendwohin hochgeladen, außer zu Google/YouTube selbst."),
 
     ("h2", "Updates"),
@@ -3965,8 +4133,8 @@ HELP_TEXT_EN = [
             "through the API when a little quota is available. With FALLBACK shorts are also removed from existing "
             "playlists. The channel page only adds missing videos and never removes any."),
     ("num", "7.  Next year. When a year is done, Chronolist moves on to the next selected year in the order of the "
-            "list. If that year's videos haven't been found yet and the quota is used up, it stops. With SKIP AHEAD it "
-            "takes the next selected year that is already ready instead and catches up later."),
+            "list. If a year can't be searched right now because the quota is used up, Chronolist takes the next "
+            "selected year that is already ready and catches up later."),
     ("num", "8.  Current year. The current year stays selected even when it is done. On every run Chronolist looks "
             "for new videos and appends them. With quota this costs only a few units, without quota it works with "
             "FALLBACK through the channel page. In January this also applies to the previous year.\n"
@@ -3986,7 +4154,6 @@ HELP_TEXT_EN = [
     ("li", "Adding one video: 50 units"),
     ("li", "Checking a playlist: 1 unit per 50 videos"),
     ("li", "Removing one duplicate: 50 units"),
-    ("li", "Uploading a thumbnail: 50 units"),
 
     ("h2", "At the top of the window"),
     ("dt", "HELP"),
@@ -4034,6 +4201,18 @@ HELP_TEXT_EN = [
            "UPLINK ACTIVE: being filled right now (green).\n"
            "CHECKING PLAYLIST: the playlist is being checked for duplicates."),
 
+    ("h2", "Keyword lists"),
+    ("p", "Below the years, CUSTOM LIST creates a playlist of all videos whose title matches your keywords, in upload "
+          "order. Enter a name (it becomes the playlist title) and terms: \"contains any of\", \"and all of these\" and "
+          "\"but none of these\". Upper/lower case is ignored. Optionally limit the list to a range of years (e.g. 2016 to 2020). "
+          "The preview shows right away how many videos match. "
+          "Exclude videos (select with Ctrl/Shift+click, then EXCLUDE); the ALL CHANNEL VIDEOS view lets you include videos that do not match or add them for good with a link or video ID.\n"
+          "A list is a card like a year: click to select, right-click to edit. It runs after the years and is matched again "
+          "on every run, so new videos are added automatically. If you change the terms, the playlist is adjusted on the "
+          "next run (this needs FALLBACK on). Chronolist needs the titles of all videos for this. Missing ones are loaded "
+          "at the start from your playlists (little quota) or otherwise one by one, slowly, without quota. A deleted list "
+          "stays on YouTube until you delete it there."),
+
     ("h2", "Control"),
     ("dt", "START"),
     ("dd", "Starts working on the selected years. When a year is done, it moves on to the next one by itself."),
@@ -4045,9 +4224,6 @@ HELP_TEXT_EN = [
     ("dt", "CHECK"),
     ("dd", "Checks the playlists of the selected years completely. Duplicates are removed, always keeping the first "
            "one so the order stays right. The progress is synced as well."),
-    ("dt", "BATCH LIMIT"),
-    ("dd", "The maximum number of videos added per year and run. Change it in steps of 50 with the buttons or the "
-           "mouse wheel. UNLIMITED means no limit. Handy if you first want only the first videos of several years."),
 
     ("h2", "Options"),
     ("dt", "FALLBACK"),
@@ -4056,18 +4232,12 @@ HELP_TEXT_EN = [
            "through the channel page there, even without quota.\n"
            "Important: this is automated use of the YouTube website and is not allowed by YouTube's Terms of "
            "Service. In the worst case your account can be restricted. That's why the switch is off by default."),
-    ("dt", "SKIP AHEAD"),
-    ("dd", "If a year can't be searched right now because the quota or the search limit is used up, Chronolist "
-           "continues with the next selected year that is already ready. The skipped year comes later. With the switch off, "
-           "Chronolist stops in that case."),
-    ("dt", "AUTO-RUN"),
-    ("dd", "Starts automatically as soon as you open the program."),
-    ("dt", "BOOT"),
-    ("dd", "Starts Chronolist together with Windows. Together with AUTO-RUN everything runs by itself."),
     ("dt", "PROGRAM"),
     ("dd", "Settings for the program itself.\n"
            "Language: English or German. This applies to the whole interface, the tooltips, this help and the log. "
            "Chronolist restarts briefly after saving.\n"
+           "Auto-run: starts working as soon as Chronolist opens.\n"
+           "Boot: starts Chronolist together with Windows. Together with auto-run everything runs by itself.\n"
            "Update check: whether Chronolist asks GitHub for a new version on start."),
     ("dt", "PLAYLISTS"),
     ("dd", "Title and description: you can use placeholders that are filled in when the playlist is created. "
@@ -4075,9 +4245,6 @@ HELP_TEXT_EN = [
            "videos in that year. The buttons below the title field insert them at the cursor. Below you see a "
            "preview. Leave the description empty for no description.\n"
            "Visibility: public, unlisted (link only) or private.\n"
-           "Thumbnails: you can pick a custom image for every year, even before the playlist exists. It is "
-           "uploaded as soon as the playlist exists and quota is available (50 units per image). JPG and PNG up to "
-           "2 MB, ideally 1280×720. This feature is new and not tested with every account.\n"
            "Title, description and visibility apply to playlists created from now on. Existing playlists stay as "
            "they are."),
 
@@ -4103,8 +4270,8 @@ HELP_TEXT_EN = [
 
     ("h2", "Where is my data?"),
     ("p", "Everything is in the program folder: credentials.json (credentials), token.json (sign-in), settings.json "
-          "(settings), quota.json (remembered daily limit), the data folder with progress and thumbnails per channel "
-          "and year, and the browser_profile folder with the sign-in for the Edge window. None of it is uploaded "
+          "(settings), quota.json (remembered daily limit), the data folder with progress per channel, "
+          "and the browser_profile folder with the sign-in for the Edge window. None of it is uploaded "
           "anywhere except to Google/YouTube itself."),
 
     ("h2", "Updates"),
@@ -4147,6 +4314,50 @@ def monitor_rect(x, y):
         return r.left, r.top, r.right, r.bottom
     except Exception:  # noqa: BLE001
         return None
+
+
+def _win_placement_api():
+    import ctypes
+    from ctypes import wintypes
+
+    class WINDOWPLACEMENT(ctypes.Structure):
+        _fields_ = [("length", wintypes.UINT), ("flags", wintypes.UINT), ("showCmd", wintypes.UINT),
+                    ("ptMinPosition", wintypes.POINT), ("ptMaxPosition", wintypes.POINT),
+                    ("rcNormalPosition", wintypes.RECT)]
+    return ctypes, WINDOWPLACEMENT
+
+
+def get_placement(win):
+    """Windows: (links, oben, rechts, unten) der normalen Fensterlage + maximiert? Sonst None."""
+    if os.name != "nt":
+        return None
+    try:
+        ctypes, WP = _win_placement_api()
+        hwnd = int(win.wm_frame(), 16)
+        wp = WP()
+        wp.length = ctypes.sizeof(WP)
+        if not ctypes.windll.user32.GetWindowPlacement(hwnd, ctypes.byref(wp)):
+            return None
+        r = wp.rcNormalPosition
+        return [r.left, r.top, r.right, r.bottom], wp.showCmd == 3      # 3 = SW_SHOWMAXIMIZED
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def set_placement(win, rect, zoomed):
+    """Windows: Fensterlage setzen (auch die 'normale' Lage hinter einem maximierten Fenster)."""
+    if os.name != "nt":
+        return False
+    try:
+        ctypes, WP = _win_placement_api()
+        hwnd = int(win.wm_frame(), 16)
+        wp = WP()
+        wp.length = ctypes.sizeof(WP)
+        wp.showCmd = 3 if zoomed else 1
+        wp.rcNormalPosition.left, wp.rcNormalPosition.top, wp.rcNormalPosition.right, wp.rcNormalPosition.bottom = rect
+        return bool(ctypes.windll.user32.SetWindowPlacement(hwnd, ctypes.byref(wp)))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def point_on_screen(x, y):
@@ -4353,9 +4564,499 @@ class RemovedWindow(tk.Toplevel):
         except queue.Empty:
             pass
         if changed:
-            save(titles_file(), self.titles)
+            remember_titles(self.titles)
         if self.pending:
             self.after(400, self.apply_titles)
+
+
+class SuggestDialog(tk.Toplevel):
+    """Serien-Vorschläge aus den Titeln: Auswahl öffnet den Listen-Editor mit ausgefüllten Feldern."""
+
+    def __init__(self, app):
+        super().__init__(app, bg=BG)
+        self.app = app
+        self.title(L("List suggestions", "Listen-Vorschläge"))
+        self.transient(app)
+        self.minsize(px(560), px(420))
+        self.geometry(f"{px(620)}x{px(560)}")
+        pad = px(18)
+        row = tk.Frame(self, bg=BG)
+        row.pack(side="bottom", fill="x", padx=pad, pady=pad)
+        self.make_btn = CutButton(row, L("CREATE LIST", "LISTE ANLEGEN"), self.make, width=170)
+        self.make_btn.pack(side="left")
+        CutButton(row, L("CLOSE", "SCHLIESSEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
+        Section(body, L("SERIES IN YOUR TITLES", "SERIEN IN DEINEN TITELN"), "SUGGESTIONS").pack(fill="x", pady=(0, px(8)))
+        self.items = suggest_series()
+        titles = load(titles_file(), {})
+        if self.items:
+            txt = L("TITLES THAT START THE SAME WAY AND END IN AN EPISODE NUMBER. LISTS YOU ALREADY HAVE ARE LEFT OUT. "
+                    "PICK ONE: THE EDITOR OPENS WITH NAME AND KEYWORD FILLED IN.",
+                    "TITEL, DIE GLEICH ANFANGEN UND MIT EINER FOLGENNUMMER WEITERGEHEN. VORHANDENE LISTEN FEHLEN HIER. "
+                    "WÄHLE EINE AUS: DER EDITOR ÖFFNET SICH MIT NAME UND STICHWORT.")
+        elif not titles:
+            txt = L("NO TITLES STORED YET. THEY ARE LOADED ON THE NEXT START.", "NOCH KEINE TITEL GESPEICHERT. SIE WERDEN BEIM NÄCHSTEN START GELADEN.")
+        else:
+            txt = L("NO NEW SERIES FOUND.", "KEINE NEUEN SERIEN GEFUNDEN.")
+        tk.Label(body, text=txt, bg=BG, fg=TEXT_MUTED, font=F("mono", 10, False), anchor="w", justify="left",
+                 wraplength=px(560)).pack(fill="x", pady=(0, px(8)))
+        fb = tk.Frame(body, bg=BG)
+        fb.pack(fill="x", pady=(0, px(6)))
+        tk.Label(fb, text=L("SEARCH", "SUCHE"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="left", padx=(0, px(8)))
+        self.q = tk.StringVar()
+        qe = tk.Entry(fb, textvariable=self.q, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                      font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
+                      highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3))
+        qe.pack(side="left", fill="x", expand=True, ipady=px(5))
+        Tooltip(qe, L("Shows only series whose name contains this text (several terms separated by commas: any of them).",
+                      "Zeigt nur Serien, deren Name diesen Text enthält (mehrere Begriffe mit Komma: einer davon genügt)."))
+        self.q.trace_add("write", lambda *a: self.fill())
+        wrap = tk.Frame(body, bg=BG)
+        wrap.pack(fill="both", expand=True)
+        sb = tk.Scrollbar(wrap, orient="vertical")
+        self.lb = tk.Listbox(wrap, bg=BG2, fg=TEXT, selectbackground=mix(CYAN, BG, 0.3), selectforeground=TEXT,
+                             font=F("mono", 11, False), relief="flat", highlightthickness=1,
+                             highlightbackground=mix(CYAN, BG, 0.3), activestyle="none", exportselection=False,
+                             selectmode="browse", yscrollcommand=sb.set)
+        sb.configure(command=self.lb.yview)
+        sb.pack(side="right", fill="y")
+        self.lb.pack(side="left", fill="both", expand=True)
+        self.shown = []
+        self.fill()
+        self.lb.bind("<Double-Button-1>", lambda e: self.make())
+        self.lb.bind("<<ListboxSelect>>", lambda e: self.make_btn.set_enabled(bool(self.lb.curselection())))
+        self.bind("<Escape>", lambda e: self.destroy())
+        style_window(self)
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - self.winfo_height()) // 3)
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.grab_set()
+        self.focus_force()
+
+    def fill(self):
+        qs = parse_terms(self.q.get())
+        self.shown = [it for it in self.items if not qs or any(t in norm_text(it["name"]) for t in qs)]
+        self.lb.delete(0, "end")
+        for it in self.shown:
+            yrs = str(it["from"]) if it["from"] == it["to"] else f"{it['from']}–{it['to']}"
+            self.lb.insert("end", f"{it['count']:>5}  {it['name']}   ({yrs})")
+        self.make_btn.set_enabled(False)
+
+    def make(self):
+        sel = self.lb.curselection()
+        if not sel:
+            return
+        it = self.shown[sel[0]]
+        app = self.app
+        self.destroy()
+        ListDialog(app, None, template={"name": it["name"], "any": [it["name"]]})
+
+
+class ListDialog(tk.Toplevel):
+    """Stichwortliste anlegen/bearbeiten: Suchbegriffe, Live-Vorschau, einzelne Videos ausschließen/hinzufügen."""
+    SHOW_MAX = 4000
+
+    def __init__(self, app, key, parent=None, template=None):
+        super().__init__(app, bg=BG)
+        self.app, self.key, self.parent_dlg = app, key, parent
+        lst = (find_list(key) if key else None) or {}
+        if template and not lst:
+            # Vorlage: Name und Regeln übernehmen, aber nicht einzeln aufgenommene/ausgeschlossene Videos
+            lst = {k: template[k] for k in ("name", "desc", "any", "all", "none", "from", "to") if k in template}
+        self.lst_id = lst.get("id") or None
+        self.add, self.skip = set(lst.get("add") or []), set(lst.get("skip") or [])
+        self.title(L("Custom list", "Eigene Liste"))
+        self.transient(parent or app)
+        self.minsize(px(700), px(640))
+        self.geometry(f"{px(780)}x{px(1060)}")
+        self.pool = all_year_videos()
+        self.titles = load(titles_file(), {})
+        self.shown = []          # (typ, id) je Zeile: "hit" | "add" | "skip"
+        self.after_id = None
+        self.confirm_delete = False
+        pad = px(18)
+
+        row = tk.Frame(self, bg=BG)
+        row.pack(side="bottom", fill="x", padx=pad, pady=pad)
+        CutButton(row, L("SAVE", "SPEICHERN"), self.save, width=120).pack(side="left")
+        CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
+        if self.lst_id:
+            self.del_btn = CutButton(row, L("DELETE LIST", "LISTE LÖSCHEN"), self.delete, width=170)
+            self.del_btn.set_color(RED)
+            self.del_btn.pack(side="right")
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
+        Section(body, L("LIST SETTINGS", "LISTEN-EINSTELLUNGEN"), "NAME").pack(fill="x", pady=(0, px(10)))
+
+        templates = load_lists() if not self.lst_id else []
+        if templates:
+            tk.Label(body, text=L("TEMPLATE  (OPTIONAL, COPIES NAME AND FILTER)", "VORLAGE  (OPTIONAL, ÜBERNIMMT NAME UND FILTER)"),
+                     bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w").pack(fill="x")
+            self.tpl_lb = tk.Listbox(body, bg=BG2, fg=TEXT, selectbackground=mix(CYAN, BG, 0.3), selectforeground=TEXT,
+                                     font=F("mono", 11, False), relief="flat", highlightthickness=1,
+                                     highlightbackground=mix(CYAN, BG, 0.3), activestyle="none", exportselection=False,
+                                     height=min(len(templates) + 1, 4))
+            self.tpl_lb.insert("end", L("— NONE (EMPTY LIST) —", "— KEINE (LEERE LISTE) —"))
+            for t_ in templates:
+                self.tpl_lb.insert("end", t_.get("name") or "?")
+            self.tpl_lb.selection_set(0)
+            self.tpl_lb.pack(fill="x", pady=(px(3), px(8)))
+            self.tpl_lb.bind("<<ListboxSelect>>", lambda e, t=templates: self.pick_template(t))
+        self.name_var = tk.StringVar(value=lst.get("name", ""))
+        self.field(body, L("NAME (USED AS THE PLAYLIST TITLE)", "NAME (WIRD ZUM PLAYLIST-TITEL)"), self.name_var)
+        self.lbl_desc = tk.Label(body, text=L("DESCRIPTION  (OPTIONAL, EMPTY = DESCRIPTION FROM THE PLAYLISTS SETTINGS)",
+                                              "BESCHREIBUNG  (OPTIONAL, LEER = BESCHREIBUNG AUS DEN PLAYLIST-EINSTELLUNGEN)"),
+                                 bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w")
+        self.lbl_desc.pack(fill="x")
+        self.desc_box = tk.Text(body, height=3, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat", wrap="word",
+                                font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
+                                highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), padx=px(6), pady=px(4))
+        self.desc_box.insert("1.0", lst.get("desc", ""))
+        self.desc_box.pack(fill="x", pady=(px(3), px(12)))
+
+        Section(body, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
+        self.any_var = tk.StringVar(value=", ".join(lst.get("any") or []))
+        self.field(body, L("TITLE CONTAINS ANY OF  (SEPARATE WITH COMMAS)", "TITEL ENTHÄLT EINES DAVON  (MIT KOMMA TRENNEN)"), self.any_var)
+        self.all_var = tk.StringVar(value=", ".join(lst.get("all") or []))
+        self.field(body, L("AND ALL OF THESE  (OPTIONAL)", "UND ALLE DIESE  (OPTIONAL)"), self.all_var)
+        self.none_var = tk.StringVar(value=", ".join(lst.get("none") or []))
+        self.field(body, L("BUT NONE OF THESE  (OPTIONAL)", "ABER KEINES DIESER  (OPTIONAL)"), self.none_var)
+        yr = tk.Frame(body, bg=BG)
+        yr.pack(fill="x", pady=(0, px(8)))
+        tk.Label(yr, text=L("ONLY YEARS  (OPTIONAL)", "NUR JAHRE  (OPTIONAL)"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11),
+                 anchor="w").pack(side="left")
+        self.from_var = tk.StringVar(value=str(lst.get("from") or ""))
+        self.to_var = tk.StringVar(value=str(lst.get("to") or ""))
+        for var, txt in ((self.from_var, L("FROM", "VON")), (self.to_var, L("TO", "BIS"))):
+            tk.Label(yr, text=txt, bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="left", padx=(px(14), px(6)))
+            e = tk.Entry(yr, textvariable=var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat", width=6,
+                         font=F("mono", 13, False), highlightthickness=1, highlightcolor=CYAN,
+                         highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3))
+            e.pack(side="left", ipady=px(4))
+        tk.Label(body, text=L("UPPER/LOWER CASE IS IGNORED. A TERM MATCHES ANYWHERE IN THE TITLE.",
+                              "GROSS-/KLEINSCHREIBUNG ZÄHLT NICHT. EIN BEGRIFF PASST ÜBERALL IM TITEL."),
+                 bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w").pack(fill="x", pady=(0, px(8)))
+
+        self.count = tk.Label(body, text="", bg=BG, fg=CYAN, font=F("mono", 12), anchor="w")
+        self.count.pack(fill="x")
+        self.note = tk.Label(body, text="", bg=BG, fg=YELLOW, font=F("mono", 10, False), anchor="w", justify="left",
+                             wraplength=px(700))
+        self.note.pack(fill="x", pady=(0, px(4)))
+
+        self.view = "hits"
+        bar = tk.Frame(body, bg=BG)
+        bar.pack(fill="x", pady=(0, px(6)))
+        self.view_btns = {}
+        for v_, txt_ in (("hits", L("FILTER RESULTS", "FILTERERGEBNISSE")), ("all", L("ALL CHANNEL VIDEOS", "ALLE CHANNEL-VIDEOS"))):
+            b = CutButton(bar, txt_, lambda v_=v_: self.set_view(v_), width=230)
+            b.pack(side="left", padx=(0, px(6)))
+            self.view_btns[v_] = b
+        Tooltip(self.view_btns["all"], L("Shows every video of the channel, also those that do not match, so you can add single ones.",
+                                         "Zeigt alle Videos des Kanals, auch die, die nicht passen, damit du einzelne aufnehmen kannst."))
+        self.filter_var = tk.StringVar()
+        fe = tk.Entry(bar, textvariable=self.filter_var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                      font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
+                      highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), width=16)
+        fe.pack(side="right", ipady=px(5))
+        tk.Label(bar, text=L("SEARCH", "SUCHE"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="right", padx=(0, px(6)))
+        Tooltip(fe, L("Searches all videos of the channel for this text (several terms separated by commas: any of them). "
+                      "Videos that are not in the list yet are grey, select them and press INCLUDE.",
+                      "Durchsucht alle Videos des Kanals nach diesem Text (mehrere Begriffe mit Komma: einer davon genügt). "
+                      "Videos, die noch nicht in der Liste sind, sind grau: markieren und AUFNEHMEN drücken."))
+        self.filter_var.trace_add("write", lambda *a: self.schedule())
+
+        tools = tk.Frame(body, bg=BG)
+        tools.pack(side="bottom", fill="x", pady=(px(6), 0))
+        self.excl_btn = CutButton(tools, L("EXCLUDE SELECTED", "AUSSCHLIESSEN"), self.exclude_selected, width=190)
+        self.excl_btn.pack(side="left")
+        self.incl_btn = CutButton(tools, L("INCLUDE SELECTED", "AUFNEHMEN"), self.include_selected, width=190)
+        self.incl_btn.pack(side="left", padx=(px(6), 0))
+        self.add_var = tk.StringVar()
+        ae = tk.Entry(tools, textvariable=self.add_var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                      font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
+                      highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), width=22)
+        CutButton(tools, L("ADD VIDEO", "VIDEO HINZU"), self.add_video, width=140).pack(side="right")
+        ae.pack(side="right", padx=(0, px(6)), ipady=px(5))
+        Tooltip(ae, L("Paste a YouTube link or video ID of a video of this channel to always include it.",
+                      "YouTube-Link oder Video-ID eines Videos dieses Kanals einfügen, um es immer aufzunehmen."))
+        ae.bind("<Return>", lambda e: (self.add_video(), "break")[1])
+
+        wrap = tk.Frame(body, bg=BG)
+        wrap.pack(fill="both", expand=True)
+        sb = tk.Scrollbar(wrap, orient="vertical")
+        self.lb = tk.Listbox(wrap, bg=BG2, fg=TEXT, selectbackground=mix(CYAN, BG, 0.3), selectforeground=TEXT,
+                             font=F("mono", 11, False), relief="flat", highlightthickness=1,
+                             highlightbackground=mix(CYAN, BG, 0.3), activestyle="none", exportselection=False,
+                             selectmode="extended", yscrollcommand=sb.set)
+        sb.configure(command=self.lb.yview)
+        sb.pack(side="right", fill="y")
+        self.lb.pack(side="left", fill="both", expand=True)
+        self.lb.bind("<<ListboxSelect>>", lambda e: self.update_tool())
+        self.lb.bind("<Control-a>", lambda e: (self.lb.selection_set(0, "end"), self.update_tool(), "break")[2])
+
+        for v in (self.name_var, self.any_var, self.all_var, self.none_var, self.from_var, self.to_var):
+            v.trace_add("write", lambda *a: self.schedule())
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.set_view("hits")
+        if template and not self.lst_id:
+            self.title(L("Custom list (copy)", "Eigene Liste (Kopie)"))
+        style_window(self)
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - self.winfo_height()) // 3)
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.grab_set()
+        self.focus_force()
+
+    def pick_template(self, templates):
+        sel = self.tpl_lb.curselection()
+        if not sel or sel[0] == 0:
+            return
+        t = templates[sel[0] - 1]
+        self.name_var.set(t.get("name", ""))
+        self.desc_box.delete("1.0", "end")
+        self.desc_box.insert("1.0", t.get("desc", ""))
+        self.any_var.set(", ".join(t.get("any") or []))
+        self.all_var.set(", ".join(t.get("all") or []))
+        self.none_var.set(", ".join(t.get("none") or []))
+        self.from_var.set(str(t.get("from") or ""))
+        self.to_var.set(str(t.get("to") or ""))
+        self.add, self.skip = set(), set()
+        self.refresh()
+
+    def destroy(self):
+        parent = getattr(self, "parent_dlg", None)
+        super().destroy()
+        if parent is not None:
+            try:
+                if parent.winfo_exists():
+                    parent.grab_set()
+                    parent.focus_force()
+            except tk.TclError:
+                pass
+
+    def field(self, parent, label, var):
+        tk.Label(parent, text=label, bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w").pack(fill="x")
+        e = tk.Entry(parent, textvariable=var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                     font=F("mono", 13, False), highlightthickness=1, highlightcolor=CYAN,
+                     highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3))
+        e.pack(fill="x", pady=(px(3), px(8)), ipady=px(5))
+        return e
+
+    def current(self):
+        def year_of(var):
+            m_ = re.fullmatch(r"\s*(\d{4})\s*", var.get())
+            return int(m_.group(1)) if m_ else None
+        return {"any": parse_terms(self.any_var.get()), "all": parse_terms(self.all_var.get()),
+                "none": parse_terms(self.none_var.get()), "from": year_of(self.from_var), "to": year_of(self.to_var),
+                "add": sorted(self.add), "skip": sorted(self.skip)}
+
+    def schedule(self):
+        if self.after_id:
+            self.after_cancel(self.after_id)
+        self.after_id = self.after(220, self.refresh)
+
+    def line(self, v):
+        d = v.get("published")
+        when = fmt_day(d) if d else str(v["year"])
+        return f"{when:>11}  {self.titles.get(v['id']) or v['id']}"
+
+    def state_of(self, v, cur):
+        """('hit' | 'add' | 'skip' | 'out', passt_per_regel) – ob das Video in der Liste ist."""
+        vid = v["id"]
+        rule = in_years(cur, v["year"]) and title_matches(cur, self.titles.get(vid, ""))
+        if vid in self.skip:
+            return "skip", rule
+        if vid in self.add:
+            return "add", rule
+        return ("hit" if rule else "out"), rule
+
+    def set_view(self, view):
+        self.view = view
+        for v_, b in self.view_btns.items():
+            b.set_color(GREEN if v_ == view else YELLOW)
+            b.set_text(("● " if v_ == view else "") + {"hits": L("FILTER RESULTS", "FILTERERGEBNISSE"),
+                                                     "all": L("ALL CHANNEL VIDEOS", "ALLE CHANNEL-VIDEOS")}[v_])
+        self.lb.selection_clear(0, "end")
+        self.refresh()
+
+    def refresh(self):
+        self.after_id = None
+        cur = self.current()
+        sel = {self.shown[i][1] for i in self.lb.curselection() if i < len(self.shown)}
+        top = self.lb.yview()[0]
+        self.lb.delete(0, "end")
+        self.shown = []
+        qs = parse_terms(self.filter_var.get())           # mehrere Begriffe mit Komma = einer davon genügt
+        show_all = self.view == "all" or bool(qs)          # mit Filter wird immer alles durchsucht (auch Nicht-Treffer)
+        self.lb.configure(fg=TEXT_MUTED if show_all else TEXT)
+        self.show_all = show_all
+        hits = skipped = 0
+        capped = False
+        skips = []
+        for v in self.pool:
+            st, _ = self.state_of(v, cur)
+            if st in ("hit", "add"):
+                hits += 1
+            elif st == "skip":
+                skipped += 1
+            if qs:
+                t_ = norm_text(self.titles.get(v["id"], ""))
+                if not any(q in t_ or q == v["id"].lower() for q in qs):
+                    continue
+            if not show_all:
+                if st == "skip":
+                    skips.append((st, v))
+                    continue
+                if st == "out":
+                    continue
+            if len(self.shown) >= self.SHOW_MAX:
+                capped = True
+                continue
+            self.add_line(st, v)
+        for st, v in skips:                       # ausgeschlossene stehen in dieser Ansicht am Ende
+            if len(self.shown) < self.SHOW_MAX:
+                self.add_line(st, v)
+        miss = len(missing_titles(self.pool))
+        span = sum(1 for v in self.pool if in_years(cur, v["year"]))
+        self.count.configure(text=L(f"{hits} OF {span} VIDEOS MATCH", f"{hits} VON {span} VIDEOS PASSEN")
+                             + (L(f"  //  {skipped} EXCLUDED", f"  //  {skipped} AUSGESCHLOSSEN") if skipped else ""))
+        notes = []
+        if not self.pool:
+            notes.append(L("NO VIDEOS FOUND YET. RUN THE YEARS FIRST.", "NOCH KEINE VIDEOS GEFUNDEN. ZUERST DIE JAHRE LAUFEN LASSEN."))
+        elif miss:
+            notes.append(L(f"{miss} TITLES ARE STILL MISSING AND ARE LOADED ON START. THE PREVIEW IS INCOMPLETE UNTIL THEN.",
+                           f"{miss} TITEL FEHLEN NOCH UND WERDEN BEIM START NACHGELADEN. BIS DAHIN IST DIE VORSCHAU UNVOLLSTÄNDIG."))
+        if qs and self.view == "hits":
+            notes.append(L("THE SEARCH COVERS ALL CHANNEL VIDEOS // GREY = NOT IN THE LIST YET, SELECT AND PRESS INCLUDE.",
+                           "DIE SUCHE DURCHSUCHT ALLE CHANNEL-VIDEOS // GRAU = NOCH NICHT IN DER LISTE, MARKIEREN UND AUFNEHMEN."))
+        if capped:
+            notes.append(L(f"ONLY THE FIRST {self.SHOW_MAX} ARE SHOWN // USE THE FILTER.", f"ES WERDEN NUR DIE ERSTEN {self.SHOW_MAX} GEZEIGT // NUTZE DEN FILTER."))
+        if hits > SHOW_LIMIT_NOTE:
+            notes.append(L(f"MORE THAN {PART_MAX} VIDEOS ARE SPLIT INTO SEVERAL PLAYLIST PARTS.",
+                           f"AB {PART_MAX} VIDEOS WIRD DIE PLAYLIST IN TEILE AUFGETEILT."))
+        self.note.configure(text="\n".join(notes), fg=YELLOW)
+        for i, (_, vid) in enumerate(self.shown):
+            if vid in sel:
+                self.lb.selection_set(i)
+        self.lb.yview_moveto(top)
+        self.update_tool()
+
+    def add_line(self, st, v):
+        mark = {"hit": "  ", "add": "+ ", "skip": "✕ ", "out": "  "}[st]
+        self.lb.insert("end", mark + self.line(v))
+        col = {"add": CYAN, "skip": RED, "hit": TEXT if self.show_all else None}.get(st)
+        if col:
+            self.lb.itemconfig("end", fg=col)
+        self.shown.append((st, v["id"]))
+
+    def picked(self):
+        return [self.shown[i] for i in self.lb.curselection() if i < len(self.shown)]
+
+    def update_tool(self):
+        pick = self.picked()
+        ex = [p for p in pick if p[0] in ("hit", "add")]
+        inc = [p for p in pick if p[0] in ("out", "skip")]
+        self.excl_btn.set_enabled(bool(pick))         # nie "tot": bei unpassender Auswahl erklärt eine Meldung, warum nichts passiert
+        self.incl_btn.set_enabled(bool(pick))
+        self.excl_btn.set_text(L("EXCLUDE SELECTED", "AUSSCHLIESSEN") + (f" ({len(ex)})" if len(ex) > 1 else ""))
+        self.incl_btn.set_text(L("INCLUDE SELECTED", "AUFNEHMEN") + (f" ({len(inc)})" if len(inc) > 1 else ""))
+
+    def exclude_selected(self):
+        cur = self.current()
+        by_id = {v["id"]: v for v in self.pool}
+        if not any(st in ("hit", "add") for st, _ in self.picked()):
+            self.note.configure(text=L("NOTHING TO EXCLUDE: THE SELECTED VIDEOS ARE NOT IN THE LIST.",
+                                       "NICHTS ZUM AUSSCHLIESSEN: DIE MARKIERTEN VIDEOS SIND NICHT IN DER LISTE."), fg=YELLOW)
+            return
+        for st, vid in self.picked():
+            if st not in ("hit", "add"):
+                continue
+            self.add.discard(vid)
+            if self.state_of(by_id[vid], cur)[1]:
+                self.skip.add(vid)             # passt nach den Regeln -> ausdrücklich ausschließen
+        self.refresh()
+
+    def include_selected(self):
+        cur = self.current()
+        by_id = {v["id"]: v for v in self.pool}
+        if not any(st in ("out", "skip") for st, _ in self.picked()):
+            self.note.configure(text=L("NOTHING TO INCLUDE: THE SELECTED VIDEOS ARE ALREADY IN THE LIST. "
+                                       "TO ADD OTHERS, FIND THEM WITH THE SEARCH OR IN ALL CHANNEL VIDEOS (GREY = NOT IN THE LIST).",
+                                       "NICHTS ZUM AUFNEHMEN: DIE MARKIERTEN VIDEOS SIND SCHON IN DER LISTE. ANDERE FINDEST DU "
+                                       "MIT DER SUCHE ODER IN ALLE CHANNEL-VIDEOS (GRAU = NICHT IN DER LISTE)."), fg=YELLOW)
+            return
+        for st, vid in self.picked():
+            if st not in ("out", "skip"):
+                continue
+            self.skip.discard(vid)
+            if not self.state_of(by_id[vid], cur)[1]:
+                self.add.add(vid)              # passt nicht nach den Regeln -> fest aufnehmen
+        self.refresh()
+
+    def add_video(self):
+        raw = self.add_var.get().strip()
+        m_ = re.search(r"(?:v=|youtu\.be/|shorts/|live/)([\w-]{11})", raw) or re.fullmatch(r"([\w-]{11})", raw)
+        vid = m_.group(1) if m_ else None
+        if not vid or vid not in {v["id"] for v in self.pool}:
+            self.note.configure(text=L("THAT VIDEO IS NOT AMONG THE CHANNEL'S FOUND VIDEOS (SHORTS ARE NOT INCLUDED).",
+                                       "DIESES VIDEO GEHÖRT NICHT ZU DEN GEFUNDENEN VIDEOS DES KANALS (SHORTS SIND NICHT DABEI)."), fg=RED)
+            return
+        self.note.configure(fg=YELLOW)
+        self.skip.discard(vid)
+        self.add.add(vid)
+        self.add_var.set("")
+        self.refresh()
+
+    def save(self):
+        name = self.name_var.get().strip()
+        cur = self.current()
+        if not name:
+            self.note.configure(text=L("PLEASE ENTER A NAME.", "BITTE EINEN NAMEN EINGEBEN."), fg=RED)
+            return
+        if not (cur["any"] or cur["all"]):
+            self.note.configure(text=L("PLEASE ENTER AT LEAST ONE KEYWORD.", "BITTE MINDESTENS EIN STICHWORT EINGEBEN."), fg=RED)
+            return
+        lists = load_lists()
+        if self.lst_id:
+            lst = next((x for x in lists if x["id"] == self.lst_id), None)
+        else:
+            lst = None
+        if lst is None:
+            lst = {"id": self.lst_id or new_list_id()}
+            lists.append(lst)
+        lst.update(name=name, desc=self.desc_box.get("1.0", "end").strip(), **cur)
+        save_lists(lists)
+        key = list_key(lst)
+        self.app.lists_changed(select_key=key if not self.lst_id else None)
+        if self.app.worker and self.app.worker.is_alive():
+            self.app.write_log(L("LIST CHANGES APPLY FROM THE NEXT START", "LISTENÄNDERUNGEN GELTEN AB DEM NÄCHSTEN START"), "info")
+        self.destroy()
+
+    def delete(self):
+        if not self.confirm_delete:
+            self.confirm_delete = True
+            self.del_btn.set_text(L("SURE? CLICK AGAIN", "SICHER? NOCHMAL KLICKEN"))
+            return
+        lists = [x for x in load_lists() if x["id"] != self.lst_id]
+        save_lists(lists)
+        key = "k_" + self.lst_id
+        pids = part_ids(load(state_file(key), {}))
+        for f in (videos_file(key), state_file(key)):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        self.app.lists_changed(removed_key=key)
+        self.app.write_log(L("LIST DELETED // ITS PLAYLIST STAYS ON YOUTUBE UNTIL YOU DELETE IT THERE",
+                             "LISTE GELÖSCHT // IHRE PLAYLIST BLEIBT AUF YOUTUBE, BIS DU SIE DORT LÖSCHST") +
+                           (" // " + " ".join(f"https://www.youtube.com/playlist?list={p}" for p in pids) if pids else ""), "warn")
+        self.destroy()
+
+
+SHOW_LIMIT_NOTE = PART_MAX
 
 
 class LoginPanel(Panel):
@@ -4397,11 +5098,11 @@ class LoginPanel(Panel):
 class CutButton(tk.Canvas):
     """Eckiger Button mit einer abgeschnittenen Ecke unten rechts (wie die Panels)."""
 
-    def __init__(self, master, text, command, width=0):
-        f = tkfont.Font(family=FONT_MONO, size=-px(12), weight="bold")
+    def __init__(self, master, text, command, width=0, height=36, size=12):
+        f = tkfont.Font(family=FONT_MONO, size=-px(size), weight="bold")
         w = max(px(width), f.measure(text) + px(36))
-        super().__init__(master, width=w, height=px(36), bg=BG, highlightthickness=0, bd=0, cursor="hand2")
-        self.text, self.command = text, command
+        super().__init__(master, width=w, height=px(height), bg=BG, highlightthickness=0, bd=0, cursor="hand2")
+        self.text, self.command, self.size = text, command, size
         self.enabled, self.hover = True, False
         self.color = YELLOW      # Aktions-Knöpfe sind gelb
         self.bind("<Configure>", lambda e: self.redraw())
@@ -4436,7 +5137,7 @@ class CutButton(tk.Canvas):
         w, h = self.winfo_width(), self.winfo_height()
         if w < 10:
             return
-        m, c = px(3), px(7)
+        m, c = px(3), px(10) if h > px(50) else px(7)
         x0, y0, x1, y1 = m, m, w - m - 1, h - m - 1
         col = self.color
         if not self.enabled:
@@ -4449,7 +5150,7 @@ class CutButton(tk.Canvas):
         else:
             fill, edge, tcol = mix(col, BG, 0.20), mix(col, BG, 0.9), col
         self.create_polygon(flat(shape(x0, y0, x1, y1, c)), fill=fill, outline=edge)
-        self.create_text(w / 2, h / 2, text=self.text, font=F("mono", 12), fill=tcol)
+        self.create_text(w / 2, h / 2, text=self.text, font=F("mono", self.size), fill=tcol)
 
 
 class Section(tk.Canvas):
@@ -4478,10 +5179,14 @@ class Section(tk.Canvas):
 class YearSection(Section):
     """Abschnitt JAHRE mit Gesamtfortschritt und ALLE / KEINE zum Markieren."""
 
-    def __init__(self, master, text, on_all, on_none):
+    def __init__(self, master, text, on_all, on_none, on_hide=None, hidden=False):
         super().__init__(master, text)
-        self.on_all, self.on_none = on_all, on_none
+        self.on_all, self.on_none, self.on_hide, self.hidden = on_all, on_none, on_hide, hidden
         self.total = (0, 0)
+
+    def set_hidden(self, hidden):
+        self.hidden = hidden
+        self.redraw()
 
     def set_total(self, done, total):
         if (done, total) != self.total:
@@ -4506,7 +5211,14 @@ class YearSection(Section):
         right = self.link(right, y, L("NONE", "KEINE"), self.on_none) - px(6)
         sep = self.create_text(right, y, text="·", anchor="e", font=F("mono", 11), fill=FLUFF)
         right = self.bbox(sep)[0] - px(6)
-        right = self.link(right, y, L("ALL", "ALLE"), self.on_all) - px(16)
+        right = self.link(right, y, L("ALL", "ALLE"), self.on_all) - px(6)
+        if self.on_hide:
+            sep = self.create_text(right, y, text="·", anchor="e", font=F("mono", 11), fill=FLUFF)
+            right = self.bbox(sep)[0] - px(6)
+            right = self.link(right, y, L("SHOW DONE", "FERTIGE ZEIGEN") if self.hidden else L("HIDE DONE", "FERTIGE AUSBLENDEN"),
+                              self.on_hide) - px(16)
+        else:
+            right -= px(10)
         done, total = self.total
         if total:
             pct = done * 100 / total
@@ -4793,7 +5505,6 @@ class App(tk.Tk):
         self.worker = None
         self.code = ""
         self.login_url = ""
-        self.limit_val = max(0, int(self.settings.get("limit", 0) or 0))
 
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
@@ -4815,11 +5526,30 @@ class App(tk.Tk):
         self.channel_card = ChannelCard(left, self.edit_channel)
         self.channel_card.grid(row=1, column=0, sticky="ew", pady=(0, px(16)))
         self.channel_card.update_state()
-        self.year_section = YearSection(left, L("TARGET YEARS", "JAHRE"), lambda: self.select_all(True),
-                                        lambda: self.select_all(False))
+        self.year_section = YearSection(left, L("TARGETS", "ZIELE"), lambda: self.select_all(True),
+                                        lambda: self.select_all(False), self.toggle_hide_done,
+                                        bool(self.settings.get("hide_done")))
         self.year_section.grid(row=2, column=0, sticky="ew", pady=(0, px(6)))
         self.scroll = ScrollArea(left)
         self.scroll.grid(row=3, column=0, sticky="nsew")
+        # Kanalkarte und Überschrift enden rechts bündig mit den Jahreskarten (nicht mit der Scrollleiste)
+        sbw = self.scroll.sb.winfo_reqwidth() + px(6)
+        self.channel_card.grid_configure(padx=(0, sbw))
+        self.year_section.grid_configure(padx=(0, sbw))
+        btn_row = tk.Frame(left, bg=BG)
+        btn_row.grid(row=4, column=0, sticky="ew", pady=(px(8), 0), padx=(0, sbw))
+        btn_row.columnconfigure(0, weight=3, uniform="lb")
+        btn_row.columnconfigure(1, weight=2, uniform="lb")
+        self.new_list_btn = CutButton(btn_row, L("+  CUSTOM LIST", "+  EIGENE LISTE"), self.new_list, height=px(36))
+        self.new_list_btn.set_color(CYAN)
+        self.new_list_btn.grid(row=0, column=0, sticky="ew", padx=(0, px(6)))
+        self.suggest_btn = CutButton(btn_row, L("SUGGESTIONS", "VORSCHLÄGE"), self.suggest_lists, height=px(36))
+        self.suggest_btn.set_color(CYAN)
+        self.suggest_btn.grid(row=0, column=1, sticky="ew")
+        Tooltip(self.suggest_btn, L("Finds series in your video titles (e.g. \"Minecraft Season 04 #12\") and offers to create a list for each.",
+                                    "Findet Serien in deinen Videotiteln (z. B. \"Minecraft Season 04 #12\") und bietet an, für jede eine Liste anzulegen."))
+        Tooltip(self.new_list_btn, L("Your own playlist besides the years: collects all videos whose title contains your keywords (e.g. a series), in upload order.",
+                                     "Eine eigene Playlist neben den Jahren: sammelt alle Videos, in deren Titel deine Stichwörter vorkommen (z. B. eine Serie), in Upload-Reihenfolge."))
         self.rows = {}
         self.order = []
         self.build_rows()
@@ -4832,16 +5562,17 @@ class App(tk.Tk):
 
         Section(right, L("CONTROL", "STEUERUNG"), "HUD // STATUS").grid(row=0, column=0, sticky="ew", pady=(0, px(6)))
         btns = tk.Frame(right, bg=BG)
-        btns.grid(row=1, column=0, sticky="ew", pady=(0, px(8)))
-        self.start_btn = CutButton(btns, "▶  START", self.start, width=100)
-        self.start_btn.pack(side="left")
-        self.pause_btn = CutButton(btns, L("❚❚  PAUSE", "❚❚  PAUSE"), self.toggle_pause, width=112)
-        self.pause_btn.pack(side="left", padx=(px(6), 0))
+        btns.grid(row=1, column=0, sticky="ew", pady=(0, px(16)))
+        for i in range(4):
+            btns.columnconfigure(i, weight=1, uniform="ctl")
+        self.start_btn = CutButton(btns, "▶  START", self.start, height=DECK_H, size=15)
+        self.pause_btn = CutButton(btns, L("❚❚  PAUSE", "❚❚  PAUSE"), self.toggle_pause, height=DECK_H, size=15)
         self.pause_btn.set_enabled(False)
-        self.stop_btn = CutButton(btns, L("■  STOP", "■  STOPP"), self.stop, width=96)
-        self.stop_btn.pack(side="left", padx=(px(6), 0))
-        self.check_btn = CutButton(btns, L("✓  CHECK", "✓  PRÜFEN"), self.run_check, width=104)
-        self.check_btn.pack(side="left", padx=(px(6), 0))
+        self.stop_btn = CutButton(btns, L("■  STOP", "■  STOPP"), self.stop, height=DECK_H, size=15)
+        self.check_btn = CutButton(btns, L("✓  CHECK", "✓  PRÜFEN"), self.run_check, height=DECK_H, size=15)
+        for i, b in enumerate((self.start_btn, self.pause_btn, self.stop_btn, self.check_btn)):
+            b.configure(width=1)
+            b.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else px(3), 0 if i == 3 else px(3)))
         for b in (self.start_btn, self.pause_btn, self.stop_btn, self.check_btn):
             b.set_color(YELLOW)   # Hauptsteuerung in Cyberpunk-Gelb
         self.setup_btn = CutButton(self.header, L("API // MISSING", "API // ANMELDEN"), self.edit_credentials, width=150)
@@ -4853,29 +5584,9 @@ class App(tk.Tk):
         self.update_api_button()
         self.stop_btn.set_enabled(False)
 
-        lim = tk.Frame(right, bg=BG)
-        lim.grid(row=2, column=0, sticky="ew", pady=(0, px(4)))
-        lim.columnconfigure(0, weight=1)
-        self.limit_panel = LimitPanel(lim, self.limit_val)
-        Tooltip(self.limit_panel, L("Add at most this many videos per year and run. Use the buttons next to it or "
-                                    "the mouse wheel to change it in steps of 50. UNLIMITED means no limit.",
-                                    "Höchstens so viele Videos pro Jahr und Lauf einfügen. Mit den Knöpfen daneben "
-                                    "oder dem Mausrad in 50er-Schritten. UNBEGRENZT heißt keine Grenze."))
-        self.limit_panel.grid(row=0, column=0, sticky="ew")
-        for w in (self.limit_panel,):
-            w.bind("<MouseWheel>", lambda e: self.change_limit(50 if e.delta > 0 else -50))
-            w.bind("<Button-4>", lambda e: self.change_limit(50))
-            w.bind("<Button-5>", lambda e: self.change_limit(-50))
-        b_minus = CutButton(lim, "−", lambda: self.change_limit(-50), width=40)
-        b_minus.grid(row=0, column=1, padx=(px(6), 0))
-        b_plus = CutButton(lim, "+", lambda: self.change_limit(50), width=40)
-        b_plus.grid(row=0, column=2, padx=(px(4), 0))
-        Tooltip(b_minus, L("Lower the batch limit by 50.", "Limit um 50 verringern."))
-        Tooltip(b_plus, L("Raise the batch limit by 50.", "Limit um 50 erhöhen."))
-
-        Section(right, L("OPTIONS", "OPTIONEN"), "RUN // SYSTEM").grid(row=3, column=0, sticky="ew", pady=(px(6), px(6)))
+        Section(right, L("OPTIONS", "OPTIONEN"), "RUN // SYSTEM").grid(row=3, column=0, sticky="ew", pady=(0, px(6)))
         opts = tk.Frame(right, bg=BG)
-        opts.grid(row=4, column=0, sticky="ew", pady=(0, px(8)))
+        opts.grid(row=4, column=0, sticky="ew", pady=(0, px(16)))
         opts.columnconfigure(0, weight=1, uniform="opt")
         opts.columnconfigure(1, weight=1, uniform="opt")
         # Zeile 1: Ablauf
@@ -4886,30 +5597,20 @@ class App(tk.Tk):
             r.refresh_blocked()
         self.fallback_card = ToggleCard(opts, "FALLBACK", L("EDGE AFTER QUOTA", "EDGE BEI LIMIT"),
                                         self.fallback, self.toggle_fallback, compact=True)
-        self.fallback_card.grid(row=0, column=0, sticky="ew", padx=(0, px(3)), pady=(0, px(4)))
-        self.skip_ahead = bool(self.settings.get("skip_ahead", False))
-        self.skip_card = ToggleCard(opts, L("SKIP AHEAD", "VORZIEHEN"), L("NEXT READY YEAR", "NÄCHSTES FERTIGES JAHR"),
-                                    self.skip_ahead, self.toggle_skip, compact=True)
-        self.skip_card.grid(row=0, column=1, sticky="ew", padx=(px(3), 0), pady=(0, px(4)))
-        # Zeile 2: System
+        self.fallback_card.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, px(4)))
+        self.skip_ahead = True                       # immer: nächstes bereites markiertes Jahr vorziehen
         self.autorun = bool(self.settings.get("autorun", False))
-        self.autorun_card = ToggleCard(opts, L("AUTO-RUN", "AUTOSTART"), L("ON LAUNCH", "BEIM ÖFFNEN"), self.autorun, self.toggle_autorun,
-                                       compact=True)
-        self.autorun_card.grid(row=1, column=0, sticky="ew", padx=(0, px(3)))
         self.win_on = get_windows_autostart()
-        self.win_card = ToggleCard(opts, "BOOT", L("WITH WINDOWS", "MIT WINDOWS"), self.win_on,
-                                   self.toggle_windows, available=winreg is not None, compact=True)
-        self.win_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
         self.app_card = SettingsCard(opts, self.edit_app_settings, lambda: L("PROGRAM", "PROGRAMM"),
-                                     lambda: f"{LANGUAGES[LANG]} // UPDATES "
-                                             + (L("ON", "AN") if self.settings.get("check_updates", True)
-                                                else L("OFF", "AUS")), icon="gear")
-        self.app_card.grid(row=2, column=0, sticky="ew", padx=(0, px(3)), pady=(px(4), 0))
+                                     lambda: " // ".join([LANGUAGES[LANG]]
+                                                         + ([L("AUTO-RUN", "AUTOSTART")] if self.autorun else [])
+                                                         + (["BOOT"] if self.win_on else [])), icon="gear")
+        self.app_card.grid(row=1, column=0, sticky="ew", padx=(0, px(3)))
         self.settings_card = SettingsCard(opts, self.edit_settings, lambda: "PLAYLISTS",
                                           lambda: f"{privacy_label(PRIVACY)} // "
                                                   + fill_template(PLAYLIST_TEMPLATE, YEARS[0] if YEARS
                                                                   else datetime.date.today().year - 1))
-        self.settings_card.grid(row=2, column=1, sticky="ew", padx=(px(3), 0), pady=(px(4), 0))
+        self.settings_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
 
         self.login = tk.Frame(right, bg=BG)
         self.login.columnconfigure(0, weight=1)
@@ -4961,6 +5662,12 @@ class App(tk.Tk):
         for tag, col in (("ts", RED_MILD), ("info", TEXT_DIM), ("ok", GREEN), ("warn", YELLOW),
                          ("err", RED), ("sep", RED), ("leaf", GREEN), ("loglink", YELLOW)):
             self.logbox.tag_configure(tag, foreground=col)
+        self.logbox.tag_configure("urllink", underline=False)
+        self.logbox.tag_bind("urllink", "<Enter>", lambda e: (self.logbox.configure(cursor="hand2"),
+                                                               self.logbox.tag_configure("urllink", underline=True)))
+        self.logbox.tag_bind("urllink", "<Leave>", lambda e: (self.logbox.configure(cursor=""),
+                                                               self.logbox.tag_configure("urllink", underline=False)))
+        self.logbox.tag_bind("urllink", "<Button-1>", self.copy_log_link)
         self.log_panel.windows.append(
             lambda x0, y0, x1, y1, c: self.log_panel.create_window(
                 x0 + px(10), y0 + px(10), window=inner, anchor="nw",
@@ -4990,10 +5697,34 @@ class App(tk.Tk):
         return [y for y in self.order if self.rows[y].selected]
 
     def save_settings(self):
-        self.settings.update(years=self.selected_years(), year_order=list(self.order), autorun=self.autorun, limit=self.limit_val,
+        self.settings.update(years=self.selected_years(), year_order=list(self.order), autorun=self.autorun,
                              browser_fallback=getattr(self, "fallback", False),
-                             skip_ahead=getattr(self, "skip_ahead", False))
+                             )
         save(SETTINGS_FILE, self.settings)
+
+    def new_list(self):
+        ListDialog(self, None)
+
+    def suggest_lists(self):
+        SuggestDialog(self)
+
+    def edit_list(self, key):
+        if find_list(key):
+            ListDialog(self, key)
+
+    def lists_changed(self, select_key=None, removed_key=None):
+        """Nach Anlegen/Ändern/Löschen einer Liste die Karten neu aufbauen (Auswahl bleibt)."""
+        sel = set(self.selected_years())
+        if select_key:
+            sel.add(select_key)
+        sel.discard(removed_key)
+        self.settings["years"] = [y for y in self.order if y in sel] + [y for y in sel if y not in self.order]
+        self.settings["year_order"] = [y for y in self.order if y != removed_key]
+        save(SETTINGS_FILE, self.settings)
+        self.build_rows()
+        for r in self.rows.values():
+            r.refresh_blocked()
+        self.save_settings()
 
     def toggle_year(self, y):
         row = self.rows[y]
@@ -5008,23 +5739,48 @@ class App(tk.Tk):
         if self.worker and self.worker.is_alive():
             self.write_log(L("SELECTION APPLIES FROM THE NEXT START", "AUSWAHL GILT AB DEM NÄCHSTEN START"), "info")
 
+    def is_hidden_row(self, y):
+        r = self.rows[y]
+        # nur fertige UND abgewählte Karten; angehakte (z. B. laufendes Jahr, Listen) bleiben sichtbar, weil sie weiter abgeglichen werden
+        return bool(self.settings.get("hide_done")) and r.info.get("code") == "done" and not r.running and not r.selected
+
+    def repack(self):
+        """Karten in der gespeicherten Reihenfolge anordnen; fertige ausblenden, wenn gewünscht."""
+        for yy in self.order:
+            self.rows[yy].pack_forget()
+        for yy in self.order:
+            if not self.is_hidden_row(yy):
+                self.rows[yy].pack(fill="x", pady=(0, px(4)))
+        self.hidden_now = {yy for yy in self.order if self.is_hidden_row(yy)}
+
+    def watch_hidden(self):
+        """Ändert sich, welche Karten fertig sind (oder laufen), die Ansicht nachziehen."""
+        try:
+            if not getattr(self, "drag", None) or not self.drag.get("on"):
+                if {yy for yy in self.order if self.is_hidden_row(yy)} != getattr(self, "hidden_now", set()):
+                    self.repack()
+        finally:
+            self.after(700, self.watch_hidden)
+
+    def toggle_hide_done(self):
+        self.settings["hide_done"] = not self.settings.get("hide_done")
+        save(SETTINGS_FILE, self.settings)
+        self.year_section.set_hidden(bool(self.settings["hide_done"]))
+        self.repack()
+        self.scroll.canvas.yview_moveto(0)
+
     def update_total(self):
         done = total = 0
-        for r in self.rows.values():
+        for y, r in self.rows.items():
+            if is_list_key(y):
+                continue                 # Listen wiederholen Videos der Jahre, zählen nicht in die Gesamtzahl
             done += r.info.get("done", 0)
             total += r.info.get("total", 0)
         if hasattr(self, "year_section"):
             self.year_section.set_total(done, total)
 
-    def change_limit(self, delta):
-        self.limit_val = max(0, min(5000, self.limit_val + delta))
-        self.limit_panel.value = self.limit_val
-        self.limit_panel.redraw()
-        self.save_settings()
-
-    def toggle_autorun(self):
-        self.autorun = not self.autorun
-        self.autorun_card.update_value(self.autorun)
+    def set_autorun(self, on):
+        self.autorun = bool(on)
         self.save_settings()
 
     def edit_app_settings(self):
@@ -5032,13 +5788,6 @@ class App(tk.Tk):
 
     def edit_settings(self):
         SettingsDialog(self)             # auch während eines Laufs (gilt für ab dann angelegte Playlists)
-
-    def toggle_skip(self):
-        self.skip_ahead = not self.skip_ahead
-        self.skip_card.update_value(self.skip_ahead)
-        self.save_settings()
-        if self.worker and self.worker.is_alive():
-            self.worker.skip_ahead = self.skip_ahead
 
     def toggle_fallback(self):
         global FALLBACK_ON
@@ -5051,15 +5800,15 @@ class App(tk.Tk):
         if self.worker and self.worker.is_alive():
             self.worker.fallback = self.fallback
 
-    def toggle_windows(self):
-        new = not self.win_on
-        try:
-            set_windows_autostart(new)
-        except OSError as e:
-            self.write_log(L(f"BOOT SEQUENCE UPDATE FAILED // {e}", f"AUTOSTART KONNTE NICHT GEÄNDERT WERDEN // {e}"), "err")
+    def set_windows(self, on):
+        if bool(on) == self.win_on:
             return
-        self.win_on = new
-        self.win_card.update_value(new)
+        try:
+            set_windows_autostart(bool(on))
+        except OSError as e:
+            self.write_log(L(f"BOOT SEQUENCE UPDATE FAILED // {e}", f"START MIT WINDOWS KONNTE NICHT GEÄNDERT WERDEN // {e}"), "err")
+            return
+        self.win_on = bool(on)
 
     # --- Status
     def set_status(self, key):
@@ -5103,15 +5852,21 @@ class App(tk.Tk):
             r.destroy()
         self.rows = {}
         selected = set(self.settings.get("years", []))
-        saved = [y for y in self.settings.get("year_order", []) if y in YEARS]
-        self.order = saved + [y for y in YEARS if y not in saved]
+        allowed = list(YEARS) + [list_key(lst) for lst in load_lists()]
+        saved = [y for y in self.settings.get("year_order", []) if y in allowed]
+        self.order = saved + [y for y in allowed if y not in saved]
         for y in self.order:
             row = YearRow(self.scroll.inner, y, command=lambda y=y: self.toggle_year(y), pause_command=self.toggle_pause)
             Tooltip(row, lambda r=row: self.year_tip(r))
-            row.pack(fill="x", pady=(0, px(4)))
             row.refresh(selected=y in selected)
             self.bind_drag(row)
+            if is_list_key(y):
+                row.bind("<Button-3>", lambda e, k=y: self.edit_list(k), add="+")
             self.rows[y] = row
+        self.repack()
+        if not getattr(self, "watch_started", False):
+            self.watch_started = True
+            self.after(700, self.watch_hidden)
         self.scroll.canvas.yview_moveto(0)
         self.update_total()
 
@@ -5128,12 +5883,13 @@ class App(tk.Tk):
         """Index, vor dem eingefügt wird, und die y-Position der Markierung (im inneren Frame)."""
         inner = self.scroll.inner
         rel = y_root - inner.winfo_rooty()
-        rows = [self.rows[y] for y in self.order]
-        for i, r in enumerate(rows):
+        vis = [y for y in self.order if not self.is_hidden_row(y)]
+        for y in vis:
+            r = self.rows[y]
             if rel < r.winfo_y() + r.winfo_height() / 2:
-                return i, max(0, r.winfo_y() - px(3))
-        last = rows[-1]
-        return len(rows), last.winfo_y() + last.winfo_height() + px(1)
+                return self.order.index(y), max(0, r.winfo_y() - px(3))
+        last = self.rows[vis[-1]]
+        return len(self.order), last.winfo_y() + last.winfo_height() + px(1)
 
     def drag_motion(self, row, e):
         d = getattr(self, "drag", None)
@@ -5175,10 +5931,7 @@ class App(tk.Tk):
         if idx is not None and idx not in (old, old + 1):
             self.order.remove(y)
             self.order.insert(idx - 1 if idx > old else idx, y)
-            for yy in self.order:
-                self.rows[yy].pack_forget()
-            for yy in self.order:
-                self.rows[yy].pack(fill="x", pady=(0, px(4)))
+            self.repack()
             self.save_settings()
             if self.worker and self.worker.is_alive():
                 self.write_log(L("NEW ORDER APPLIES FROM THE NEXT START", "NEUE REIHENFOLGE GILT AB DEM NÄCHSTEN START"),
@@ -5204,6 +5957,10 @@ class App(tk.Tk):
              "WIRD NUR LOKAL IN CREDENTIALS.JSON NEBEN DEM PROGRAMM GESPEICHERT."), self.save_credentials)
 
     def year_tip(self, row):
+        if is_list_key(row.year):
+            return L("Keyword list. Click to select it, right-click to edit it. ",
+                     "Stichwortliste. Klick wählt sie aus, Rechtsklick bearbeitet sie. ") + \
+                f"{row.info['done']}/{row.info['total']}"
         if row.selected:
             sel = L("Selected, will be processed on START. Click again to deselect. Drag to change the order.",
                     "Markiert, wird beim START bearbeitet. Erneut klicken zum Abwählen. Ziehen ändert die "
@@ -5261,20 +6018,10 @@ class App(tk.Tk):
                                       "Wenn das tägliche YouTube-Kontingent leer ist, über ein eigenes Edge-Fenster "
                                       "weitermachen. Achtung: verstößt gegen die YouTube-Regeln, Risiko für dein "
                                       "Konto."))
-        Tooltip(self.skip_card, L("If a year can't be searched right now, continue with the next selected year that "
-                                  "is ready and catch up on the skipped one later.",
-                                  "Kann ein Jahr gerade nicht gesucht werden, mit dem nächsten markierten Jahr "
-                                  "weitermachen, das bereit ist, und das übersprungene später nachholen."))
-        Tooltip(self.autorun_card, L("Start working automatically when Chronolist opens.",
-                                     "Beim Öffnen von Chronolist automatisch starten."))
-        Tooltip(self.win_card, L("Start Chronolist automatically with Windows.",
-                                 "Chronolist automatisch mit Windows starten."))
-        Tooltip(self.app_card, L("Program settings: language and update check.",
-                                 "Programm-Einstellungen: Sprache und Update-Prüfung."))
-        Tooltip(self.settings_card, L("Playlist title and description with placeholders, visibility and custom "
-                                      "thumbnails per year.",
-                                      "Playlist-Titel und Beschreibung mit Platzhaltern, Sichtbarkeit und eigene "
-                                      "Thumbnails pro Jahr."))
+        Tooltip(self.app_card, L("Program settings: language, auto-run, start with Windows and update check.",
+                                 "Programm-Einstellungen: Sprache, Autostart, Start mit Windows und Update-Prüfung."))
+        Tooltip(self.settings_card, L("Playlist title and description with placeholders and visibility.",
+                                      "Playlist-Titel und Beschreibung mit Platzhaltern und Sichtbarkeit."))
         Tooltip(self.login_panel, L("Google sign-in: open the link, enter the code, confirm. Clicking the code copies it.",
                                     "Google-Anmeldung: Link öffnen, Code eingeben, bestätigen. Klick auf den Code "
                                     "kopiert ihn."))
@@ -5394,11 +6141,11 @@ class App(tk.Tk):
             return
         years = self.selected_years()
         if not years:
-            self.write_log(L("NO TARGET SELECTED // CLICK A YEAR ON THE LEFT", "KEIN JAHR AUSGEWÄHLT // LINKS EIN JAHR ANKLICKEN"), "err")
+            self.write_log(L("NO TARGET SELECTED // CLICK A CARD ON THE LEFT", "KEIN ZIEL AUSGEWÄHLT // LINKS EINE KARTE ANKLICKEN"), "err")
             return
         self.save_settings()
-        self.write_log(f"START // {', '.join(map(str, years))}", "sep")
-        self.worker = Worker(years, self.limit_val, self.out, fallback=self.fallback)
+        self.write_log(f"START // {', '.join(map(year_label, years))}", "sep")
+        self.worker = Worker(years, 0, self.out, fallback=self.fallback)
         self.worker.skip_ahead = self.skip_ahead
         self.run_mode = "running"
         self.pause_info = None
@@ -5419,9 +6166,10 @@ class App(tk.Tk):
             return
         years = self.selected_years()
         if not years:
-            self.write_log(L("NO TARGET SELECTED // CLICK A YEAR ON THE LEFT", "KEIN JAHR AUSGEWÄHLT // LINKS EIN JAHR ANKLICKEN"), "err")
+            self.write_log(L("NO TARGET SELECTED // CLICK A CARD ON THE LEFT", "KEIN ZIEL AUSGEWÄHLT // LINKS EINE KARTE ANKLICKEN"), "err")
             return
-        self.write_log(L(f"PLAYLIST CHECK // {', '.join(map(str, years))}", f"PLAYLIST-PRÜFUNG // {', '.join(map(str, years))}"), "sep")
+        names = ", ".join(map(year_label, years))
+        self.write_log(L(f"PLAYLIST CHECK // {names}", f"PLAYLIST-PRÜFUNG // {names}"), "sep")
         self.worker = Worker(years, 0, self.out, fallback=self.fallback, check_only=True)
         self.run_mode = "running"
         self.pause_info = None
@@ -5531,6 +6279,14 @@ class App(tk.Tk):
         """Letzte Größe/Position (und maximiert) wiederherstellen, wenn der Monitor noch da ist."""
         self._normal_geom = None
         win = self.settings.get("window") or {}
+        rect = win.get("placement")
+        if os.name == "nt" and rect and len(rect) == 4:
+            l, t, r, b = rect
+            if point_on_screen((l + r) // 2, t + 20):
+                # erst nach dem ersten Anzeigen setzen, sonst platziert Windows das Fenster selbst
+                self.after(30, lambda: set_placement(self, rect, bool(win.get("zoomed"))))
+            self.bind("<Configure>", self._track_geometry, add="+")
+            return
         g = win.get("geometry")
         m = re.match(r"^(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)$", g or "")
         if m:
@@ -5560,6 +6316,12 @@ class App(tk.Tk):
                 pass
 
     def save_window(self):
+        pl = get_placement(self)
+        if pl:
+            rect, zoomed = pl
+            self.settings["window"] = {"placement": rect, "zoomed": zoomed}
+            save(SETTINGS_FILE, self.settings)
+            return
         try:
             zoomed = self.state() == "zoomed" or bool(self.attributes("-zoomed") if os.name != "nt" else False)
         except tk.TclError:
@@ -5587,6 +6349,29 @@ class App(tk.Tk):
         self.clipboard_append(self.code)
         self.write_log(L("CODE COPIED TO CLIPBOARD", "CODE IN DIE ZWISCHENABLAGE KOPIERT"), "info")
 
+    def copy_log_link(self, e):
+        """Klick auf einen Link im Log: in die Zwischenablage kopieren, kurzer Hinweis am Mauszeiger."""
+        rng = self.logbox.tag_prevrange("urllink", f"@{e.x},{e.y}+1c")
+        if not rng:
+            return "break"
+        url = self.logbox.get(*rng).strip()
+        self.clipboard_clear()
+        self.clipboard_append(url)
+        tip = tk.Toplevel(self)
+        tip.wm_overrideredirect(True)
+        try:
+            tip.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        base = "Segoe UI" if "Segoe UI" in tkfont.families(self) else "TkDefaultFont"
+        fr = tk.Frame(tip, bg=mix(GREEN, BG, 0.55), padx=1, pady=1)
+        fr.pack()
+        tk.Label(fr, text=L("LINK COPIED", "LINK KOPIERT"), bg="#1c1c28", fg=GREEN, font=(base, -px(13)),
+                 padx=px(10), pady=px(6)).pack()
+        tip.geometry(f"+{e.x_root + px(12)}+{e.y_root + px(18)}")
+        tip.after(1300, tip.destroy)
+        return "break"
+
     # --- Nachrichten vom Worker
     def write_log(self, text, level="info"):
         stamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -5608,7 +6393,12 @@ class App(tk.Tk):
             self.logbox.insert("end", m.group(2), "leaf")
             self.logbox.insert("end", f"{m.group(3)}\n", level)
         else:
-            self.logbox.insert("end", f"{text}\n", level)
+            for part in re.split(r"(https?://\S+)", text):       # Links im Log: Klick kopiert sie
+                if re.match(r"https?://", part):
+                    self.logbox.insert("end", part, (level, "urllink"))
+                elif part:
+                    self.logbox.insert("end", part, level)
+            self.logbox.insert("end", "\n", level)
         if getattr(self, "log_follow", True):
             self.logbox.see("end")
         self.logbox.config(state="disabled")
@@ -5621,7 +6411,7 @@ class App(tk.Tk):
                 if kind == "log":
                     self.write_log(msg[1], msg[2])
                 elif kind == "progress":
-                    y = int(msg[1])
+                    y = msg[1]
                     if y in self.rows:
                         self.rows[y].refresh(info=year_info(y))
                     self.update_total()
@@ -5713,6 +6503,12 @@ class App(tk.Tk):
                         r.refresh(info=year_info(y))
         except queue.Empty:
             pass
+        except Exception as e:  # noqa: BLE001
+            # ein fehlerhafte Meldung darf die Anzeige nicht stilllegen (sonst bleiben Log und Knöpfe stehen)
+            try:
+                self.write_log(f"UI ERROR // {type(e).__name__}: {e}", "err")
+            except Exception:  # noqa: BLE001
+                pass
         self.after(200, self.poll)
 
 

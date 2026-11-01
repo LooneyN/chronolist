@@ -5,7 +5,7 @@
 <h1 align="center">Chronolist</h1>
 
 <p align="center">
-  Builds one public YouTube playlist per year with every video of a channel, in upload order.
+  Builds chronological YouTube playlists of a channel's videos in upload order: one per year, plus your own keyword lists such as a series.
 </p>
 
 <p align="center">
@@ -17,20 +17,23 @@
 
 ---
 
-YouTube only lets you sort a channel's uploads by "latest" or "popular". Chronolist fixes that: for any channel you choose, it creates playlists like **"ChannelName 2012 in Upload-Reihenfolge"** and fills them with all videos from that year, oldest first. Perfect for watching a long-running channel from the very beginning.
+YouTube only lets you sort a channel's uploads by "latest" or "popular". Chronolist fixes that: for any channel you choose, it creates playlists like **"ChannelName 2012 in Upload-Reihenfolge"** and fills them with all videos from that year, oldest first. On top of that you can build your own lists, for example one per series or season, from keywords in the video titles. Perfect for watching a long-running channel from the very beginning.
 
 ## Features
 
 - **Any channel**: enter a `@handle`, channel URL or channel ID; name and start year are detected automatically.
 - **One playlist per year**, filled in exact upload order, with progress saved per channel and year.
+- **Custom lists**: collect videos by title keywords (contains any / all / none of them, optionally limited to a range of years) into a playlist with your own name and description, always in upload order. The editor shows the matches live, lets you exclude or add single videos and start from a copy of an existing list.
+- **Suggestions**: finds series in your video titles (e.g. "Season 04 #12") and prepares a list for each one.
+- **Stays up to date**: lists are re-synced on every run, so new matching uploads are added and excluded videos are removed.
 - **Quota-aware**: knows YouTube's daily API limits, remembers when they are used up and shows when they reset (in your local time).
 - **Archive scan**: reads the whole upload list once and prepares all years at very low quota cost; older years beyond YouTube's 20,000-upload cap are found via a month-by-month date search, or, with the browser fallback, completely and without quota via the channel's videos page sorted by oldest.
 - **Self-checking**: remembers the batch in flight and checks only that one after an interruption; a full duplicate check runs at the end of each year and with CHECK.
 - **Videos only**: shorts and livestreams are left out.
-- **Pause, resume, stop, batch limit, skip ahead** to the next ready year.
+- **Pause, resume, stop**; if a year can't be searched right now, Chronolist continues with the next ready one.
 - **Keeps the current year up to date**: new uploads are appended on every run.
 - **More than 5,000 videos per year**: split automatically into "Part 1", "Part 2", … because a YouTube playlist holds at most 5,000 videos.
-- **Auto-run** on launch and optional **start with Windows**.
+- **Auto-run** on launch and optional **start with Windows** (in the program settings).
 - **Optional browser fallback** (off by default, see the warning below).
 - **Updates in the app**: a green UPDATE button in the header tells you when a new release is available; one click downloads it, replaces the exe and restarts. Your settings and progress stay.
 
@@ -56,8 +59,9 @@ Chronolist uses the official YouTube Data API v3 with **your own** credentials. 
 ## Usage
 
 1. Click **EDIT** on the *Target Channel* card and enter the channel.
-2. All completed years are selected. Deselect the ones you don't want and drag the cards to change the order; selected years are processed from top to bottom.
-3. Press **START**.
+2. All completed years are selected. Deselect the ones you don't want and drag the cards to change the order; selected cards are processed from top to bottom.
+3. Optional: **+ CUSTOM LIST** creates a list of your own, **SUGGESTIONS** finds series in your titles, **HIDE DONE** collapses finished cards.
+4. Press **START**.
 
 The in-app **HELP** (currently in German) explains every button, status and pause in detail.
 
@@ -91,7 +95,8 @@ Under **PLAYLISTS** you can set:
 
 - **Title** and optional **description** of new playlists, with placeholders `{channel}`, `{handle}`, `{year}` and `{count}` (number of videos in that year) and a live preview
 - **Visibility**: public, unlisted or private
-- An optional **thumbnail per year** (JPG/PNG, max 2 MB, ideally 1280×720). You can pick it before the playlist exists; it is uploaded via the API (50 units) as soon as the playlist exists. Experimental.
+
+The name of a custom list is its whole playlist title; the title template only applies to years.
 
 Playlist changes apply to playlists created from then on. Everything is stored in `settings.json` next to the program.
 
@@ -105,7 +110,7 @@ Everything stays in the program folder and is never uploaded anywhere except to 
 | `token.json` | Your Google sign-in |
 | `settings.json` | Settings and selected channel |
 | `quota.json` | Remembered daily limit |
-| `data/<channel>/` | Video lists, progress and thumbnails per year |
+| `data/<channel>/` | Video lists and progress per year |
 | `browser_profile/` | Sign-in of the fallback Edge window |
 
 Never share these files. They are excluded in `.gitignore`.
