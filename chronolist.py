@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 99
+BUILD = 100
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -395,6 +395,23 @@ def list_name(key):
 def year_label(y):
     """Anzeigename einer Karte: Jahreszahl oder Listenname."""
     return list_name(y) if is_list_key(y) else str(y)
+
+
+def store_thumbnail(key, src):
+    """Bild für eine Playlist (Jahr oder Liste) vormerken: Kopie im Kanal-Ordner, Upload beim nächsten START."""
+    thumbs = load(thumbs_file(), {})
+    old = thumbs.pop(str(key), None)
+    if old and old.get("file") and (thumbs_dir() / old["file"]).exists():
+        try:
+            (thumbs_dir() / old["file"]).unlink()
+        except OSError:
+            pass
+    if src:
+        thumbs_dir().mkdir(parents=True, exist_ok=True)
+        name = f"{key}{Path(src).suffix.lower()}"
+        shutil.copyfile(src, thumbs_dir() / name)
+        thumbs[str(key)] = {"file": name, "status": "queued", "error": ""}
+    save(thumbs_file(), thumbs)
 
 
 def new_list_id():
@@ -4736,7 +4753,7 @@ class ListDialog(tk.Toplevel):
         self.title(L("Custom list", "Eigene Liste"))
         self.transient(parent or app)
         self.minsize(px(700), px(640))
-        self.geometry(f"{px(780)}x{px(820)}")
+        self.geometry(f"{px(780)}x{px(880)}")
         self.pool = all_year_videos()
         self.titles = load(titles_file(), {})
         self.shown = []          # (typ, id) je Zeile: "hit" | "add" | "skip"
@@ -4779,6 +4796,20 @@ class ListDialog(tk.Toplevel):
         tk.Label(body, text=L("UPPER/LOWER CASE IS IGNORED. A TERM MATCHES ANYWHERE IN THE TITLE.",
                               "GROSS-/KLEINSCHREIBUNG ZÄHLT NICHT. EIN BEGRIFF PASST ÜBERALL IM TITEL."),
                  bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w").pack(fill="x", pady=(0, px(8)))
+
+        th = tk.Frame(body, bg=BG)
+        th.pack(fill="x", pady=(0, px(8)))
+        tk.Label(th, text=L("THUMBNAIL  (OPTIONAL)", "THUMBNAIL  (OPTIONAL)"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11),
+                 anchor="w").pack(side="left")
+        self.thumb_pending = None            # None = unverändert | Pfad = neues Bild | "" = entfernen
+        self.thumb_key = list_key(lst) if lst else None
+        rmb = CutButton(th, L("REMOVE", "ENTFERNEN"), self.thumb_remove, width=110)
+        rmb.pack(side="right")
+        CutButton(th, L("CHOOSE…", "AUSWÄHLEN…"), self.thumb_choose, width=120).pack(side="right", padx=(0, px(6)))
+        self.thumb_info = tk.Label(th, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w")
+        self.thumb_info.pack(side="left", fill="x", expand=True, padx=(px(14), 0))
+        self.thumb_rm = rmb
+        self.thumb_refresh()
 
         self.count = tk.Label(body, text="", bg=BG, fg=CYAN, font=F("mono", 12), anchor="w")
         self.count.pack(fill="x")
@@ -4824,6 +4855,42 @@ class ListDialog(tk.Toplevel):
         self.geometry(f"+{max(0, x)}+{max(0, y)}")
         self.grab_set()
         self.focus_force()
+
+    def thumb_refresh(self):
+        t = (load(thumbs_file(), {}).get(str(self.thumb_key)) or {}) if self.thumb_key else {}
+        if self.thumb_pending:
+            txt, col, has = L("NEW // ", "NEU // ") + Path(self.thumb_pending).name, CYAN, True
+        elif self.thumb_pending == "":
+            txt, col, has = L("WILL BE REMOVED", "WIRD ENTFERNT"), RED, False
+        elif t:
+            st = {"queued": L("QUEUED", "WARTET"), "done": L("UPLOADED", "HOCHGELADEN"), "error": L("ERROR", "FEHLER")}.get(t.get("status"), "?")
+            txt, col, has = f"{st} // {t.get('file', '')}", {"done": GREEN, "error": RED}.get(t.get("status"), YELLOW), True
+        else:
+            txt, col, has = L("NONE", "KEINS"), TEXT_MUTED, False
+        if len(txt) > 40:
+            txt = txt[:18] + "…" + txt[-18:]
+        self.thumb_info.configure(text=txt, fg=col)
+        self.thumb_rm.set_enabled(has)
+
+    def thumb_choose(self):
+        f = filedialog.askopenfilename(parent=self, title="Thumbnail",
+                                       filetypes=[(L("Images", "Bilder"), "*.jpg *.jpeg *.png"),
+                                                  (L("All files", "Alle Dateien"), "*.*")])
+        if not f:
+            return
+        p_ = Path(f)
+        if p_.suffix.lower() not in (".jpg", ".jpeg", ".png"):
+            self.note.configure(text=L("THUMBNAIL: ONLY JPG OR PNG.", "THUMBNAIL: NUR JPG ODER PNG."), fg=RED)
+            return
+        if p_.stat().st_size > THUMB_MAX_BYTES:
+            self.note.configure(text=L("THUMBNAIL: FILE TOO LARGE (MAX 2 MB).", "THUMBNAIL: DATEI ZU GROSS (MAX 2 MB)."), fg=RED)
+            return
+        self.thumb_pending = str(p_)
+        self.thumb_refresh()
+
+    def thumb_remove(self):
+        self.thumb_pending = ""
+        self.thumb_refresh()
 
     def destroy(self):
         parent = getattr(self, "parent_dlg", None)
@@ -4973,6 +5040,11 @@ class ListDialog(tk.Toplevel):
         lst.update(name=name, **cur)
         save_lists(lists)
         key = list_key(lst)
+        if self.thumb_pending is not None:
+            try:
+                store_thumbnail(key, self.thumb_pending or None)
+            except OSError as e:
+                self.app.write_log(L(f"THUMBNAIL NOT SAVED // {e}", f"THUMBNAIL NICHT GESPEICHERT // {e}"), "err")
         self.app.lists_changed(select_key=key if not self.lst_id else None)
         if self.app.worker and self.app.worker.is_alive():
             self.app.write_log(L("LIST CHANGES APPLY FROM THE NEXT START", "LISTENÄNDERUNGEN GELTEN AB DEM NÄCHSTEN START"), "info")
