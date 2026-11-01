@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 105
+BUILD = 106
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -4153,7 +4153,7 @@ HELP_TEXT_DE = [
           "Stichwörtern passen, in Upload-Reihenfolge. Du gibst einen Namen ein (er wird der Playlist-Titel) und Begriffe: "
           "\"enthält eines davon\", \"und alle diese\" und \"aber keines dieser\". Gross-/Kleinschreibung zählt nicht. "
           "Optional grenzt du die Liste auf einen Zeitraum von Jahren ein (z. B. 2016 bis 2020). "
-          "Die Vorschau zeigt sofort, wie viele Videos passen. Videos schließt du aus (mit Strg/Umschalt+Klick mehrere wählen, dann AUSSCHLIESSEN), und in der Ansicht ALLE VIDEOS nimmst du auch Videos auf, die nicht passen "
+          "Die Vorschau zeigt sofort, wie viele Videos passen. Videos schließt du aus (mit Strg/Umschalt+Klick mehrere wählen, dann AUSSCHLIESSEN), und in der Ansicht ALLE CHANNEL-VIDEOS nimmst du auch Videos auf, die nicht passen "
           "oder nimmst sie über Link oder Video-ID fest hinzu.\n"
           "Eine Liste ist eine Karte wie ein Jahr: anklicken zum Markieren, Rechtsklick zum Bearbeiten. Sie wird nach den Jahren "
           "bearbeitet und bei jedem Lauf neu abgeglichen, also kommen neue Videos automatisch dazu. Ändern sich die "
@@ -4374,7 +4374,7 @@ HELP_TEXT_EN = [
           "order. Enter a name (it becomes the playlist title) and terms: \"contains any of\", \"and all of these\" and "
           "\"but none of these\". Upper/lower case is ignored. Optionally limit the list to a range of years (e.g. 2016 to 2020). "
           "The preview shows right away how many videos match. "
-          "Exclude videos (select with Ctrl/Shift+click, then EXCLUDE); the ALL VIDEOS view lets you include videos that do not match or add them for good with a link or video ID.\n"
+          "Exclude videos (select with Ctrl/Shift+click, then EXCLUDE); the ALL CHANNEL VIDEOS view lets you include videos that do not match or add them for good with a link or video ID.\n"
           "A list is a card like a year: click to select, right-click to edit. It runs after the years and is matched again "
           "on every run, so new videos are added automatically. If you change the terms, the playlist is adjusted on the "
           "next run (this needs FALLBACK on). Chronolist needs the titles of all videos for this. Missing ones are loaded "
@@ -4753,7 +4753,7 @@ class ListDialog(tk.Toplevel):
         self.title(L("Custom list", "Eigene Liste"))
         self.transient(parent or app)
         self.minsize(px(700), px(640))
-        self.geometry(f"{px(780)}x{px(880)}")
+        self.geometry(f"{px(780)}x{px(940)}")
         self.pool = all_year_videos()
         self.titles = load(titles_file(), {})
         self.shown = []          # (typ, id) je Zeile: "hit" | "add" | "skip"
@@ -4771,10 +4771,25 @@ class ListDialog(tk.Toplevel):
             self.del_btn.pack(side="right")
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
-        Section(body, L("CUSTOM LIST", "EIGENE LISTE"), "TITLE // FILTER").pack(fill="x", pady=(0, px(10)))
+        Section(body, L("LIST SETTINGS", "LISTEN-EINSTELLUNGEN"), "NAME // THUMBNAIL").pack(fill="x", pady=(0, px(10)))
 
         self.name_var = tk.StringVar(value=lst.get("name", ""))
         self.field(body, L("NAME (REPLACES {year} IN THE PLAYLIST TITLE)", "NAME (ERSETZT {year} IM PLAYLIST-TITEL)"), self.name_var)
+        th = tk.Frame(body, bg=BG)
+        th.pack(fill="x", pady=(0, px(12)))
+        tk.Label(th, text=L("THUMBNAIL  (OPTIONAL)", "THUMBNAIL  (OPTIONAL)"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11),
+                 anchor="w").pack(side="left")
+        self.thumb_pending = None            # None = unverändert | Pfad = neues Bild | "" = entfernen
+        self.thumb_key = list_key(lst) if lst else None
+        rmb = CutButton(th, L("REMOVE", "ENTFERNEN"), self.thumb_remove, width=110)
+        rmb.pack(side="right")
+        CutButton(th, L("CHOOSE…", "AUSWÄHLEN…"), self.thumb_choose, width=120).pack(side="right", padx=(0, px(6)))
+        self.thumb_info = tk.Label(th, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w")
+        self.thumb_info.pack(side="left", fill="x", expand=True, padx=(px(14), 0))
+        self.thumb_rm = rmb
+        self.thumb_refresh()
+
+        Section(body, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
         self.any_var = tk.StringVar(value=", ".join(lst.get("any") or []))
         self.field(body, L("TITLE CONTAINS ANY OF  (SEPARATE WITH COMMAS)", "TITEL ENTHÄLT EINES DAVON  (MIT KOMMA TRENNEN)"), self.any_var)
         self.all_var = tk.StringVar(value=", ".join(lst.get("all") or []))
@@ -4797,20 +4812,6 @@ class ListDialog(tk.Toplevel):
                               "GROSS-/KLEINSCHREIBUNG ZÄHLT NICHT. EIN BEGRIFF PASST ÜBERALL IM TITEL."),
                  bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w").pack(fill="x", pady=(0, px(8)))
 
-        th = tk.Frame(body, bg=BG)
-        th.pack(fill="x", pady=(0, px(8)))
-        tk.Label(th, text=L("THUMBNAIL  (OPTIONAL)", "THUMBNAIL  (OPTIONAL)"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11),
-                 anchor="w").pack(side="left")
-        self.thumb_pending = None            # None = unverändert | Pfad = neues Bild | "" = entfernen
-        self.thumb_key = list_key(lst) if lst else None
-        rmb = CutButton(th, L("REMOVE", "ENTFERNEN"), self.thumb_remove, width=110)
-        rmb.pack(side="right")
-        CutButton(th, L("CHOOSE…", "AUSWÄHLEN…"), self.thumb_choose, width=120).pack(side="right", padx=(0, px(6)))
-        self.thumb_info = tk.Label(th, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w")
-        self.thumb_info.pack(side="left", fill="x", expand=True, padx=(px(14), 0))
-        self.thumb_rm = rmb
-        self.thumb_refresh()
-
         self.count = tk.Label(body, text="", bg=BG, fg=CYAN, font=F("mono", 12), anchor="w")
         self.count.pack(fill="x")
         self.note = tk.Label(body, text="", bg=BG, fg=YELLOW, font=F("mono", 10, False), anchor="w", justify="left",
@@ -4821,8 +4822,8 @@ class ListDialog(tk.Toplevel):
         bar = tk.Frame(body, bg=BG)
         bar.pack(fill="x", pady=(0, px(6)))
         self.view_btns = {}
-        for v_, txt_ in (("all", L("ALL VIDEOS", "ALLE VIDEOS")), ("hits", L("IN THE LIST", "IN DER LISTE"))):
-            b = CutButton(bar, txt_, lambda v_=v_: self.set_view(v_), width=170)
+        for v_, txt_ in (("hits", L("FILTER RESULTS", "FILTERERGEBNISSE")), ("all", L("ALL CHANNEL VIDEOS", "ALLE CHANNEL-VIDEOS"))):
+            b = CutButton(bar, txt_, lambda v_=v_: self.set_view(v_), width=230)
             b.pack(side="left", padx=(0, px(6)))
             self.view_btns[v_] = b
         Tooltip(self.view_btns["all"], L("Shows every video of the channel, also those that do not match, so you can add single ones.",
@@ -4830,9 +4831,9 @@ class ListDialog(tk.Toplevel):
         self.filter_var = tk.StringVar()
         fe = tk.Entry(bar, textvariable=self.filter_var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
                       font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
-                      highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), width=22)
+                      highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), width=16)
         fe.pack(side="right", ipady=px(5))
-        tk.Label(bar, text=L("FILTER", "FILTER"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="right", padx=(0, px(6)))
+        tk.Label(bar, text=L("SEARCH", "SUCHE"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="right", padx=(0, px(6)))
         Tooltip(fe, L("Searches all videos of the channel for this text (several terms separated by commas: any of them). "
                       "Videos that are not in the list yet are grey, select them and press INCLUDE.",
                       "Durchsucht alle Videos des Kanals nach diesem Text (mehrere Begriffe mit Komma: einer davon genügt). "
@@ -4967,8 +4968,8 @@ class ListDialog(tk.Toplevel):
         self.view = view
         for v_, b in self.view_btns.items():
             b.set_color(GREEN if v_ == view else YELLOW)
-            b.set_text(("● " if v_ == view else "") + {"hits": L("IN THE LIST", "IN DER LISTE"),
-                                                     "all": L("ALL VIDEOS", "ALLE VIDEOS")}[v_])
+            b.set_text(("● " if v_ == view else "") + {"hits": L("FILTER RESULTS", "FILTERERGEBNISSE"),
+                                                     "all": L("ALL CHANNEL VIDEOS", "ALLE CHANNEL-VIDEOS")}[v_])
         self.lb.selection_clear(0, "end")
         self.refresh()
 
@@ -5020,8 +5021,8 @@ class ListDialog(tk.Toplevel):
             notes.append(L(f"{miss} TITLES ARE STILL MISSING AND ARE LOADED ON START. THE PREVIEW IS INCOMPLETE UNTIL THEN.",
                            f"{miss} TITEL FEHLEN NOCH UND WERDEN BEIM START NACHGELADEN. BIS DAHIN IST DIE VORSCHAU UNVOLLSTÄNDIG."))
         if qs and self.view == "hits":
-            notes.append(L("THE FILTER SEARCHES ALL VIDEOS // GREY = NOT IN THE LIST YET, SELECT AND PRESS INCLUDE.",
-                           "DER FILTER DURCHSUCHT ALLE VIDEOS // GRAU = NOCH NICHT IN DER LISTE, MARKIEREN UND AUFNEHMEN."))
+            notes.append(L("THE SEARCH COVERS ALL CHANNEL VIDEOS // GREY = NOT IN THE LIST YET, SELECT AND PRESS INCLUDE.",
+                           "DIE SUCHE DURCHSUCHT ALLE CHANNEL-VIDEOS // GRAU = NOCH NICHT IN DER LISTE, MARKIEREN UND AUFNEHMEN."))
         if capped:
             notes.append(L(f"ONLY THE FIRST {self.SHOW_MAX} ARE SHOWN // USE THE FILTER.", f"ES WERDEN NUR DIE ERSTEN {self.SHOW_MAX} GEZEIGT // NUTZE DEN FILTER."))
         if hits > SHOW_LIMIT_NOTE:
@@ -5074,9 +5075,9 @@ class ListDialog(tk.Toplevel):
         by_id = {v["id"]: v for v in self.pool}
         if not any(st in ("out", "skip") for st, _ in self.picked()):
             self.note.configure(text=L("NOTHING TO INCLUDE: THE SELECTED VIDEOS ARE ALREADY IN THE LIST. "
-                                       "TO ADD OTHERS, FIND THEM WITH THE FILTER OR IN ALL VIDEOS (GREY = NOT IN THE LIST).",
+                                       "TO ADD OTHERS, FIND THEM WITH THE SEARCH OR IN ALL CHANNEL VIDEOS (GREY = NOT IN THE LIST).",
                                        "NICHTS ZUM AUFNEHMEN: DIE MARKIERTEN VIDEOS SIND SCHON IN DER LISTE. ANDERE FINDEST DU "
-                                       "MIT DEM FILTER ODER IN ALLE VIDEOS (GRAU = NICHT IN DER LISTE)."), fg=YELLOW)
+                                       "MIT DER SUCHE ODER IN ALLE CHANNEL-VIDEOS (GRAU = NICHT IN DER LISTE)."), fg=YELLOW)
             return
         for st, vid in self.picked():
             if st not in ("out", "skip"):
