@@ -2454,8 +2454,8 @@ class Worker(threading.Thread):
                 data, mime, tw, th = prepare_thumbnail(path)
             except Exception as e:                      # Pillow fehlt oder Datei nicht lesbar: Original senden
                 if isinstance(e, ImportError):
-                    self.log(L("THUMBNAIL // PILLOW IS MISSING, IMAGE CANNOT BE CROPPED TO 16:9 // INSTALL IT: pip install pillow",
-                               "THUMBNAIL // PILLOW FEHLT, BILD KANN NICHT AUF 16:9 ZUGESCHNITTEN WERDEN // INSTALLIEREN: pip install pillow"), "warn")
+                    self.log(L("THUMBNAIL // PILLOW IS MISSING, IMAGE CANNOT BE CROPPED // INSTALL IT: pip install pillow",
+                               "THUMBNAIL // PILLOW FEHLT, BILD KANN NICHT ZUGESCHNITTEN WERDEN // INSTALLIEREN: pip install pillow"), "warn")
                 else:
                     self.log(L(f"THUMBNAIL // CROPPING FAILED // {str(e)[:100]}", f"THUMBNAIL // ZUSCHNITT FEHLGESCHLAGEN // {str(e)[:100]}"), "warn")
                 data, mime, tw, th = path.read_bytes(), ("image/png" if path.suffix.lower() == ".png" else "image/jpeg"), None, None
