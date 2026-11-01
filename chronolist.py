@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 101
+BUILD = 102
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -4833,7 +4833,10 @@ class ListDialog(tk.Toplevel):
                       highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), width=22)
         fe.pack(side="right", ipady=px(5))
         tk.Label(bar, text=L("FILTER", "FILTER"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="right", padx=(0, px(6)))
-        Tooltip(fe, L("Shows only videos whose title contains this text.", "Zeigt nur Videos, deren Titel diesen Text enthält."))
+        Tooltip(fe, L("Searches all videos of the channel for this text (several terms separated by commas: any of them). "
+                      "Videos that are not in the list yet are grey, select them and press INCLUDE.",
+                      "Durchsucht alle Videos des Kanals nach diesem Text (mehrere Begriffe mit Komma: einer davon genügt). "
+                      "Videos, die noch nicht in der Liste sind, sind grau: markieren und AUFNEHMEN drücken."))
         self.filter_var.trace_add("write", lambda *a: self.schedule())
 
         tools = tk.Frame(body, bg=BG)
@@ -4975,9 +4978,11 @@ class ListDialog(tk.Toplevel):
         sel = {self.shown[i][1] for i in self.lb.curselection() if i < len(self.shown)}
         top = self.lb.yview()[0]
         self.lb.delete(0, "end")
-        self.lb.configure(fg=TEXT if self.view == "hits" else TEXT_MUTED)
         self.shown = []
-        q = norm_text(self.filter_var.get())
+        qs = parse_terms(self.filter_var.get())           # mehrere Begriffe mit Komma = einer davon genügt
+        show_all = self.view == "all" or bool(qs)          # mit Filter wird immer alles durchsucht (auch Nicht-Treffer)
+        self.lb.configure(fg=TEXT_MUTED if show_all else TEXT)
+        self.show_all = show_all
         hits = skipped = 0
         capped = False
         skips = []
@@ -4987,9 +4992,11 @@ class ListDialog(tk.Toplevel):
                 hits += 1
             elif st == "skip":
                 skipped += 1
-            if q and q not in norm_text(self.titles.get(v["id"], "")) and q != v["id"].lower():
-                continue
-            if self.view == "hits":
+            if qs:
+                t_ = norm_text(self.titles.get(v["id"], ""))
+                if not any(q in t_ or q == v["id"].lower() for q in qs):
+                    continue
+            if not show_all:
                 if st == "skip":
                     skips.append((st, v))
                     continue
@@ -5012,6 +5019,9 @@ class ListDialog(tk.Toplevel):
         elif miss:
             notes.append(L(f"{miss} TITLES ARE STILL MISSING AND ARE LOADED ON START. THE PREVIEW IS INCOMPLETE UNTIL THEN.",
                            f"{miss} TITEL FEHLEN NOCH UND WERDEN BEIM START NACHGELADEN. BIS DAHIN IST DIE VORSCHAU UNVOLLSTÄNDIG."))
+        if qs and self.view == "hits":
+            notes.append(L("THE FILTER SEARCHES ALL VIDEOS // GREY = NOT IN THE LIST YET, SELECT AND PRESS INCLUDE.",
+                           "DER FILTER DURCHSUCHT ALLE VIDEOS // GRAU = NOCH NICHT IN DER LISTE, MARKIEREN UND AUFNEHMEN."))
         if capped:
             notes.append(L(f"ONLY THE FIRST {self.SHOW_MAX} ARE SHOWN // USE THE FILTER.", f"ES WERDEN NUR DIE ERSTEN {self.SHOW_MAX} GEZEIGT // NUTZE DEN FILTER."))
         if hits > SHOW_LIMIT_NOTE:
@@ -5027,7 +5037,7 @@ class ListDialog(tk.Toplevel):
     def add_line(self, st, v):
         mark = {"hit": "  ", "add": "+ ", "skip": "✕ ", "out": "  "}[st]
         self.lb.insert("end", mark + self.line(v))
-        col = {"add": CYAN, "skip": RED, "hit": TEXT if self.view == "all" else None}.get(st)
+        col = {"add": CYAN, "skip": RED, "hit": TEXT if self.show_all else None}.get(st)
         if col:
             self.lb.itemconfig("end", fg=col)
         self.shown.append((st, v["id"]))
