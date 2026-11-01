@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 96
+BUILD = 97
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2397,7 +2397,7 @@ class Worker(threading.Thread):
         """Wartende Thumbnails hochladen, sobald die Playlist existiert. Nur über die API (50 Einheiten pro Bild)."""
         info = load(thumbs_file(), {})
         todo = [(int(y) if str(y).isdigit() else y, t) for y, t in info.items()
-                if t.get("status") == "queued"
+                if t.get("status") in ("queued", "error")        # Fehlgeschlagene bei jedem Lauf noch einmal versuchen
                 and (only_year is None or (int(y) if str(y).isdigit() else y) == only_year)]
         for y, t in sorted(todo, key=lambda x: str(x[0])):
             pids = part_ids(load(state_file(y), {}))
@@ -2408,6 +2408,7 @@ class Worker(threading.Thread):
                 self.log(L(f"THUMBNAIL {year_label(y)} WAITING // NEEDS API QUOTA", f"THUMBNAIL {year_label(y)} WARTET // BRAUCHT API-KONTINGENT"), "warn")
                 return
             mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+            self.log(L(f"THUMBNAIL {year_label(y)} // UPLOADING ...", f"THUMBNAIL {year_label(y)} // WIRD HOCHGELADEN ..."))
             try:
                 for pid in pids:
                     existing = self.call("GET", "playlistImages", {"part": "id,snippet", "playlistId": pid}).get("items", [])
@@ -2581,6 +2582,7 @@ class Worker(threading.Thread):
     def repair(self, year, videos, state):
         """Fehlende Videos in eine schon (teilweise) gefüllte Playlist nachtragen und an die
         richtige Stelle schieben, Teil für Teil. Danach geht es mit dem normalen Füllen weiter."""
+        self.act(L("REPAIR // OPENING BROWSER ...", "NACHTRAG // ÖFFNE BROWSER ..."), year)
         self.ensure_browser()
         order_all = [v["id"] for v in videos]
         pids = part_ids(state)
@@ -3143,6 +3145,8 @@ class YearRow(Panel):
             return (L("SCANNING...", "SUCHE LÄUFT...") if run else L("SCAN PAUSED", "SUCHE PAUSIERT")
                     if code == "scanning" else L("NOT SCANNED", "NICHT GESUCHT")), run
         if code == "done":
+            if run:
+                return L("SYNCING...", "WIRD ABGEGLICHEN..."), False     # läuft noch (z. B. Nachtrag), nicht schon "fertig"
             return L("COMPLETE", "FERTIG"), False
         if run:
             return L("UPLINK ACTIVE", "WIRD GEFÜLLT"), False
