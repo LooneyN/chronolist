@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-11-01
+
 ### Added
 - TEXT SIZE in the PROGRAM settings (90, 95, 100, 105 or 110 %). The default 100 % is larger than before, so text is easier to read on large screens; dialogs never grow larger than the screen. The list editor now uses two columns so it stays compact.
 
@@ -135,7 +137,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/LooneyN/chronolist/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/LooneyN/chronolist/compare/v2.11.0...v3.0.0
 [2.11.0]: https://github.com/LooneyN/chronolist/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/LooneyN/chronolist/compare/v2.9.0...v2.10.0
