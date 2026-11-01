@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 116
+BUILD = 117
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -5606,7 +5606,8 @@ class App(tk.Tk):
 
     def is_hidden_row(self, y):
         r = self.rows[y]
-        return bool(self.settings.get("hide_done")) and r.info.get("code") == "done" and not r.running
+        # nur fertige UND abgewählte Karten; angehakte (z. B. laufendes Jahr, Listen) bleiben sichtbar, weil sie weiter abgeglichen werden
+        return bool(self.settings.get("hide_done")) and r.info.get("code") == "done" and not r.running and not r.selected
 
     def repack(self):
         """Karten in der gespeicherten Reihenfolge anordnen; fertige ausblenden, wenn gewünscht."""

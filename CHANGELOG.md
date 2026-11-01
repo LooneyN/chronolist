@@ -8,7 +8,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Added
 - Custom lists can have their own DESCRIPTION (optional). Empty = the description template from the PLAYLISTS settings.
 - New list editor offers a TEMPLATE selection when lists already exist (name and filter are copied, not single videos).
-- HIDE DONE / SHOW DONE in the TARGETS bar collapses all completed cards.
+- HIDE DONE / SHOW DONE in the TARGETS bar collapses completed cards that are not ticked. Ticked ones (current year, lists) stay visible because they are synced on every start.
 - Links in the log copy to the clipboard on click (with a short "link copied" hint).
 - Video titles are now stored while scanning (API and channel page, no extra quota). This is the basis for keyword lists.
 - Keyword lists: CUSTOM LIST under the years opens an editor with live preview (hit count and titles). Optionally limit a list to a range of years. Exclude single videos or add videos by link/ID. Lists are cards like years (right-click edits) and run after the years.
