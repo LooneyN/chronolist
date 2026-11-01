@@ -98,7 +98,7 @@ When the daily quota is used up, the optional **FALLBACK** continues in a separa
 Under **PROGRAM** in the app you can set:
 
 - The **language**: English or German (interface, tooltips, help and log)
-- The **text size** of the whole interface: 100, 125, 150 or 175 %
+- The **text size** of the whole interface: 100, 105, 110, 115, 120, 125 or 150 % (default 110 %)
 - The **update check** on launch
 
 Under **PLAYLISTS** you can set:

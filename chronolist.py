@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 121
+BUILD = 122
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2794,8 +2794,8 @@ TEXT, TEXT_DIM, TEXT_MUTED = "#FFFFFF", "#B4ECF2", "#94B8C2"
 FLUFF = None  # wird nach mix() gesetzt
 
 S = 1.0                 # Skalierung = Windows-DPI * eingestellte Textgröße
-UI_SCALES = (100, 125, 150, 175)
-UI_SCALE_DEFAULT = 125
+UI_SCALES = (100, 105, 110, 115, 120, 125, 150)
+UI_SCALE_DEFAULT = 110
 FONT_UI = "Segoe UI"
 FONT_MONO = "Consolas"
 
@@ -3784,7 +3784,7 @@ class AppSettingsDialog(tk.Toplevel):
         tk.Label(body, text=L("INTERFACE, TOOLTIPS, HELP AND LOG. CHRONOLIST RESTARTS WHEN THE LANGUAGE CHANGES.",
                               "OBERFLÄCHE, TOOLTIPS, HILFE UND PROTOKOLL. CHRONOLIST STARTET BEIM SPRACHWECHSEL NEU."),
                  bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w", justify="left",
-                 wraplength=px(460)).pack(fill="x", pady=(px(2), px(14)))
+                 wraplength=px(520)).pack(fill="x", pady=(px(2), px(14)))
         self.set_language(LANG)
 
         Section(body, L("TEXT SIZE", "TEXTGRÖSSE"), "UI // SCALE").pack(fill="x", pady=(0, px(6)))
@@ -3795,13 +3795,13 @@ class AppSettingsDialog(tk.Toplevel):
             self.ui_scale = UI_SCALE_DEFAULT
         self.size_btns = {}
         for v in UI_SCALES:
-            b = CutButton(size_row, f"{v} %", lambda v=v: self.set_ui_scale(v), width=96)
-            b.pack(side="left", padx=(0, px(6)))
+            b = CutButton(size_row, f"{v} %", lambda v=v: self.set_ui_scale(v), width=60, size=11, pad=18)
+            b.pack(side="left", padx=(0, px(4)))
             self.size_btns[v] = b
         tk.Label(body, text=L("SIZE OF ALL TEXT AND CONTROLS. CHRONOLIST RESTARTS WHEN THE SIZE CHANGES.",
                               "GRÖSSE VON TEXT UND BEDIENELEMENTEN. CHRONOLIST STARTET BEI EINER ÄNDERUNG NEU."),
                  bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w", justify="left",
-                 wraplength=px(460)).pack(fill="x", pady=(px(2), px(14)))
+                 wraplength=px(520)).pack(fill="x", pady=(px(2), px(14)))
         self.set_ui_scale(self.ui_scale)
 
         Section(body, L("START", "START"), "SYSTEM // BOOT").pack(fill="x", pady=(0, px(6)))
@@ -3838,7 +3838,7 @@ class AppSettingsDialog(tk.Toplevel):
         CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<Return>", lambda e: self.save())
-        self.geometry(fit(px(500), px(640)))
+        self.geometry(fit(px(560), px(640)))
         style_window(self)
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -4711,8 +4711,8 @@ class ListDialog(tk.Toplevel):
         self.add, self.skip = set(lst.get("add") or []), set(lst.get("skip") or [])
         self.title(L("Custom list", "Eigene Liste"))
         self.transient(parent or app)
-        self.minsize(*fit_min(px(700), px(640)))
-        self.geometry(fit(px(780), px(1060)))
+        self.minsize(*fit_min(px(1000), px(600)))
+        self.geometry(fit(px(1140), px(700)))
         self.pool = all_year_videos()
         self.titles = load(titles_file(), {})
         self.shown = []          # (typ, id) je Zeile: "hit" | "add" | "skip"
@@ -4730,16 +4730,21 @@ class ListDialog(tk.Toplevel):
             self.del_btn.pack(side="right")
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
-        Section(body, L("LIST SETTINGS", "LISTEN-EINSTELLUNGEN"), "NAME").pack(fill="x", pady=(0, px(10)))
+        left = tk.Frame(body, bg=BG, width=px(430))          # links: Einstellungen und Filter, rechts: Vorschau der Videos
+        left.pack(side="left", fill="y", padx=(0, px(18)))
+        left.pack_propagate(False)
+        right = tk.Frame(body, bg=BG)
+        right.pack(side="left", fill="both", expand=True)
+        Section(left, L("LIST SETTINGS", "LISTEN-EINSTELLUNGEN"), "NAME").pack(fill="x", pady=(0, px(10)))
 
         templates = load_lists() if not self.lst_id else []
         if templates:
-            tk.Label(body, text=L("TEMPLATE  (OPTIONAL, COPIES NAME AND FILTER)", "VORLAGE  (OPTIONAL, ÜBERNIMMT NAME UND FILTER)"),
+            tk.Label(left, text=L("TEMPLATE  (OPTIONAL, COPIES NAME AND FILTER)", "VORLAGE  (OPTIONAL, ÜBERNIMMT NAME UND FILTER)"),
                      bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w").pack(fill="x")
-            self.tpl_lb = tk.Listbox(body, bg=BG2, fg=TEXT, selectbackground=mix(CYAN, BG, 0.3), selectforeground=TEXT,
+            self.tpl_lb = tk.Listbox(left, bg=BG2, fg=TEXT, selectbackground=mix(CYAN, BG, 0.3), selectforeground=TEXT,
                                      font=F("mono", 11, False), relief="flat", highlightthickness=1,
                                      highlightbackground=mix(CYAN, BG, 0.3), activestyle="none", exportselection=False,
-                                     height=min(len(templates) + 1, 4))
+                                     height=min(len(templates) + 1, 3))
             self.tpl_lb.insert("end", L("— NONE (EMPTY LIST) —", "— KEINE (LEERE LISTE) —"))
             for t_ in templates:
                 self.tpl_lb.insert("end", t_.get("name") or "?")
@@ -4747,30 +4752,30 @@ class ListDialog(tk.Toplevel):
             self.tpl_lb.pack(fill="x", pady=(px(3), px(8)))
             self.tpl_lb.bind("<<ListboxSelect>>", lambda e, t=templates: self.pick_template(t))
         self.name_var = tk.StringVar(value=lst.get("name", ""))
-        self.field(body, L("NAME (USED AS THE PLAYLIST TITLE)", "NAME (WIRD ZUM PLAYLIST-TITEL)"), self.name_var)
-        self.lbl_desc = tk.Label(body, text=L("DESCRIPTION  (OPTIONAL, EMPTY = DESCRIPTION FROM THE PLAYLISTS SETTINGS)",
-                                              "BESCHREIBUNG  (OPTIONAL, LEER = BESCHREIBUNG AUS DEN PLAYLIST-EINSTELLUNGEN)"),
+        self.field(left, L("NAME (USED AS THE PLAYLIST TITLE)", "NAME (WIRD ZUM PLAYLIST-TITEL)"), self.name_var)
+        self.lbl_desc = tk.Label(left, text=L("DESCRIPTION  (OPTIONAL, EMPTY = PLAYLISTS SETTINGS)",
+                                              "BESCHREIBUNG  (OPTIONAL, LEER = PLAYLIST-EINSTELLUNGEN)"),
                                  bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w")
         self.lbl_desc.pack(fill="x")
-        self.desc_box = tk.Text(body, height=3, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat", wrap="word",
+        self.desc_box = tk.Text(left, height=2, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat", wrap="word",
                                 font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
                                 highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), padx=px(6), pady=px(4))
         self.desc_box.insert("1.0", lst.get("desc", ""))
         self.desc_box.pack(fill="x", pady=(px(3), px(12)))
 
-        Section(body, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
-        tk.Label(body, text=L("A VIDEO IS INCLUDED IF ITS TITLE CONTAINS ...", "EIN VIDEO KOMMT IN DIE LISTE, WENN SEIN TITEL ... ENTHÄLT"),
+        Section(left, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
+        tk.Label(left, text=L("A VIDEO IS INCLUDED IF ITS TITLE CONTAINS ...", "EIN VIDEO KOMMT IN DIE LISTE, WENN SEIN TITEL ... ENTHÄLT"),
                  bg=BG, fg=CYAN, font=F("mono", 11), anchor="w").pack(fill="x", pady=(0, px(6)))
         self.any_var = tk.StringVar(value=", ".join(lst.get("any") or []))
-        self.rule_field(body, L("ANY OF", "EINES VON"), L("at least one, comma = or, e.g. minecraft, zelda",
+        self.rule_field(left, L("ANY OF", "EINES VON"), L("at least one, comma = or, e.g. minecraft, zelda",
                                                           "mindestens eines, Komma = oder, z. B. minecraft, zelda"), self.any_var)
         self.all_var = tk.StringVar(value=", ".join(lst.get("all") or []))
-        self.rule_field(body, L("ALL OF", "ALLE VON"), L("(optional) every one of them, e.g. season 1",
+        self.rule_field(left, L("ALL OF", "ALLE VON"), L("(optional) every one of them, e.g. season 1",
                                                          "(optional) jedes davon, z. B. season 1"), self.all_var)
         self.none_var = tk.StringVar(value=", ".join(lst.get("none") or []))
-        self.rule_field(body, L("NONE OF", "KEINES VON"), L("(optional) not a single one, e.g. live",
+        self.rule_field(left, L("NONE OF", "KEINES VON"), L("(optional) not a single one, e.g. live",
                                                             "(optional) kein einziges davon, z. B. live"), self.none_var)
-        yr = tk.Frame(body, bg=BG)
+        yr = tk.Frame(left, bg=BG)
         yr.pack(fill="x", pady=(0, px(8)))
         tk.Label(yr, text=L("YEARS  (OPTIONAL)", "JAHRE  (OPTIONAL)"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11),
                  anchor="w").pack(side="left")
@@ -4782,25 +4787,26 @@ class ListDialog(tk.Toplevel):
                          font=F("mono", 13, False), highlightthickness=1, highlightcolor=CYAN,
                          highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3))
             e.pack(side="left", ipady=px(4))
-        tk.Label(body, text=L("UPPER/LOWER CASE IS IGNORED. A TERM MATCHES ANYWHERE IN THE TITLE.",
+        tk.Label(left, text=L("UPPER/LOWER CASE IS IGNORED. A TERM MATCHES ANYWHERE IN THE TITLE.",
                               "GROSS-/KLEINSCHREIBUNG ZÄHLT NICHT. EIN BEGRIFF PASST ÜBERALL IM TITEL."),
-                 bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w").pack(fill="x", pady=(0, px(8)))
+                 bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w", justify="left", wraplength=px(420)).pack(fill="x", pady=(0, px(8)))
 
-        self.rule_sum = tk.Label(body, text="", bg=BG, fg=TEXT_DIM, font=F("mono", 11, False), anchor="w", justify="left",
-                                 wraplength=px(700))
+        self.rule_sum = tk.Label(left, text="", bg=BG, fg=TEXT_DIM, font=F("mono", 11, False), anchor="w", justify="left",
+                                 wraplength=px(420))
         self.rule_sum.pack(fill="x", pady=(0, px(6)))
-        self.count = tk.Label(body, text="", bg=BG, fg=CYAN, font=F("mono", 12), anchor="w")
+        Section(right, L("VIDEOS", "VIDEOS"), "PREVIEW").pack(fill="x", pady=(0, px(10)))
+        self.count = tk.Label(right, text="", bg=BG, fg=CYAN, font=F("mono", 12), anchor="w")
         self.count.pack(fill="x")
-        self.note = tk.Label(body, text="", bg=BG, fg=YELLOW, font=F("mono", 10, False), anchor="w", justify="left",
+        self.note = tk.Label(right, text="", bg=BG, fg=YELLOW, font=F("mono", 10, False), anchor="w", justify="left",
                              wraplength=px(700))
         self.note.pack(fill="x", pady=(0, px(4)))
 
         self.view = "hits"
-        bar = tk.Frame(body, bg=BG)
+        bar = tk.Frame(right, bg=BG)
         bar.pack(fill="x", pady=(0, px(6)))
         self.view_btns = {}
         for v_, txt_ in (("hits", L("FILTER RESULTS", "FILTERERGEBNISSE")), ("all", L("ALL CHANNEL VIDEOS", "ALLE CHANNEL-VIDEOS"))):
-            b = CutButton(bar, txt_, lambda v_=v_: self.set_view(v_), width=230)
+            b = CutButton(bar, txt_, lambda v_=v_: self.set_view(v_), width=190)
             b.pack(side="left", padx=(0, px(6)))
             self.view_btns[v_] = b
         Tooltip(self.view_btns["all"], L("Shows every video of the channel, also those that do not match, so you can add single ones.",
@@ -4817,23 +4823,23 @@ class ListDialog(tk.Toplevel):
                       "Videos, die noch nicht in der Liste sind, sind grau: markieren und AUFNEHMEN drücken."))
         self.filter_var.trace_add("write", lambda *a: self.schedule())
 
-        tools = tk.Frame(body, bg=BG)
+        tools = tk.Frame(right, bg=BG)
         tools.pack(side="bottom", fill="x", pady=(px(6), 0))
-        self.excl_btn = CutButton(tools, L("EXCLUDE SELECTED", "AUSSCHLIESSEN"), self.exclude_selected, width=190)
+        self.excl_btn = CutButton(tools, L("EXCLUDE SELECTED", "AUSSCHLIESSEN"), self.exclude_selected, width=150)
         self.excl_btn.pack(side="left")
-        self.incl_btn = CutButton(tools, L("INCLUDE SELECTED", "AUFNEHMEN"), self.include_selected, width=190)
+        self.incl_btn = CutButton(tools, L("INCLUDE SELECTED", "AUFNEHMEN"), self.include_selected, width=150)
         self.incl_btn.pack(side="left", padx=(px(6), 0))
         self.add_var = tk.StringVar()
         ae = tk.Entry(tools, textvariable=self.add_var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
                       font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
-                      highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), width=22)
-        CutButton(tools, L("ADD VIDEO", "VIDEO HINZU"), self.add_video, width=140).pack(side="right")
+                      highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), width=14)
+        CutButton(tools, L("ADD VIDEO", "VIDEO HINZU"), self.add_video, width=120).pack(side="right")
         ae.pack(side="right", padx=(0, px(6)), ipady=px(5))
         Tooltip(ae, L("Paste a YouTube link or video ID of a video of this channel to always include it.",
                       "YouTube-Link oder Video-ID eines Videos dieses Kanals einfügen, um es immer aufzunehmen."))
         ae.bind("<Return>", lambda e: (self.add_video(), "break")[1])
 
-        wrap = tk.Frame(body, bg=BG)
+        wrap = tk.Frame(right, bg=BG)
         wrap.pack(fill="both", expand=True)
         sb = tk.Scrollbar(wrap, orient="vertical")
         self.lb = tk.Listbox(wrap, bg=BG2, fg=TEXT, selectbackground=mix(CYAN, BG, 0.3), selectforeground=TEXT,
@@ -5176,9 +5182,9 @@ class LoginPanel(Panel):
 class CutButton(tk.Canvas):
     """Eckiger Button mit einer abgeschnittenen Ecke unten rechts (wie die Panels)."""
 
-    def __init__(self, master, text, command, width=0, height=36, size=12):
+    def __init__(self, master, text, command, width=0, height=36, size=12, pad=36):
         f = tkfont.Font(family=FONT_MONO, size=-px(size), weight="bold")
-        w = max(px(width), f.measure(text) + px(36))
+        w = max(px(width), f.measure("● " + text) + px(pad) if pad < 36 else f.measure(text) + px(pad))
         super().__init__(master, width=w, height=px(height), bg=BG, highlightthickness=0, bd=0, cursor="hand2")
         self.text, self.command, self.size = text, command, size
         self.enabled, self.hover = True, False
