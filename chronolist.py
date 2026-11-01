@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 128
+BUILD = 129
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1061,6 +1061,10 @@ class BrowserFailed(Exception):
     pass
 
 
+class NoVideosFound(BrowserFailed):
+    """Die Kanalseite zeigt für dieses Jahr keine Videos (Jahr ist schlicht leer)."""
+
+
 class BrowserUplink:
     def __init__(self, worker):
         self.w = worker
@@ -1499,7 +1503,10 @@ class Worker(threading.Thread):
                         if load(videos_file(y), None) is None:
                             self.check()
                             self.emit("current", y)
-                            self.collect(y)
+                            try:
+                                self.collect(y)
+                            except NoVideosFound:
+                                self.empty_year(y)
                 self.fetch_missing_titles()
                 this_year = datetime.date.today().year
                 if any(load(videos_file(y), None) is None for y in YEARS if y < this_year):
@@ -1529,6 +1536,9 @@ class Worker(threading.Thread):
                 self.log(L(f"// TARGET {y}", f"// JAHR {y}"), "sep")
                 try:
                     videos = self.collect(y)
+                except NoVideosFound:
+                    self.empty_year(y)
+                    continue
                 except QuotaExceeded as e:
                     nxt = self.next_ready_year(y, queue_) if self.skip_ahead else None
                     if nxt is None or retry:
@@ -1718,6 +1728,14 @@ class Worker(threading.Thread):
         self.log(L(f"CHANNEL LOCKED // {info['title']} // SINCE {info['first_year']}", f"KANAL ERFASST // {info['title']} // SEIT {info['first_year']}"), "ok")
         return info
 
+    def empty_year(self, y):
+        """Jahr ohne Videos: als leer merken, abwählen und weitermachen."""
+        save(videos_file(y), [])
+        self.scanning = None
+        self.log(L(f"{year_label(y)} // NO VIDEOS // SKIPPED AND DESELECTED", f"{year_label(y)} // KEINE VIDEOS // ÜBERSPRUNGEN UND ABGEWÄHLT"), "warn")
+        self.emit("select", None, y)
+        self.emit("progress", y)
+
     # --- Videos eines Jahres sammeln
     def scan_archive(self):
         """Einmaliger Scan ALLER Jahre in einem Durchgang über die Upload-Liste des Kanals.
@@ -1870,7 +1888,7 @@ class Worker(threading.Thread):
         self.act(L("CHANNEL PAGE // OPENING ...", "KANALSEITE // WIRD GEÖFFNET ..."), year)
         web = self.web_index(year)
         if not web:
-            raise BrowserFailed(L(f"{year_label(year)} // NO VIDEOS FOUND ON THE CHANNEL PAGE", f"{year_label(year)} // KEINE VIDEOS AUF DER KANALSEITE GEFUNDEN"))
+            raise NoVideosFound(L(f"{year_label(year)} // NO VIDEOS FOUND ON THE CHANNEL PAGE", f"{year_label(year)} // KEINE VIDEOS AUF DER KANALSEITE GEFUNDEN"))
         merged = merge_keep(web, old or [])   # Kanalseite ergänzt nur; sie zeigt nicht alle Videos, also nie etwas entfernen
         videos = [{"id": v, "published": None} for v in merged]
         save(videos_file(year), videos)
