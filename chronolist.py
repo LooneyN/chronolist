@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 93
+BUILD = 94
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -3688,7 +3688,7 @@ class SettingsDialog(tk.Toplevel):
         t, d = self.title_var.get(), self.desc.get("1.0", "end").strip()
         ok_t, ok_d = _template_ok(t), _template_ok(d) if d else True
         y = self.sample_year
-        lines = [f"{L('PREVIEW', 'VORSCHAU')} {y}: " + (fill_template(t, y) if ok_t else L("INVALID PLACEHOLDER IN TITLE", "UNGÜLTIGER PLATZHALTER IM TITEL"))]
+        lines = [f"{L('PREVIEW', 'VORSCHAU')} {year_label(y)}: " + (fill_template(t, y) if ok_t else L("INVALID PLACEHOLDER IN TITLE", "UNGÜLTIGER PLATZHALTER IM TITEL"))]
         if d:
             short = fill_template(d, y) if ok_d else L("INVALID PLACEHOLDER IN DESCRIPTION", "UNGÜLTIGER PLATZHALTER IN DER BESCHREIBUNG")
             lines.append(L("DESCRIPTION: ", "BESCHREIBUNG: ") + (short if len(short) < 140 else short[:137] + "..."))
@@ -3712,14 +3712,15 @@ class SettingsDialog(tk.Toplevel):
         name = year_label(y)
         tk.Label(fr, text=name if len(name) <= 18 else name[:17] + "…", bg=BG, fg=TEXT, font=F("ui", 14),
                  width=18 if editable else 6, anchor="w").pack(side="left")
-        info = tk.Label(fr, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w")
-        info.pack(side="left", fill="x", expand=True)
+        # Knöpfe zuerst packen, damit bei langem Text die Statuszeile gekürzt wird und nicht die Knöpfe
         rm = CutButton(fr, L("REMOVE", "ENTFERNEN"), lambda: self.remove_thumb(y), width=110)
         rm.pack(side="right")
         CutButton(fr, L("CHOOSE…", "AUSWÄHLEN…"), lambda: self.choose_thumb(y), width=120).pack(side="right", padx=(0, px(6)))
         if editable:
             CutButton(fr, L("EDIT LIST", "LISTE ÄNDERN"), lambda: ListDialog(self.app, y, parent=self),
                       width=140).pack(side="right", padx=(0, px(6)))
+        info = tk.Label(fr, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w")
+        info.pack(side="left", fill="x", expand=True)
         self.thumb_area.wheel(fr)
         self.thumb_rows[y] = (info, rm)
         self.refresh_thumb_row(y)
@@ -3731,6 +3732,8 @@ class SettingsDialog(tk.Toplevel):
         shown = {"NEW": L("NEW", "NEU"), "REMOVE": L("REMOVE", "WIRD ENTFERNT"), "NONE": L("NONE", "KEINS"),
                  "QUEUED": L("QUEUED", "WARTET"), "UPLOADED": L("UPLOADED", "HOCHGELADEN"),
                  "ERROR": L("ERROR", "FEHLER")}.get(status, status)
+        if len(name) > 26:
+            name = name[:12] + "…" + name[-12:]
         txt = f"{shown}" + (f" // {name}" if name else "")
         t = self.thumbs.get(str(y)) or {}
         if status == "ERROR" and t.get("error"):
