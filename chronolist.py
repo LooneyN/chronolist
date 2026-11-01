@@ -93,7 +93,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 112
+BUILD = 113
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -399,9 +399,9 @@ def year_label(y):
 
 
 def prepare_thumbnail(path):
-    """Bild für die API vorbereiten: YouTube nimmt nur exakt 16:9 oder 1:1 (das Studio schneidet selbst zu).
-    Mittig zuschneiden aufs nähere Format, auf höchstens 1920 Pixel Breite verkleinern, als JPEG unter 2 MB.
-    Rückgabe: (Bytes, MIME-Typ, Breite, Höhe)."""
+    """Bild für die API vorbereiten: Playlist-Bilder müssen laut Praxis quadratisch (1:1) sein, 16:9 wird mit
+    INVALID_ASPECT_RATIO abgelehnt (das Studio schneidet selbst zu). Mittig quadratisch zuschneiden, auf höchstens
+    1200 Pixel verkleinern, als JPEG unter 2 MB. Rückgabe: (Bytes, MIME-Typ, Breite, Höhe)."""
     from PIL import Image
     im = Image.open(path)
     im.load()
@@ -410,15 +410,10 @@ def prepare_thumbnail(path):
         bg.paste(im.convert("RGBA"), mask=im.convert("RGBA").split()[3])
         im = bg
     w, h = im.size
-    if w / h >= (16 / 9 + 1) / 2:                      # näher an 16:9 als an 1:1
-        tw = min(w, 1920, (h * 16 // 9))
-        tw -= tw % 16
-        th = tw * 9 // 16
-    else:
-        tw = th = min(w, h, 1080)
-    sw, sh = (w, w * th / tw) if w * th <= h * tw else (h * tw / th, h)   # größter Ausschnitt im Zielformat
-    x0, y0 = (w - sw) / 2, (h - sh) / 2
-    im = im.resize((tw, th), Image.LANCZOS, box=(x0, y0, x0 + sw, y0 + sh))
+    side = min(w, h)
+    x0, y0 = (w - side) // 2, (h - side) // 2
+    tw = th = min(side, 1200)
+    im = im.resize((tw, th), Image.LANCZOS, box=(x0, y0, x0 + side, y0 + side))
     for q in (92, 85, 75, 65):
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=q, optimize=True)
@@ -2471,11 +2466,9 @@ class Worker(threading.Thread):
                     existing = self.call("GET", "playlistImages", {"part": "snippet", "parent": pid}).get("items", [])
                     meta = {"kind": "youtube#playlistImage", "snippet": {"playlistId": pid, "type": "hero"}}
                     if existing:
-                        # Ersetzen: nur die ID (im Query und in den Metadaten), kein part, kein snippet
-                        eid = existing[0]["id"]
-                        self.upload_call("PUT", {"id": eid}, {"id": eid}, data, mime)
-                    else:
-                        self.upload_call("POST", {"part": "snippet"}, meta, data, mime)
+                        # Ersetzen: update ist bei YouTube unzuverlässig, daher altes Bild löschen und neu einfügen
+                        self.call("DELETE", "playlistImages", {"id": existing[0]["id"]})
+                    self.upload_call("POST", {"part": "snippet"}, meta, data, mime)
                 t.update(status="done", error="", parts=len(pids))
                 self.log(L(f"THUMBNAIL {year_label(y)} UPLOADED", f"THUMBNAIL {year_label(y)} HOCHGELADEN"), "ok")
             except QuotaExceeded:
