@@ -8,12 +8,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [3.0.0] - 2026-11-01
 
 ### Highlights
-- **Custom lists**: collect videos by title keywords into your own playlists (a series, a season, a topic), always in upload order and kept up to date on every run.
-- **Suggestions**: Chronolist finds series in your video titles and prepares a list for each one.
-- **A real editor for lists**: live preview, search, multi-select, exclude / include single videos, year range, own name and description, and templates from existing lists.
-- **New dashboard**: years and lists side by side as TARGETS, large control tiles, HIDE DONE to keep the view short, and links in the log that copy on click.
-- **Titles are stored** while scanning, at no extra quota, which is what makes all of the above possible.
-- **Thumbnail upload removed**: YouTube's API only accepts square playlist images, so set thumbnails in YouTube Studio.
+- Custom lists: collect videos by title keywords into your own playlists (a series, a season, a topic), always in upload order and kept up to date on every run.
+- Suggestions: Chronolist finds series in your video titles and prepares a list for each one.
+- A real editor for lists: live preview, search, multi-select, exclude / include single videos, year range, own name and description, and templates from existing lists.
+- New dashboard: years and lists side by side as TARGETS, large control tiles, HIDE DONE to keep the view short, and links in the log that copy on click.
+- Titles are stored while scanning, at no extra quota, which is what makes all of the above possible.
+- Thumbnail upload removed: YouTube's API only accepts square playlist images, so set thumbnails in YouTube Studio.
 
 ### Added
 - SUGGESTIONS button: finds series in the stored titles (same beginning, then an episode number such as "#12", "Folge 3", "Teil 7") and opens the list editor with name and keyword filled in. Series that an existing list already covers are left out. A search box narrows the suggestions by keyword.

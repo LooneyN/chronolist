@@ -15,7 +15,7 @@
 - Day-to-day work happens on `dev`. Commit every change there; this creates no release and no update notice for users.
 - On `dev`, `VERSION` in `chronolist.py` carries a `-dev` suffix (e.g. `2.8.0-dev`); only `BUILD` is incremented per change.
 - Collect user-facing changes under `## [Unreleased]` in `CHANGELOG.md`.
-- Major releases (X.0.0) get a short `### Highlights` section at the top of their changelog entry: 4-6 punchy bullets in plain language, then the detailed lists. The in-app update note and the GitHub release text are taken from this entry, so keep the bullets short (no emoji).
+- Major releases (X.0.0) get a short `### Highlights` section at the top of their changelog entry: 4-6 punchy bullets in plain language, then the detailed lists. The in-app update note and the GitHub release text are taken from this entry, so keep the bullets short (no emoji, no bold, since the in-app note shows the text as is).
 - `main` only receives finished releases.
 
 ## Releasing (only when the maintainer asks for it)
