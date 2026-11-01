@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 95
+BUILD = 96
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1809,12 +1809,12 @@ class Worker(threading.Thread):
         """Videoliste eines Jahres über die Kanalseite. Videos aus einer alten Liste (Suche), die dort
         fehlen, bleiben an ihrer bisherigen Stelle erhalten."""
         self.scanning = year
-        self.log(L(f"{year} // READING THE CHANNEL PAGE (NO API QUOTA NEEDED) ...",
-                   f"{year} // LESE DIE KANALSEITE (OHNE API-KONTINGENT) ..."))
+        self.log(L(f"{year_label(year)} // READING THE CHANNEL PAGE (NO API QUOTA NEEDED) ...",
+                   f"{year_label(year)} // LESE DIE KANALSEITE (OHNE API-KONTINGENT) ..."))
         self.act(L("CHANNEL PAGE // OPENING ...", "KANALSEITE // WIRD GEÖFFNET ..."), year)
         web = self.web_index(year)
         if not web:
-            raise BrowserFailed(L(f"{year} // NO VIDEOS FOUND ON THE CHANNEL PAGE", f"{year} // KEINE VIDEOS AUF DER KANALSEITE GEFUNDEN"))
+            raise BrowserFailed(L(f"{year_label(year)} // NO VIDEOS FOUND ON THE CHANNEL PAGE", f"{year_label(year)} // KEINE VIDEOS AUF DER KANALSEITE GEFUNDEN"))
         merged = merge_keep(web, old or [])   # Kanalseite ergänzt nur; sie zeigt nicht alle Videos, also nie etwas entfernen
         videos = [{"id": v, "published": None} for v in merged]
         save(videos_file(year), videos)
@@ -1827,11 +1827,11 @@ class Worker(threading.Thread):
             old_ids = {v["id"] for v in old}
             plus = len(set(merged) - old_ids)
             minus = len(old_ids - set(merged))
-            self.log(L(f"{year} // {len(merged)} VIDEOS // {plus} NEW",
-                       f"{year} // {len(merged)} VIDEOS // {plus} NEU"),
+            self.log(L(f"{year_label(year)} // {len(merged)} VIDEOS // {plus} NEW",
+                       f"{year_label(year)} // {len(merged)} VIDEOS // {plus} NEU"),
                      "ok" if plus or minus else "info")
         else:
-            self.log(L(f"{len(videos)} VIDEOS FROM {year} FOUND", f"{len(videos)} VIDEOS AUS {year} GEFUNDEN"), "ok")
+            self.log(L(f"{len(videos)} VIDEOS FROM {year_label(year)} FOUND", f"{len(videos)} VIDEOS AUS {year_label(year)} GEFUNDEN"), "ok")
         self.emit("progress", year)
         self.act(None, year)
         return videos
@@ -1922,8 +1922,8 @@ class Worker(threading.Thread):
         if extra:
             videos = insert_by_date(videos, extra, dates)
             save(videos_file(year), videos)
-            self.log(L(f"{year} // {len(extra)} VIDEO(S) RESTORED TO THE LIST (WRONGLY LEFT OUT BEFORE)",
-                       f"{year} // {len(extra)} VIDEO(S) WIEDER IN DIE LISTE (VORHER FÄLSCHLICH AUSSORTIERT)"), "warn")
+            self.log(L(f"{year_label(year)} // {len(extra)} VIDEO(S) RESTORED TO THE LIST (WRONGLY LEFT OUT BEFORE)",
+                       f"{year_label(year)} // {len(extra)} VIDEO(S) WIEDER IN DIE LISTE (VORHER FÄLSCHLICH AUSSORTIERT)"), "warn")
             self.emit("progress", year)
         st = load(state_file(year), {})
         if st.get("playlist_id"):
@@ -1961,7 +1961,7 @@ class Worker(threading.Thread):
         if st.get("playlist_id"):
             st["repair"] = True
             save(state_file(year), st)
-        self.log(L(f"{year} // {removed} SHORTS REMOVED FROM THE LIST", f"{year} // {removed} SHORTS AUS DER LISTE ENTFERNT"), "warn")
+        self.log(L(f"{year_label(year)} // {removed} SHORTS REMOVED FROM THE LIST", f"{year_label(year)} // {removed} SHORTS AUS DER LISTE ENTFERNT"), "warn")
         self.emit("progress", year)
         return cleaned
 
@@ -2013,18 +2013,18 @@ class Worker(threading.Thread):
                             if d[:4] == str(year):
                                 new.append((v, d))
             else:
-                self.log(L(f"{year} // CHECK FOR NEW VIDEOS SKIPPED // NEEDS API QUOTA OR FALLBACK",
-                           f"{year} // NEUE VIDEOS NICHT GEPRÜFT // BRAUCHT API-KONTINGENT ODER FALLBACK"), "warn")
+                self.log(L(f"{year_label(year)} // CHECK FOR NEW VIDEOS SKIPPED // NEEDS API QUOTA OR FALLBACK",
+                           f"{year_label(year)} // NEUE VIDEOS NICHT GEPRÜFT // BRAUCHT API-KONTINGENT ODER FALLBACK"), "warn")
         except QuotaExceeded:
-            self.log(L(f"{year} // CHECK FOR NEW VIDEOS SKIPPED // QUOTA", f"{year} // NEUE VIDEOS NICHT GEPRÜFT // KONTINGENT"), "warn")
+            self.log(L(f"{year_label(year)} // CHECK FOR NEW VIDEOS SKIPPED // QUOTA", f"{year_label(year)} // NEUE VIDEOS NICHT GEPRÜFT // KONTINGENT"), "warn")
         finally:
             self.act(None, year)
         if not new:
-            self.log(L(f"{year} // NO NEW VIDEOS", f"{year} // KEINE NEUEN VIDEOS"))
+            self.log(L(f"{year_label(year)} // NO NEW VIDEOS", f"{year_label(year)} // KEINE NEUEN VIDEOS"))
             return videos
         videos = videos + [{"id": v, "published": p} for v, p in reversed(new)]
         save(videos_file(year), videos)
-        self.log(L(f"{year} // {len(new)} NEW VIDEO(S) FOUND", f"{year} // {len(new)} NEUE(S) VIDEO(S) GEFUNDEN"), "ok")
+        self.log(L(f"{year_label(year)} // {len(new)} NEW VIDEO(S) FOUND", f"{year_label(year)} // {len(new)} NEUE(S) VIDEO(S) GEFUNDEN"), "ok")
         self.emit("progress", year)
         return videos
 
@@ -2076,10 +2076,10 @@ class Worker(threading.Thread):
         if prog.get("method") == "uploads" and cut is not None and year <= cut:
             prog["method"] = "search"
             save(cf, prog)
-            self.log(L(f"{year} IS BEYOND YOUTUBE'S 20,000 UPLOAD LIMIT // DATE SEARCH (~100 UNITS PER 50 VIDEOS)", f"{year} LIEGT HINTER DER 20.000-UPLOAD-GRENZE // DATUMSSUCHE (~100 EINHEITEN PRO 50 VIDEOS)"))
+            self.log(L(f"{year_label(year)} IS BEYOND YOUTUBE'S 20,000 UPLOAD LIMIT // DATE SEARCH (~100 UNITS PER 50 VIDEOS)", f"{year_label(year)} LIEGT HINTER DER 20.000-UPLOAD-GRENZE // DATUMSSUCHE (~100 EINHEITEN PRO 50 VIDEOS)"))
         prefix = str(year)
         if prog["method"] == "uploads":
-            self.log(L(f"SCANNING CHANNEL UPLOADS FOR {year} ...", f"DURCHSUCHE UPLOADS NACH {year} ..."))
+            self.log(L(f"SCANNING CHANNEL UPLOADS FOR {year_label(year)} ...", f"DURCHSUCHE UPLOADS NACH {year_label(year)} ..."))
             reached_older, pages = False, 0
             while True:
                 params = {"part": "contentDetails,snippet", "playlistId": prog["uploads"], "maxResults": 50}
@@ -2101,8 +2101,8 @@ class Worker(threading.Thread):
                 save(cf, prog)
                 pages += 1
                 if pages % 20 == 0:
-                    self.log(L(f"{prog['seen']}/{prog['total']} UPLOADS SCANNED // {len(prog['found'])} FROM {year}",
-                               f"{prog['seen']}/{prog['total']} UPLOADS DURCHSUCHT // {len(prog['found'])} AUS {year}"))
+                    self.log(L(f"{prog['seen']}/{prog['total']} UPLOADS SCANNED // {len(prog['found'])} FROM {year_label(year)}",
+                               f"{prog['seen']}/{prog['total']} UPLOADS DURCHSUCHT // {len(prog['found'])} AUS {year_label(year)}"))
                 if reached_older or not prog["page_token"]:
                     break
             if reached_older or prog["seen"] < CAP_SEEN:
@@ -2116,10 +2116,10 @@ class Worker(threading.Thread):
             for m in range(1, 13):
                 if m in prog["done_months"]:
                     continue
-                start = f"{year}-{m:02d}-01T00:00:00Z"
-                end = f"{year + 1}-01-01T00:00:00Z" if m == 12 else f"{year}-{m + 1:02d}-01T00:00:00Z"
+                start = f"{year_label(year)}-{m:02d}-01T00:00:00Z"
+                end = f"{year + 1}-01-01T00:00:00Z" if m == 12 else f"{year_label(year)}-{m + 1:02d}-01T00:00:00Z"
                 token, count = None, 0
-                self.act(L(f"DATE SEARCH // {m:02d}/{year}", f"DATUMSSUCHE // {m:02d}/{year}"), year)
+                self.act(L(f"DATE SEARCH // {m:02d}/{year_label(year)}", f"DATUMSSUCHE // {m:02d}/{year_label(year)}"), year)
                 while True:
                     params = {
                         "part": "snippet", "channelId": prog["channel_id"], "type": "video",
@@ -2137,10 +2137,10 @@ class Worker(threading.Thread):
                     if not token:
                         break
                 if count >= 500:
-                    self.log(L(f"WARNING // {m:02d}/{year} HAS 500+ HITS, MAY BE INCOMPLETE", f"WARNUNG // {m:02d}/{year} HAT ÜBER 500 TREFFER, EVTL. UNVOLLSTÄNDIG"), "warn")
+                    self.log(L(f"WARNING // {m:02d}/{year_label(year)} HAS 500+ HITS, MAY BE INCOMPLETE", f"WARNUNG // {m:02d}/{year_label(year)} HAT ÜBER 500 TREFFER, EVTL. UNVOLLSTÄNDIG"), "warn")
                 prog["done_months"].append(m)
                 save(cf, prog)
-                self.log(f"{m:02d}/{year} // {count} VIDEOS")
+                self.log(f"{m:02d}/{year_label(year)} // {count} VIDEOS")
             prog["method"] = "done"
             save(cf, prog)
             self.act(None, year)
@@ -2151,7 +2151,7 @@ class Worker(threading.Thread):
         )
         save(videos_file(year), videos)
         self.scanning = None
-        self.log(L(f"{len(videos)} VIDEOS FROM {year} FOUND", f"{len(videos)} VIDEOS AUS {year} GEFUNDEN"), "ok")
+        self.log(L(f"{len(videos)} VIDEOS FROM {year_label(year)} FOUND", f"{len(videos)} VIDEOS AUS {year_label(year)} GEFUNDEN"), "ok")
         self.emit("progress", year)
         return videos
 
@@ -2271,23 +2271,23 @@ class Worker(threading.Thread):
             return
         try:
             if load(videos_file(year), None) is None:
-                self.log(L(f"PRE-SCAN {year} FOR BROWSER FALLBACK", f"VORAB-SUCHE {year} FÜR DEN FALLBACK"))
+                self.log(L(f"PRE-SCAN {year_label(year)} FOR BROWSER FALLBACK", f"VORAB-SUCHE {year_label(year)} FÜR DEN FALLBACK"))
             self.collect(year)
             self.ensure_playlist(year)
         except SearchLimit:
             self.scanning = None
-            self.log(L(f"PRE-SCAN {year} PAUSED // DAILY SEARCH LIMIT (~100 SEARCHES) REACHED // "
+            self.log(L(f"PRE-SCAN {year_label(year)} PAUSED // DAILY SEARCH LIMIT (~100 SEARCHES) REACHED // "
                        f"CONTINUES AFTER RESET {quota_reset_local()}",
-                       f"VORAB-SUCHE {year} PAUSIERT // SUCHLIMIT (~100 SUCHEN) ERREICHT // "
+                       f"VORAB-SUCHE {year_label(year)} PAUSIERT // SUCHLIMIT (~100 SUCHEN) ERREICHT // "
                        f"GEHT NACH DEM RESET {quota_reset_local()} WEITER"), "warn")
         except QuotaExceeded:
             self.scanning = None
-            self.log(L(f"PRE-SCAN {year} SKIPPED // QUOTA", f"VORAB-SUCHE {year} ÜBERSPRUNGEN // KONTINGENT"), "warn")
+            self.log(L(f"PRE-SCAN {year_label(year)} SKIPPED // QUOTA", f"VORAB-SUCHE {year_label(year)} ÜBERSPRUNGEN // KONTINGENT"), "warn")
         except (Stopped, BrowserFailed):
             raise
         except Exception as e:  # noqa: BLE001
             self.scanning = None
-            self.log(L(f"PRE-SCAN {year} INTERRUPTED // {e} // PROGRESS SAVED, CONTINUES NEXT RUN", f"VORAB-SUCHE {year} UNTERBROCHEN // {e} // GESPEICHERT, GEHT BEIM NÄCHSTEN MAL WEITER"), "warn")
+            self.log(L(f"PRE-SCAN {year_label(year)} INTERRUPTED // {e} // PROGRESS SAVED, CONTINUES NEXT RUN", f"VORAB-SUCHE {year_label(year)} UNTERBROCHEN // {e} // GESPEICHERT, GEHT BEIM NÄCHSTEN MAL WEITER"), "warn")
         finally:
             self.act(None, year)
 
@@ -2337,14 +2337,14 @@ class Worker(threading.Thread):
             state["parts"] = parts
             state["playlist_id"] = parts[0]
             save(state_file(year), state)
-            self.log(L(f"{year} HAS MORE THAN {PART_MAX} VIDEOS // PLAYLIST PART {n} CREATED // {title}",
-                       f"{year} HAT MEHR ALS {PART_MAX} VIDEOS // PLAYLIST TEIL {n} ANGELEGT // {title}"), "ok")
+            self.log(L(f"{year_label(year)} HAS MORE THAN {PART_MAX} VIDEOS // PLAYLIST PART {n} CREATED // {title}",
+                       f"{year_label(year)} HAT MEHR ALS {PART_MAX} VIDEOS // PLAYLIST TEIL {n} ANGELEGT // {title}"), "ok")
             if n == 2:
                 self.rename_playlist(parts[0], part_title(year, 1, 2), playlist_description(year))
         try:
             self.apply_thumbnails(only_year=year)
         except Exception as e:  # noqa: BLE001
-            self.log(L(f"THUMBNAIL {year} FAILED // {str(e)[:120]}", f"THUMBNAIL {year} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
+            self.log(L(f"THUMBNAIL {year_label(year)} FAILED // {str(e)[:120]}", f"THUMBNAIL {year_label(year)} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
         return parts[k]
 
     def ensure_playlist(self, year):
@@ -2358,7 +2358,7 @@ class Worker(threading.Thread):
             try:
                 self.apply_thumbnails(only_year=year)
             except Exception as e:  # noqa: BLE001
-                self.log(L(f"THUMBNAIL {year} FAILED // {str(e)[:120]}", f"THUMBNAIL {year} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
+                self.log(L(f"THUMBNAIL {year_label(year)} FAILED // {str(e)[:120]}", f"THUMBNAIL {year_label(year)} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
         return state
 
     # --- Playlist-Thumbnails (eigenes Bild pro Jahr)
@@ -2537,7 +2537,7 @@ class Worker(threading.Thread):
         if not pids:
             return state
         self.emit("checking", year, True)
-        self.log(L(f"PLAYLIST CHECK {year} // {why} ...", f"PLAYLIST-PRÜFUNG {year} // {why} ..."))
+        self.log(L(f"PLAYLIST CHECK {year_label(year)} // {why} ...", f"PLAYLIST-PRÜFUNG {year_label(year)} // {why} ..."))
         try:
             removed = 0
             seen = set()
@@ -2569,11 +2569,11 @@ class Worker(threading.Thread):
                 state["next"] = n
                 save(state_file(year), state)
                 self.emit("progress", year)
-                self.log(L(f"RESYNC {year} // {moved} VIDEO(S) WERE ALREADY IN THE PLAYLIST", f"ABGLEICH {year} // {moved} VIDEO(S) WAREN SCHON IN DER PLAYLIST"), "warn")
+                self.log(L(f"RESYNC {year_label(year)} // {moved} VIDEO(S) WERE ALREADY IN THE PLAYLIST", f"ABGLEICH {year_label(year)} // {moved} VIDEO(S) WAREN SCHON IN DER PLAYLIST"), "warn")
             msg = L(f"{removed} DUPLICATE(S) REMOVED", f"{removed} DOPPELTE ENTFERNT") if removed else L("NO DUPLICATES", "KEINE DOPPELTEN")
-            self.log(L(f"PLAYLIST CHECK {year} // {len(seen)} VIDEOS // {msg}", f"PLAYLIST-PRÜFUNG {year} // {len(seen)} VIDEOS // {msg}"), "ok")
+            self.log(L(f"PLAYLIST CHECK {year_label(year)} // {len(seen)} VIDEOS // {msg}", f"PLAYLIST-PRÜFUNG {year_label(year)} // {len(seen)} VIDEOS // {msg}"), "ok")
         except QuotaExceeded:
-            self.log(L(f"PLAYLIST CHECK {year} SKIPPED // QUOTA", f"PLAYLIST-PRÜFUNG {year} ÜBERSPRUNGEN // KONTINGENT"), "warn")
+            self.log(L(f"PLAYLIST CHECK {year_label(year)} SKIPPED // QUOTA", f"PLAYLIST-PRÜFUNG {year_label(year)} ÜBERSPRUNGEN // KONTINGENT"), "warn")
         finally:
             self.emit("checking", year, False)
         return state
@@ -2588,7 +2588,7 @@ class Worker(threading.Thread):
         try:
             for k, pid in enumerate(pids):
                 order = order_all[k * PART_MAX:(k + 1) * PART_MAX]
-                tag = f"{year}" + (L(f" PART {k + 1}", f" TEIL {k + 1}") if len(pids) > 1 else "")
+                tag = f"{year_label(year)}" + (L(f" PART {k + 1}", f" TEIL {k + 1}") if len(pids) > 1 else "")
 
                 def reading(n, tag=tag):
                     self.act(L(f"READING PLAYLIST // {n} READ", f"LESE PLAYLIST // {n} GELESEN"), year)
@@ -2714,7 +2714,7 @@ class Worker(threading.Thread):
         if not inf:
             return state
         ids, start = inf.get("ids") or [], inf.get("start", state.get("next", 0))
-        self.log(L(f"{year} // CHECKING THE LAST BATCH ({len(ids)} VIDEOS) ...", f"{year} // PRÜFE DAS LETZTE PAKET ({len(ids)} VIDEOS) ..."))
+        self.log(L(f"{year_label(year)} // CHECKING THE LAST BATCH ({len(ids)} VIDEOS) ...", f"{year_label(year)} // PRÜFE DAS LETZTE PAKET ({len(ids)} VIDEOS) ..."))
         first = self.in_playlist(inf["pid"], ids[0]) if ids else False
         last = self.in_playlist(inf["pid"], ids[-1]) if ids else False
         if first is None or last is None:
@@ -2723,7 +2723,7 @@ class Worker(threading.Thread):
             return self.verify(year, videos, state, L("SYNC ON START", "ABGLEICH BEIM START"))
         if first and last:
             state["next"] = max(state.get("next", 0), start + len(ids))
-            self.log(L(f"{year} // LAST BATCH WAS ALREADY IN THE PLAYLIST", f"{year} // LETZTES PAKET WAR SCHON DRIN"), "warn")
+            self.log(L(f"{year_label(year)} // LAST BATCH WAS ALREADY IN THE PLAYLIST", f"{year_label(year)} // LETZTES PAKET WAR SCHON DRIN"), "warn")
         elif first or last:
             videos = load(videos_file(year), [])
             state.pop("inflight", None)
@@ -2758,7 +2758,7 @@ class Worker(threading.Thread):
             videos = load(videos_file(y), None)
             state = load(state_file(y), {})
             if videos is None or not state.get("playlist_id"):
-                self.log(L(f"{y} // NO PLAYLIST YET, NOTHING TO CHECK", f"{y} // NOCH KEINE PLAYLIST, NICHTS ZU PRÜFEN"))
+                self.log(L(f"{year_label(y)} // NO PLAYLIST YET, NOTHING TO CHECK", f"{year_label(y)} // NOCH KEINE PLAYLIST, NICHTS ZU PRÜFEN"))
                 continue
             self.emit("current", y)
             self.verify(y, videos, state, L("FULL SCAN", "KOMPLETT"))
@@ -2771,8 +2771,8 @@ class Worker(threading.Thread):
         self.cur = (year, videos)
         if state.get("repair"):
             if not self.fallback:
-                self.log(L(f"{year} // PLAYLIST NEEDS A REPAIR (MISSING VIDEOS / SHORTS TO REMOVE) // TURN ON FALLBACK FOR IT",
-                           f"{year} // PLAYLIST MUSS NACHGETRAGEN/BEREINIGT WERDEN // DAFÜR FALLBACK EINSCHALTEN"), "warn")
+                self.log(L(f"{year_label(year)} // PLAYLIST NEEDS A REPAIR (MISSING VIDEOS / SHORTS TO REMOVE) // TURN ON FALLBACK FOR IT",
+                           f"{year_label(year)} // PLAYLIST MUSS NACHGETRAGEN/BEREINIGT WERDEN // DAFÜR FALLBACK EINSCHALTEN"), "warn")
                 return False
             state = self.repair(year, videos, state)
         if not state.get("tracked") and 0 < state.get("next", 0) < len(videos):
@@ -2783,11 +2783,11 @@ class Worker(threading.Thread):
         save(sf, state)
         i, added = state["next"], 0
         if i >= len(videos):
-            self.log(L(f"{year} ALREADY COMPLETE", f"{year} IST SCHON FERTIG"))
+            self.log(L(f"{year_label(year)} ALREADY COMPLETE", f"{year_label(year)} IST SCHON FERTIG"))
             return True
         while i < len(videos):
             if self.limit and added >= self.limit:
-                self.log(L(f"{year} // RUN LIMIT OF {self.limit} VIDEOS REACHED", f"{year} // LIMIT VON {self.limit} VIDEOS FÜR DIESEN LAUF ERREICHT"))
+                self.log(L(f"{year_label(year)} // RUN LIMIT OF {self.limit} VIDEOS REACHED", f"{year_label(year)} // LIMIT VON {self.limit} VIDEOS FÜR DIESEN LAUF ERREICHT"))
                 return False
             self.check()
             pid = self.ensure_part(year, state, i // PART_MAX)     # ab 5.000 Videos: nächster Teil
@@ -2816,7 +2816,7 @@ class Worker(threading.Thread):
                 self.pace()
         state = self.verify(year, videos, state, L("FINAL FULL SCAN", "ABSCHLUSSPRÜFUNG"))
         links = " // ".join(f"https://www.youtube.com/playlist?list={p}" for p in part_ids(state))
-        self.log(L(f"{year} COMPLETE // {links}", f"{year} FERTIG // {links}"), "ok")
+        self.log(L(f"{year_label(year)} COMPLETE // {links}", f"{year_label(year)} FERTIG // {links}"), "ok")
         return True
 
 
