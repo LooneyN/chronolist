@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 87
+BUILD = 88
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -266,6 +266,35 @@ def known_shorts():
     d = load(shorts_file(), {})
     return set(d.get("ids") or []) if d.get("done") else None
 def titles_file(): return CHAN_DIR / "titles.json"
+
+
+_titles_lock = threading.Lock()
+HIDDEN_TITLES = ("Private video", "Deleted video", "Privates Video", "Gelöschtes Video")
+
+
+def remember_titles(new):
+    """Videotitel zu titles.json hinzufügen (aus API/Kanalseite, ohne Zusatzkosten). Gibt die Anzahl neuer/geänderter zurück."""
+    new = {k: v for k, v in (new or {}).items() if v and v not in HIDDEN_TITLES}
+    if not new:
+        return 0
+    with _titles_lock:
+        cur = load(titles_file(), {})
+        changed = {k: v for k, v in new.items() if cur.get(k) != v}
+        if changed:
+            cur.update(changed)
+            save(titles_file(), cur)
+        return len(changed)
+
+
+def item_titles(items):
+    """{videoId: Titel} aus playlistItems-Antworten mit part=snippet."""
+    out = {}
+    for it in items or []:
+        sn = it.get("snippet") or {}
+        vid = (sn.get("resourceId") or {}).get("videoId") or (it.get("contentDetails") or {}).get("videoId")
+        if vid and sn.get("title"):
+            out[vid] = sn["title"]
+    return out
 
 
 def merge_keep(base_ids, old_items):
@@ -749,17 +778,27 @@ def find_chips(node, out):
             find_chips(v, out)
 
 
-def find_channel_videos(node, ids, tokens):
-    """Video-IDs (in Seitenreihenfolge) und das Fortsetzungs-Token einer Kanal-Videoseite."""
+def find_channel_videos(node, ids, tokens, titles=None):
+    """Video-IDs (in Seitenreihenfolge) und das Fortsetzungs-Token einer Kanal-Videoseite.
+    Mit `titles` (dict) werden zusätzlich die Titel eingesammelt."""
     if isinstance(node, dict):
         for key in ("videoRenderer", "gridVideoRenderer"):
             r = node.get(key)
             if isinstance(r, dict) and r.get("videoId"):
                 ids.append(r["videoId"])
+                if titles is not None:
+                    t = text_of(r.get("title")).strip()
+                    if t:
+                        titles[r["videoId"]] = t
                 return
         lv = node.get("lockupViewModel")
         if isinstance(lv, dict) and lv.get("contentId") and "VIDEO" in str(lv.get("contentType", "VIDEO")):
             ids.append(lv["contentId"])
+            if titles is not None:
+                m = (lv.get("metadata") or {}).get("lockupMetadataViewModel") or {}
+                t = text_of(m.get("title")).strip()
+                if t:
+                    titles[lv["contentId"]] = t
             return
         ci = node.get("continuationItemRenderer")
         if isinstance(ci, dict):
@@ -768,10 +807,10 @@ def find_channel_videos(node, ids, tokens):
                 tokens.append(t)
             return
         for v in node.values():
-            find_channel_videos(v, ids, tokens)
+            find_channel_videos(v, ids, tokens, titles)
     elif isinstance(node, list):
         for v in node:
-            find_channel_videos(v, ids, tokens)
+            find_channel_videos(v, ids, tokens, titles)
 
 
 OLDEST_WORDS = ("oldest", "älteste", "ältest", "plus anciennes", "más antiguos", "più vecchi", "oudste")
@@ -1076,22 +1115,25 @@ class BrowserUplink:
 
     def latest_videos(self, channel_id, known, limit_pages=40):
         """Neueste Videos der Kanalseite (neueste zuerst), bis ein bekanntes Video kommt."""
-        ids, tokens = [], []
+        ids, tokens, titles = [], [], {}
         find_channel_videos(self.yt_call("browse", {"browseId": channel_id, "params": "EgZ2aWRlb3PyBgQKAjoA"}),
-                            ids, tokens)
+                            ids, tokens, titles)
         out = []
         for _ in range(limit_pages):
             for v in ids:
                 if v in known:
+                    remember_titles(titles)
                     return out
                 if v not in out:
                     out.append(v)
             if not tokens:
+                remember_titles(titles)
                 return out
             ids, new_tokens = [], []
-            find_channel_videos(self.yt_call("browse", {"continuation": tokens[-1]}), ids, new_tokens)
+            find_channel_videos(self.yt_call("browse", {"continuation": tokens[-1]}), ids, new_tokens, titles)
             tokens = new_tokens
             time.sleep(random.uniform(0.8, 1.6))
+        remember_titles(titles)
         return out
 
     def oldest_token(self, channel_id):
@@ -1107,8 +1149,9 @@ class BrowserUplink:
         raise BrowserFailed(L("CHANNEL PAGE // NO 'OLDEST' SORTING FOUND", "KANALSEITE // KEINE SORTIERUNG 'ÄLTESTE' GEFUNDEN"))
 
     def video_page(self, token):
-        ids, tokens = [], []
-        find_channel_videos(self.yt_call("browse", {"continuation": token}), ids, tokens)
+        ids, tokens, titles = [], [], {}
+        find_channel_videos(self.yt_call("browse", {"continuation": token}), ids, tokens, titles)
+        remember_titles(titles)
         return ids, (tokens[-1] if tokens else None)
 
     def video_date(self, vid):
@@ -1513,10 +1556,11 @@ class Worker(threading.Thread):
             pages = 0
             while True:
                 self.check()
-                params = {"part": "contentDetails", "playlistId": prog["uploads"], "maxResults": 50}
+                params = {"part": "contentDetails,snippet", "playlistId": prog["uploads"], "maxResults": 50}
                 if prog["page_token"]:
                     params["pageToken"] = prog["page_token"]
                 d = self.call("GET", "playlistItems", params)
+                remember_titles(item_titles(d.get("items")))
                 for it in d.get("items", []):
                     prog["seen"] += 1
                     pub = it["contentDetails"].get("videoPublishedAt")
@@ -1807,10 +1851,11 @@ class Worker(threading.Thread):
                     up = full_uploads(items[0]["contentDetails"]["relatedPlaylists"]["uploads"]) if items else None
                 token, done = None, False
                 while up and not done:
-                    params = {"part": "contentDetails", "playlistId": up, "maxResults": 50}
+                    params = {"part": "contentDetails,snippet", "playlistId": up, "maxResults": 50}
                     if token:
                         params["pageToken"] = token
                     d = self.call("GET", "playlistItems", params)
+                    remember_titles(item_titles(d.get("items")))
                     for it in d.get("items", []):
                         cd = it["contentDetails"]
                         pub = cd.get("videoPublishedAt")
@@ -1908,10 +1953,11 @@ class Worker(threading.Thread):
             self.log(L(f"SCANNING CHANNEL UPLOADS FOR {year} ...", f"DURCHSUCHE UPLOADS NACH {year} ..."))
             reached_older, pages = False, 0
             while True:
-                params = {"part": "contentDetails", "playlistId": prog["uploads"], "maxResults": 50}
+                params = {"part": "contentDetails,snippet", "playlistId": prog["uploads"], "maxResults": 50}
                 if prog["page_token"]:
                     params["pageToken"] = prog["page_token"]
                 d = self.call("GET", "playlistItems", params)
+                remember_titles(item_titles(d.get("items")))
                 for it in d.get("items", []):
                     prog["seen"] += 1
                     cd = it["contentDetails"]
@@ -1954,6 +2000,7 @@ class Worker(threading.Thread):
                     if token:
                         params["pageToken"] = token
                     d = self.call("GET", "search", params)
+                    remember_titles({it["id"]["videoId"]: it["snippet"].get("title") for it in d.get("items", [])})
                     for it in d.get("items", []):
                         prog["found"][it["id"]["videoId"]] = it["snippet"]["publishedAt"]
                         count += 1
@@ -4381,7 +4428,7 @@ class RemovedWindow(tk.Toplevel):
         except queue.Empty:
             pass
         if changed:
-            save(titles_file(), self.titles)
+            remember_titles(self.titles)
         if self.pending:
             self.after(400, self.apply_titles)
 

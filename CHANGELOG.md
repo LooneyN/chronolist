@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+- Video titles are now stored while scanning (API and channel page, no extra quota). This is the basis for keyword lists.
+
 ### Changed
 - Cleaner dashboard: only FALLBACK, PROGRAM and PLAYLISTS remain under options. AUTO-RUN and BOOT moved to the program settings.
 - Aligned layout: both columns share one grid. START / PAUSE / STOP / CHECK are large tiles as tall as the channel card, all list and option cards have the same height, and right edges line up.
