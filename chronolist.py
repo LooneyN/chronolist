@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 85
+BUILD = 86
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -3078,32 +3078,6 @@ class ToggleCard(Panel):
                          fill=role if on else TEXT_MUTED)
 
 
-class LimitPanel(Panel):
-    def __init__(self, master, value):
-        super().__init__(master, 58)
-        self.value = value
-
-    def draw_content(self, x0, y0, x1, y1, c, role):
-        h = y1 - y0
-        cy = (y0 + y1) / 2
-        isz = px(32)
-        ix = x0 + px(10)
-        self.icon_box(ix, cy, isz, role, False)
-        col = mix(role, BG, 0.8)
-        u = isz / 32
-        top = cy - isz / 2
-        for k, hh in enumerate((8, 14, 11, 18)):
-            xx = ix + (8 + k * 5) * u
-            self.create_rectangle(xx, top + (24 - hh) * u, xx + 3 * u, top + 24 * u, fill=col, outline="")
-        nx = ix + isz + px(12)
-        self.create_text(nx, y0 + h * 0.34, text=L("BATCH LIMIT", "LIMIT PRO LAUF"), anchor="w", font=F("ui", 15),
-                         fill=TEXT_DIM)
-        self.create_text(nx, y0 + h * 0.66, text=L("VIDEOS / YEAR / RUN", "VIDEOS / JAHR / LAUF"), anchor="w", font=F("mono", 11),
-                         fill=TEXT_MUTED)
-        val = L("UNLIMITED", "UNBEGRENZT") if self.value == 0 else str(self.value)
-        self.create_text(x1 - px(18), y0 + h * 0.45, text=val, anchor="e", font=F("mono", 14), fill=CYAN)
-
-
 class StatusChip(Panel):
     def __init__(self, master):
         super().__init__(master, 36, cut=8)
@@ -3600,7 +3574,7 @@ class UpdateDialog(tk.Toplevel):
 
 
 class AppSettingsDialog(tk.Toplevel):
-    """Programm-Einstellungen: Sprache und Update-Check."""
+    """Programm-Einstellungen: Sprache, Start-Verhalten und Update-Check."""
 
     def __init__(self, app):
         super().__init__(app, bg=BG)
@@ -3627,6 +3601,23 @@ class AppSettingsDialog(tk.Toplevel):
                  wraplength=px(460)).pack(fill="x", pady=(px(2), px(14)))
         self.set_language(LANG)
 
+        Section(body, L("START", "START"), "SYSTEM // BOOT").pack(fill="x", pady=(0, px(6)))
+        self.autorun = app.autorun
+        self.auto_card = ToggleCard(body, L("AUTO-RUN", "AUTOSTART"), L("START WORKING WHEN CHRONOLIST OPENS",
+                                                                       "BEIM ÖFFNEN SOFORT LOSLEGEN"),
+                                    self.autorun, self.toggle_auto, compact=True)
+        self.auto_card.pack(fill="x", pady=(0, px(4)))
+        Tooltip(self.auto_card, L("Start working automatically when Chronolist opens.",
+                                  "Beim Öffnen von Chronolist automatisch starten."))
+        self.boot = app.win_on
+        self.boot_card = ToggleCard(body, "BOOT", L("START CHRONOLIST WITH WINDOWS", "CHRONOLIST MIT WINDOWS STARTEN"),
+                                    self.boot, self.toggle_boot, available=winreg is not None, compact=True)
+        self.boot_card.pack(fill="x", pady=(0, px(14)))
+        Tooltip(self.boot_card, L("Start Chronolist automatically with Windows. Together with AUTO-RUN everything "
+                                  "runs by itself.",
+                                  "Chronolist automatisch mit Windows starten. Zusammen mit AUTOSTART läuft alles "
+                                  "von allein."))
+
         Section(body, "UPDATES", "GITHUB // RELEASES").pack(fill="x", pady=(0, px(6)))
         self.updates = bool(app.settings.get("check_updates", True))
         self.upd_card = ToggleCard(body, L("UPDATE CHECK", "UPDATE-PRÜFUNG"),
@@ -3644,7 +3635,7 @@ class AppSettingsDialog(tk.Toplevel):
         CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<Return>", lambda e: self.save())
-        self.geometry(f"{px(500)}x{px(300)}")
+        self.geometry(f"{px(500)}x{px(450)}")
         style_window(self)
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -3659,6 +3650,14 @@ class AppSettingsDialog(tk.Toplevel):
             b.set_color(GREEN if c == code else YELLOW)
             b.set_text(("● " if c == code else "") + LANGUAGES[c])
 
+    def toggle_auto(self):
+        self.autorun = not self.autorun
+        self.auto_card.update_value(self.autorun)
+
+    def toggle_boot(self):
+        self.boot = not self.boot
+        self.boot_card.update_value(self.boot)
+
     def toggle_updates(self):
         self.updates = not self.updates
         self.upd_card.update_value(self.updates)
@@ -3666,6 +3665,9 @@ class AppSettingsDialog(tk.Toplevel):
     def save(self):
         st = self.app.settings
         st["check_updates"] = self.updates
+        self.app.set_windows(self.boot)
+        self.app.autorun = self.autorun
+        st["autorun"] = self.autorun
         lang_changed = self.language != LANG
         if lang_changed:
             # Standard-Vorlagen wechseln mit der Sprache, eigene Vorlagen bleiben
@@ -3745,9 +3747,8 @@ HELP_TEXT_DE = [
             "einmal über die API gelesen, sobald etwas Kontingent da ist. Mit FALLBACK werden Shorts auch aus "
             "bestehenden Playlists entfernt. Die Kanalseite ergänzt nur fehlende Videos, entfernt aber nie welche."),
     ("num", "7.  Nächstes Jahr. Ist ein Jahr fertig, geht es mit dem nächsten markierten Jahr in der Reihenfolge der "
-            "Liste weiter. Wurden dessen Videos noch nicht gefunden und ist das Kontingent leer, hält Chronolist an. "
-            "Mit VORZIEHEN nimmt es stattdessen das nächste markierte Jahr, das schon bereit ist, und holt das "
-            "fehlende später nach."),
+            "Liste weiter. Kann ein Jahr gerade nicht gesucht werden, weil das Kontingent leer ist, nimmt Chronolist "
+            "das nächste markierte Jahr, das schon bereit ist, und holt das fehlende später nach."),
     ("num", "8.  Laufendes Jahr. Das aktuelle Jahr bleibt markiert, auch wenn es fertig ist. Bei jedem Lauf schaut "
             "Chronolist nach neuen Videos und hängt sie hinten an. Mit Kontingent kostet das nur ein paar Einheiten, "
             "ohne geht es mit FALLBACK über die Kanalseite. Im Januar gilt das auch noch für das Vorjahr.\n"
@@ -3827,10 +3828,6 @@ HELP_TEXT_DE = [
     ("dt", "PRÜFEN"),
     ("dd", "Prüft die Playlists der ausgewählten Jahre komplett. Doppelte Videos werden entfernt, wobei immer das "
            "erste stehen bleibt, damit die Reihenfolge stimmt. Außerdem wird der Fortschritt abgeglichen."),
-    ("dt", "LIMIT PRO LAUF"),
-    ("dd", "So viele Videos werden pro Jahr und Durchlauf höchstens eingefügt. Mit den Knöpfen oder dem Mausrad "
-           "änderst du den Wert in 50er-Schritten. UNBEGRENZT heißt: keine Grenze. Das ist praktisch, wenn du bei "
-           "mehreren Jahren erst einmal nur die ersten Videos haben willst."),
 
     ("h2", "Optionen"),
     ("dt", "FALLBACK"),
@@ -3840,18 +3837,12 @@ HELP_TEXT_DE = [
            "Wichtig: Das ist eine automatische Nutzung der YouTube-Webseite und laut den Nutzungsbedingungen von "
            "YouTube nicht erlaubt. Im schlimmsten Fall kann dein Konto gesperrt werden. Deshalb ist der Schalter am "
            "Anfang aus."),
-    ("dt", "VORZIEHEN"),
-    ("dd", "Kann ein Jahr gerade nicht gesucht werden, weil das Kontingent oder das Suchlimit aufgebraucht ist, "
-           "macht Chronolist mit dem nächsten markierten Jahr weiter, das schon bereit ist. Das übersprungene Jahr kommt später "
-           "dran. Ist der Schalter aus, hält Chronolist in diesem Fall an."),
-    ("dt", "AUTOSTART"),
-    ("dd", "Startet automatisch, sobald du das Programm öffnest."),
-    ("dt", "BOOT"),
-    ("dd", "Startet Chronolist zusammen mit Windows. Zusammen mit AUTOSTART läuft dann alles von allein."),
     ("dt", "PROGRAMM"),
     ("dd", "Einstellungen für das Programm selbst.\n"
            "Sprache: Englisch oder Deutsch. Das gilt für die ganze Oberfläche, die Tooltips, diese Hilfe und das "
            "Protokoll. Nach dem Speichern startet Chronolist kurz neu.\n"
+           "Autostart: legt beim Öffnen von Chronolist sofort los.\n"
+           "Boot: startet Chronolist zusammen mit Windows. Zusammen mit Autostart läuft dann alles von allein.\n"
            "Update-Prüfung: ob Chronolist beim Start bei GitHub nach einer neuen Version fragt."),
     ("dt", "PLAYLISTS"),
     ("dd", "Titel und Beschreibung: Du kannst Platzhalter verwenden, die beim Anlegen ersetzt werden. {channel} wird "
@@ -3965,8 +3956,8 @@ HELP_TEXT_EN = [
             "through the API when a little quota is available. With FALLBACK shorts are also removed from existing "
             "playlists. The channel page only adds missing videos and never removes any."),
     ("num", "7.  Next year. When a year is done, Chronolist moves on to the next selected year in the order of the "
-            "list. If that year's videos haven't been found yet and the quota is used up, it stops. With SKIP AHEAD it "
-            "takes the next selected year that is already ready instead and catches up later."),
+            "list. If a year can't be searched right now because the quota is used up, Chronolist takes the next "
+            "selected year that is already ready and catches up later."),
     ("num", "8.  Current year. The current year stays selected even when it is done. On every run Chronolist looks "
             "for new videos and appends them. With quota this costs only a few units, without quota it works with "
             "FALLBACK through the channel page. In January this also applies to the previous year.\n"
@@ -4045,9 +4036,6 @@ HELP_TEXT_EN = [
     ("dt", "CHECK"),
     ("dd", "Checks the playlists of the selected years completely. Duplicates are removed, always keeping the first "
            "one so the order stays right. The progress is synced as well."),
-    ("dt", "BATCH LIMIT"),
-    ("dd", "The maximum number of videos added per year and run. Change it in steps of 50 with the buttons or the "
-           "mouse wheel. UNLIMITED means no limit. Handy if you first want only the first videos of several years."),
 
     ("h2", "Options"),
     ("dt", "FALLBACK"),
@@ -4056,18 +4044,12 @@ HELP_TEXT_EN = [
            "through the channel page there, even without quota.\n"
            "Important: this is automated use of the YouTube website and is not allowed by YouTube's Terms of "
            "Service. In the worst case your account can be restricted. That's why the switch is off by default."),
-    ("dt", "SKIP AHEAD"),
-    ("dd", "If a year can't be searched right now because the quota or the search limit is used up, Chronolist "
-           "continues with the next selected year that is already ready. The skipped year comes later. With the switch off, "
-           "Chronolist stops in that case."),
-    ("dt", "AUTO-RUN"),
-    ("dd", "Starts automatically as soon as you open the program."),
-    ("dt", "BOOT"),
-    ("dd", "Starts Chronolist together with Windows. Together with AUTO-RUN everything runs by itself."),
     ("dt", "PROGRAM"),
     ("dd", "Settings for the program itself.\n"
            "Language: English or German. This applies to the whole interface, the tooltips, this help and the log. "
            "Chronolist restarts briefly after saving.\n"
+           "Auto-run: starts working as soon as Chronolist opens.\n"
+           "Boot: starts Chronolist together with Windows. Together with auto-run everything runs by itself.\n"
            "Update check: whether Chronolist asks GitHub for a new version on start."),
     ("dt", "PLAYLISTS"),
     ("dd", "Title and description: you can use placeholders that are filled in when the playlist is created. "
@@ -4837,7 +4819,6 @@ class App(tk.Tk):
         self.worker = None
         self.code = ""
         self.login_url = ""
-        self.limit_val = max(0, int(self.settings.get("limit", 0) or 0))
 
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
@@ -4897,26 +4878,6 @@ class App(tk.Tk):
         self.update_api_button()
         self.stop_btn.set_enabled(False)
 
-        lim = tk.Frame(right, bg=BG)
-        lim.grid(row=2, column=0, sticky="ew", pady=(0, px(4)))
-        lim.columnconfigure(0, weight=1)
-        self.limit_panel = LimitPanel(lim, self.limit_val)
-        Tooltip(self.limit_panel, L("Add at most this many videos per year and run. Use the buttons next to it or "
-                                    "the mouse wheel to change it in steps of 50. UNLIMITED means no limit.",
-                                    "Höchstens so viele Videos pro Jahr und Lauf einfügen. Mit den Knöpfen daneben "
-                                    "oder dem Mausrad in 50er-Schritten. UNBEGRENZT heißt keine Grenze."))
-        self.limit_panel.grid(row=0, column=0, sticky="ew")
-        for w in (self.limit_panel,):
-            w.bind("<MouseWheel>", lambda e: self.change_limit(50 if e.delta > 0 else -50))
-            w.bind("<Button-4>", lambda e: self.change_limit(50))
-            w.bind("<Button-5>", lambda e: self.change_limit(-50))
-        b_minus = CutButton(lim, "−", lambda: self.change_limit(-50), width=40)
-        b_minus.grid(row=0, column=1, padx=(px(6), 0))
-        b_plus = CutButton(lim, "+", lambda: self.change_limit(50), width=40)
-        b_plus.grid(row=0, column=2, padx=(px(4), 0))
-        Tooltip(b_minus, L("Lower the batch limit by 50.", "Limit um 50 verringern."))
-        Tooltip(b_plus, L("Raise the batch limit by 50.", "Limit um 50 erhöhen."))
-
         Section(right, L("OPTIONS", "OPTIONEN"), "RUN // SYSTEM").grid(row=3, column=0, sticky="ew", pady=(px(6), px(6)))
         opts = tk.Frame(right, bg=BG)
         opts.grid(row=4, column=0, sticky="ew", pady=(0, px(8)))
@@ -4930,30 +4891,20 @@ class App(tk.Tk):
             r.refresh_blocked()
         self.fallback_card = ToggleCard(opts, "FALLBACK", L("EDGE AFTER QUOTA", "EDGE BEI LIMIT"),
                                         self.fallback, self.toggle_fallback, compact=True)
-        self.fallback_card.grid(row=0, column=0, sticky="ew", padx=(0, px(3)), pady=(0, px(4)))
-        self.skip_ahead = bool(self.settings.get("skip_ahead", False))
-        self.skip_card = ToggleCard(opts, L("SKIP AHEAD", "VORZIEHEN"), L("NEXT READY YEAR", "NÄCHSTES FERTIGES JAHR"),
-                                    self.skip_ahead, self.toggle_skip, compact=True)
-        self.skip_card.grid(row=0, column=1, sticky="ew", padx=(px(3), 0), pady=(0, px(4)))
-        # Zeile 2: System
+        self.fallback_card.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, px(4)))
+        self.skip_ahead = True                       # immer: nächstes bereites markiertes Jahr vorziehen
         self.autorun = bool(self.settings.get("autorun", False))
-        self.autorun_card = ToggleCard(opts, L("AUTO-RUN", "AUTOSTART"), L("ON LAUNCH", "BEIM ÖFFNEN"), self.autorun, self.toggle_autorun,
-                                       compact=True)
-        self.autorun_card.grid(row=1, column=0, sticky="ew", padx=(0, px(3)))
         self.win_on = get_windows_autostart()
-        self.win_card = ToggleCard(opts, "BOOT", L("WITH WINDOWS", "MIT WINDOWS"), self.win_on,
-                                   self.toggle_windows, available=winreg is not None, compact=True)
-        self.win_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
         self.app_card = SettingsCard(opts, self.edit_app_settings, lambda: L("PROGRAM", "PROGRAMM"),
-                                     lambda: f"{LANGUAGES[LANG]} // UPDATES "
-                                             + (L("ON", "AN") if self.settings.get("check_updates", True)
-                                                else L("OFF", "AUS")), icon="gear")
-        self.app_card.grid(row=2, column=0, sticky="ew", padx=(0, px(3)), pady=(px(4), 0))
+                                     lambda: " // ".join([LANGUAGES[LANG]]
+                                                         + ([L("AUTO-RUN", "AUTOSTART")] if self.autorun else [])
+                                                         + (["BOOT"] if self.win_on else [])), icon="gear")
+        self.app_card.grid(row=1, column=0, sticky="ew", padx=(0, px(3)))
         self.settings_card = SettingsCard(opts, self.edit_settings, lambda: "PLAYLISTS",
                                           lambda: f"{privacy_label(PRIVACY)} // "
                                                   + fill_template(PLAYLIST_TEMPLATE, YEARS[0] if YEARS
                                                                   else datetime.date.today().year - 1))
-        self.settings_card.grid(row=2, column=1, sticky="ew", padx=(px(3), 0), pady=(px(4), 0))
+        self.settings_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
 
         self.login = tk.Frame(right, bg=BG)
         self.login.columnconfigure(0, weight=1)
@@ -5034,9 +4985,9 @@ class App(tk.Tk):
         return [y for y in self.order if self.rows[y].selected]
 
     def save_settings(self):
-        self.settings.update(years=self.selected_years(), year_order=list(self.order), autorun=self.autorun, limit=self.limit_val,
+        self.settings.update(years=self.selected_years(), year_order=list(self.order), autorun=self.autorun,
                              browser_fallback=getattr(self, "fallback", False),
-                             skip_ahead=getattr(self, "skip_ahead", False))
+                             )
         save(SETTINGS_FILE, self.settings)
 
     def toggle_year(self, y):
@@ -5060,15 +5011,8 @@ class App(tk.Tk):
         if hasattr(self, "year_section"):
             self.year_section.set_total(done, total)
 
-    def change_limit(self, delta):
-        self.limit_val = max(0, min(5000, self.limit_val + delta))
-        self.limit_panel.value = self.limit_val
-        self.limit_panel.redraw()
-        self.save_settings()
-
-    def toggle_autorun(self):
-        self.autorun = not self.autorun
-        self.autorun_card.update_value(self.autorun)
+    def set_autorun(self, on):
+        self.autorun = bool(on)
         self.save_settings()
 
     def edit_app_settings(self):
@@ -5076,13 +5020,6 @@ class App(tk.Tk):
 
     def edit_settings(self):
         SettingsDialog(self)             # auch während eines Laufs (gilt für ab dann angelegte Playlists)
-
-    def toggle_skip(self):
-        self.skip_ahead = not self.skip_ahead
-        self.skip_card.update_value(self.skip_ahead)
-        self.save_settings()
-        if self.worker and self.worker.is_alive():
-            self.worker.skip_ahead = self.skip_ahead
 
     def toggle_fallback(self):
         global FALLBACK_ON
@@ -5095,15 +5032,15 @@ class App(tk.Tk):
         if self.worker and self.worker.is_alive():
             self.worker.fallback = self.fallback
 
-    def toggle_windows(self):
-        new = not self.win_on
-        try:
-            set_windows_autostart(new)
-        except OSError as e:
-            self.write_log(L(f"BOOT SEQUENCE UPDATE FAILED // {e}", f"AUTOSTART KONNTE NICHT GEÄNDERT WERDEN // {e}"), "err")
+    def set_windows(self, on):
+        if bool(on) == self.win_on:
             return
-        self.win_on = new
-        self.win_card.update_value(new)
+        try:
+            set_windows_autostart(bool(on))
+        except OSError as e:
+            self.write_log(L(f"BOOT SEQUENCE UPDATE FAILED // {e}", f"START MIT WINDOWS KONNTE NICHT GEÄNDERT WERDEN // {e}"), "err")
+            return
+        self.win_on = bool(on)
 
     # --- Status
     def set_status(self, key):
@@ -5305,16 +5242,8 @@ class App(tk.Tk):
                                       "Wenn das tägliche YouTube-Kontingent leer ist, über ein eigenes Edge-Fenster "
                                       "weitermachen. Achtung: verstößt gegen die YouTube-Regeln, Risiko für dein "
                                       "Konto."))
-        Tooltip(self.skip_card, L("If a year can't be searched right now, continue with the next selected year that "
-                                  "is ready and catch up on the skipped one later.",
-                                  "Kann ein Jahr gerade nicht gesucht werden, mit dem nächsten markierten Jahr "
-                                  "weitermachen, das bereit ist, und das übersprungene später nachholen."))
-        Tooltip(self.autorun_card, L("Start working automatically when Chronolist opens.",
-                                     "Beim Öffnen von Chronolist automatisch starten."))
-        Tooltip(self.win_card, L("Start Chronolist automatically with Windows.",
-                                 "Chronolist automatisch mit Windows starten."))
-        Tooltip(self.app_card, L("Program settings: language and update check.",
-                                 "Programm-Einstellungen: Sprache und Update-Prüfung."))
+        Tooltip(self.app_card, L("Program settings: language, auto-run, start with Windows and update check.",
+                                 "Programm-Einstellungen: Sprache, Autostart, Start mit Windows und Update-Prüfung."))
         Tooltip(self.settings_card, L("Playlist title and description with placeholders, visibility and custom "
                                       "thumbnails per year.",
                                       "Playlist-Titel und Beschreibung mit Platzhaltern, Sichtbarkeit und eigene "
@@ -5442,7 +5371,7 @@ class App(tk.Tk):
             return
         self.save_settings()
         self.write_log(f"START // {', '.join(map(str, years))}", "sep")
-        self.worker = Worker(years, self.limit_val, self.out, fallback=self.fallback)
+        self.worker = Worker(years, 0, self.out, fallback=self.fallback)
         self.worker.skip_ahead = self.skip_ahead
         self.run_mode = "running"
         self.pause_info = None

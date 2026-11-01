@@ -5,6 +5,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+- Cleaner dashboard: only FALLBACK, PROGRAM and PLAYLISTS remain under options. AUTO-RUN and BOOT moved to the program settings.
+- Skipping ahead to the next ready year is now always on; the SKIP AHEAD switch is gone.
+
+### Removed
+- BATCH LIMIT (videos per year and run).
+
 ### Fixed
 - Window position is now remembered reliably on Windows (also on a second monitor and when maximized). Before, often only the size was restored.
 
