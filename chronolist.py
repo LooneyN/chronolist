@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 90
+BUILD = 91
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -453,6 +453,12 @@ def all_year_videos():
     return out
 
 
+def in_years(lst, year):
+    """Liegt das Jahr im eingestellten Zeitraum der Liste (leer = unbegrenzt)?"""
+    a, b = lst.get("from"), lst.get("to")
+    return (not a or year >= a) and (not b or year <= b)
+
+
 def list_videos(lst, titles=None, pool=None):
     """Treffer einer Liste in Upload-Reihenfolge. Einzelne Videos lassen sich fest hinzufügen/ausschließen."""
     titles = titles if titles is not None else load(titles_file(), {})
@@ -462,7 +468,7 @@ def list_videos(lst, titles=None, pool=None):
         vid = v["id"]
         if vid in skip:
             continue
-        if vid in add or title_matches(lst, titles.get(vid, "")):
+        if vid in add or (in_years(lst, v["year"]) and title_matches(lst, titles.get(vid, ""))):
             out.append({"id": vid, "published": v.get("published")})
     return out
 
@@ -4086,6 +4092,7 @@ HELP_TEXT_DE = [
     ("p", "Unter den Jahren legt EIGENE STICHWORTLISTE eine Playlist an, in die alle Videos kommen, deren Titel zu deinen "
           "Stichwörtern passen, in Upload-Reihenfolge. Du gibst einen Namen ein (er wird der Playlist-Titel) und Begriffe: "
           "\"enthält eines davon\", \"und alle diese\" und \"aber keines dieser\". Gross-/Kleinschreibung zählt nicht. "
+          "Optional grenzt du die Liste auf einen Zeitraum von Jahren ein (z. B. 2016 bis 2020). "
           "Die Vorschau zeigt sofort, wie viele Videos passen. Einzelne Videos schließt du aus (Auswahl, dann AUSSCHLIESSEN) "
           "oder nimmst sie über Link oder Video-ID fest hinzu.\n"
           "Eine Liste ist eine Karte wie ein Jahr: anklicken zum Markieren, Rechtsklick zum Bearbeiten. Sie wird nach den Jahren "
@@ -4305,7 +4312,8 @@ HELP_TEXT_EN = [
     ("h2", "Keyword lists"),
     ("p", "Below the years, NEW KEYWORD LIST creates a playlist of all videos whose title matches your keywords, in upload "
           "order. Enter a name (it becomes the playlist title) and terms: \"contains any of\", \"and all of these\" and "
-          "\"but none of these\". Upper/lower case is ignored. The preview shows right away how many videos match. "
+          "\"but none of these\". Upper/lower case is ignored. Optionally limit the list to a range of years (e.g. 2016 to 2020). "
+          "The preview shows right away how many videos match. "
           "Exclude single videos (select, then EXCLUDE) or add them for good with a link or video ID.\n"
           "A list is a card like a year: click to select, right-click to edit. It runs after the years and is matched again "
           "on every run, so new videos are added automatically. If you change the terms, the playlist is adjusted on the "
@@ -4713,6 +4721,18 @@ class ListDialog(tk.Toplevel):
         self.field(body, L("AND ALL OF THESE  (OPTIONAL)", "UND ALLE DIESE  (OPTIONAL)"), self.all_var)
         self.none_var = tk.StringVar(value=", ".join(lst.get("none") or []))
         self.field(body, L("BUT NONE OF THESE  (OPTIONAL)", "ABER KEINES DIESER  (OPTIONAL)"), self.none_var)
+        yr = tk.Frame(body, bg=BG)
+        yr.pack(fill="x", pady=(0, px(8)))
+        tk.Label(yr, text=L("ONLY YEARS  (OPTIONAL)", "NUR JAHRE  (OPTIONAL)"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11),
+                 anchor="w").pack(side="left")
+        self.from_var = tk.StringVar(value=str(lst.get("from") or ""))
+        self.to_var = tk.StringVar(value=str(lst.get("to") or ""))
+        for var, txt in ((self.from_var, L("FROM", "VON")), (self.to_var, L("TO", "BIS"))):
+            tk.Label(yr, text=txt, bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="left", padx=(px(14), px(6)))
+            e = tk.Entry(yr, textvariable=var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat", width=6,
+                         font=F("mono", 13, False), highlightthickness=1, highlightcolor=CYAN,
+                         highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3))
+            e.pack(side="left", ipady=px(4))
         tk.Label(body, text=L("UPPER/LOWER CASE IS IGNORED. A TERM MATCHES ANYWHERE IN THE TITLE.",
                               "GROSS-/KLEINSCHREIBUNG ZÄHLT NICHT. EIN BEGRIFF PASST ÜBERALL IM TITEL."),
                  bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w").pack(fill="x", pady=(0, px(8)))
@@ -4749,7 +4769,7 @@ class ListDialog(tk.Toplevel):
         self.lb.pack(side="left", fill="both", expand=True)
         self.lb.bind("<<ListboxSelect>>", lambda e: self.update_tool())
 
-        for v in (self.name_var, self.any_var, self.all_var, self.none_var):
+        for v in (self.name_var, self.any_var, self.all_var, self.none_var, self.from_var, self.to_var):
             v.trace_add("write", lambda *a: self.schedule())
         self.bind("<Escape>", lambda e: self.destroy())
         self.refresh()
@@ -4770,8 +4790,12 @@ class ListDialog(tk.Toplevel):
         return e
 
     def current(self):
+        def year_of(var):
+            m_ = re.fullmatch(r"\s*(\d{4})\s*", var.get())
+            return int(m_.group(1)) if m_ else None
         return {"any": parse_terms(self.any_var.get()), "all": parse_terms(self.all_var.get()),
-                "none": parse_terms(self.none_var.get()), "add": sorted(self.add), "skip": sorted(self.skip)}
+                "none": parse_terms(self.none_var.get()), "from": year_of(self.from_var), "to": year_of(self.to_var),
+                "add": sorted(self.add), "skip": sorted(self.skip)}
 
     def schedule(self):
         if self.after_id:
@@ -4799,7 +4823,7 @@ class ListDialog(tk.Toplevel):
                 skipped += 1
                 continue
             manual = vid in self.add
-            if manual or title_matches(cur, self.titles.get(vid, "")):
+            if manual or (in_years(cur, v["year"]) and title_matches(cur, self.titles.get(vid, ""))):
                 hits += 1
                 if len(self.shown) < self.SHOW_MAX:
                     self.lb.insert("end", ("+ " if manual else "  ") + self.line(v))
@@ -4813,7 +4837,8 @@ class ListDialog(tk.Toplevel):
                 self.lb.itemconfig("end", fg=RED)
                 self.shown.append(("skip", vid))
         miss = len(missing_titles(self.pool))
-        self.count.configure(text=L(f"{hits} OF {len(self.pool)} VIDEOS MATCH", f"{hits} VON {len(self.pool)} VIDEOS PASSEN")
+        span = sum(1 for v in self.pool if in_years(cur, v["year"]))
+        self.count.configure(text=L(f"{hits} OF {span} VIDEOS MATCH", f"{hits} VON {span} VIDEOS PASSEN")
                              + (L(f"  //  {skipped} EXCLUDED", f"  //  {skipped} AUSGESCHLOSSEN") if skipped else ""))
         notes = []
         if not self.pool:
