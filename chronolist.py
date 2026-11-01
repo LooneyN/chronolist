@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 88
+BUILD = 89
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -359,6 +359,116 @@ def removed_by_year():
     return out
 
 
+# ------------------------------------------------------------------ Stichwortlisten
+# Eine Liste ist wie ein Jahr eine Playlist in Upload-Reihenfolge, nur dass die Videos nach ihrem
+# Titel gewählt werden. Gespeichert pro Kanal in lists.json; der Schlüssel "k_<id>" steht dort,
+# wo bei Jahren die Jahreszahl steht (videos_k_<id>.json, state_k_<id>.json).
+def lists_file(): return CHAN_DIR / "lists.json"
+def notitle_file(): return CHAN_DIR / "notitle.json"
+
+
+def load_lists():
+    d = load(lists_file(), [])
+    return d if isinstance(d, list) else []
+
+
+def save_lists(lists):
+    save(lists_file(), lists)
+
+
+def list_key(lst): return "k_" + lst["id"]
+def is_list_key(y): return isinstance(y, str)
+
+
+def find_list(key):
+    for lst in load_lists():
+        if list_key(lst) == key:
+            return lst
+    return None
+
+
+def list_name(key):
+    lst = find_list(key) if isinstance(key, str) else None
+    return (lst or {}).get("name") or str(key)
+
+
+def new_list_id():
+    have = {lst["id"] for lst in load_lists()}
+    while True:
+        i = "%06x" % random.randrange(16 ** 6)
+        if i not in have:
+            return i
+
+
+def norm_text(s):
+    return " ".join(str(s or "").casefold().split())
+
+
+def parse_terms(text):
+    """'a, b' oder Zeilen -> ['a', 'b'] (klein geschrieben, ohne Leereinträge)."""
+    if isinstance(text, (list, tuple)):
+        text = "\n".join(text)
+    out = []
+    for part in re.split(r"[,\n;]", str(text or "")):
+        t = norm_text(part)
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def title_matches(lst, title):
+    """Passt ein Titel zur Liste? any = mindestens eins, all = alle, none = keins davon."""
+    t = norm_text(title)
+    any_t, all_t, none_t = (lst.get("any") or []), (lst.get("all") or []), (lst.get("none") or [])
+    if not (any_t or all_t):
+        return False                      # ohne Suchbegriff keine Treffer
+    if any_t and not any(x in t for x in any_t):
+        return False
+    if all_t and not all(x in t for x in all_t):
+        return False
+    return not any(x in t for x in none_t)
+
+
+def year_files():
+    """[(Jahr, Pfad)] aller Jahreslisten, älteste zuerst."""
+    out = []
+    for f in (CHAN_DIR.glob("videos_*.json") if CHAN_DIR.exists() else []):
+        m_ = re.fullmatch(r"videos_(\d{4})\.json", f.name)
+        if m_:
+            out.append((int(m_.group(1)), f))
+    return sorted(out)
+
+
+def all_year_videos():
+    """Alle Videos aller Jahre in Upload-Reihenfolge: [{'id','published','year'}]."""
+    out = []
+    for y, f in year_files():
+        for v in load(f, []) or []:
+            out.append({"id": v["id"], "published": v.get("published"), "year": y})
+    return out
+
+
+def list_videos(lst, titles=None, pool=None):
+    """Treffer einer Liste in Upload-Reihenfolge. Einzelne Videos lassen sich fest hinzufügen/ausschließen."""
+    titles = titles if titles is not None else load(titles_file(), {})
+    add, skip = set(lst.get("add") or []), set(lst.get("skip") or [])
+    out = []
+    for v in (pool if pool is not None else all_year_videos()):
+        vid = v["id"]
+        if vid in skip:
+            continue
+        if vid in add or title_matches(lst, titles.get(vid, "")):
+            out.append({"id": vid, "published": v.get("published")})
+    return out
+
+
+def missing_titles(pool=None):
+    titles = load(titles_file(), {})
+    nt = set(load(notitle_file(), []))
+    return [v["id"] for v in (pool if pool is not None else all_year_videos())
+            if v["id"] not in titles and v["id"] not in nt]
+
+
 def video_title(vid):
     """Titel über oEmbed (öffentlich, ohne Kontingent). None, wenn nicht abrufbar (privat/gelöscht)."""
     try:
@@ -374,6 +484,11 @@ def videos_file(y): return CHAN_DIR / f"videos_{y}.json"
 def collect_file(y): return CHAN_DIR / f"collect_{y}.json"
 def state_file(y): return CHAN_DIR / f"state_{y}.json"
 def template_values(y, count=None):
+    if is_list_key(y):
+        if count is None:
+            vids = load(videos_file(y), None)
+            count = len(vids) if vids is not None else "?"
+        return {"channel": channel_name(), "handle": CHANNEL.get("handle", ""), "year": list_name(y), "count": count}
     if count is None:
         vids = load(videos_file(y), None)
         count = len(vids) if vids is not None else "?"
@@ -405,6 +520,8 @@ def part_ids(state):
 
 def growing(y):
     """Kann in diesem Jahr noch etwas dazukommen? Laufendes Jahr, im Januar auch das Vorjahr."""
+    if is_list_key(y):
+        return True                       # Listen werden bei jedem Lauf neu abgeglichen
     t = datetime.date.today()
     return y >= t.year or (y == t.year - 1 and t.month == 1)
 def playlist_description(y): return fill_template(DESCRIPTION_TEMPLATE, y)
@@ -1331,7 +1448,7 @@ class Worker(threading.Thread):
                 self.log(L(f"THUMBNAILS SKIPPED // {str(e)[:120]}", f"THUMBNAILS ÜBERSPRUNGEN // {str(e)[:120]}"), "warn")
             if self.fallback:
                 self.scan_archive()
-            queue_ = list(self.years)
+            queue_ = [y for y in self.years if not is_list_key(y)]
             deferred = []
             while queue_ or deferred:
                 if not queue_:
@@ -1360,6 +1477,7 @@ class Worker(threading.Thread):
                     self.prefetch(y + 1)
                 if self.fill(y, videos) and not growing(y):
                     self.emit("select", None, y)    # fertig -> abwählen (laufendes Jahr bleibt für neue Videos)
+            self.run_lists([y for y in self.years if is_list_key(y)])
             self.log(L("ALL TARGETS PROCESSED", "ALLE AUSGEWÄHLTEN JAHRE BEARBEITET"), "ok")
         except Stopped:
             reason = "gestoppt"
@@ -2026,6 +2144,93 @@ class Worker(threading.Thread):
         self.emit("progress", year)
         return videos
 
+    # --- Stichwortlisten
+    def fetch_missing_titles(self):
+        """Fehlende Videotitel nachladen: erst aus den eigenen Playlists (API, 1 Einheit pro 50), den Rest per oEmbed."""
+        pool = all_year_videos()
+        need = set(missing_titles(pool))
+        if not need:
+            return
+        self.log(L(f"LISTS // LOADING {len(need)} MISSING VIDEO TITLES ...", f"LISTEN // LADE {len(need)} FEHLENDE VIDEOTITEL ..."))
+        by_year = {}
+        for v in pool:
+            if v["id"] in need:
+                by_year.setdefault(v["year"], set()).add(v["id"])
+        got = 0
+        try:
+            if self.mode == "api" and not quota_blocked("units"):
+                for y in sorted(by_year):
+                    for pid in part_ids(load(state_file(y), {})):
+                        token = None
+                        while True:
+                            self.check()
+                            params = {"part": "snippet", "playlistId": pid, "maxResults": 50}
+                            if token:
+                                params["pageToken"] = token
+                            d = self.call("GET", "playlistItems", params)
+                            t = item_titles(d.get("items"))
+                            got += remember_titles(t)
+                            token = d.get("nextPageToken")
+                            if not token:
+                                break
+                        self.act(L(f"LOADING TITLES // {y}", f"LADE TITEL // {y}"), y)
+        except QuotaExceeded:
+            self.log(L("TITLES // API QUOTA USED UP // CONTINUING WITHOUT IT", "TITEL // KONTINGENT AUFGEBRAUCHT // WEITER OHNE"), "warn")
+        left = [i for i in missing_titles(pool)]
+        if left:
+            self.log(L(f"TITLES // {len(left)} MORE VIA OEMBED (SLOW, NO QUOTA)", f"TITEL // NOCH {len(left)} ÜBER OEMBED (LANGSAM, KEIN KONTINGENT)"))
+        nt = set(load(notitle_file(), []))
+        batch = {}
+        for n, vid in enumerate(left, 1):
+            self.check()
+            t = video_title(vid)
+            if t:
+                batch[vid] = t
+            else:
+                nt.add(vid)
+            if n % 100 == 0 or n == len(left):
+                got += remember_titles(batch)
+                batch = {}
+                save(notitle_file(), sorted(nt))
+                self.act(L(f"LOADING TITLES // {n}/{len(left)}", f"LADE TITEL // {n}/{len(left)}"), None)
+            self.sleep(random.uniform(0.1, 0.3))
+        self.act(None, None)
+        self.log(L(f"LISTS // {got} TITLES LOADED", f"LISTEN // {got} TITEL GELADEN"), "ok")
+
+    def sync_list(self, key):
+        """Treffer der Liste neu berechnen und als Videoliste speichern. Ändert sich mehr als ein Anhängen
+        am Ende, muss die Playlist einmal repariert (einsortiert/bereinigt) werden."""
+        lst = find_list(key)
+        new = list_videos(lst)
+        old = load(videos_file(key), None)
+        state = load(state_file(key), {})
+        if old is not None and state.get("playlist_id"):
+            oldids, newids = [v["id"] for v in old], [v["id"] for v in new]
+            if newids[:len(oldids)] != oldids:
+                state["repair"] = True
+                save(state_file(key), state)
+        save(videos_file(key), new)
+        return new
+
+    def run_lists(self, keys):
+        if not keys:
+            return
+        self.fetch_missing_titles()
+        for key in keys:
+            self.check()
+            lst = find_list(key)
+            if not lst:
+                continue
+            self.emit("current", key)
+            self.log(L(f"// LIST {lst['name']}", f"// LISTE {lst['name']}"), "sep")
+            videos = self.sync_list(key)
+            self.log(L(f"{len(videos)} VIDEOS MATCH", f"{len(videos)} VIDEOS PASSEN"), "ok")
+            self.emit("progress", key)
+            if not videos and not load(state_file(key), {}).get("playlist_id"):
+                self.log(L("NO MATCHES // NO PLAYLIST CREATED YET", "KEINE TREFFER // NOCH KEINE PLAYLIST ANGELEGT"), "warn")
+                continue
+            self.fill(key, videos)
+
     # --- Playlist befüllen
     def prefetch(self, year):
         """Nächstes Jahr schon mit API-Kontingent vorbereiten, damit der Browser dort weitermachen kann."""
@@ -2360,9 +2565,12 @@ class Worker(threading.Thread):
                 self.log(L(f"REPAIR {tag} // PLAYLIST HAS {len(items)} VIDEOS", f"NACHTRAG {tag} // PLAYLIST HAT {len(items)} VIDEOS"))
                 wanted = set(order_all)
                 extras = [it for it in items if it["vid"] not in wanted]
-                shorts = known_shorts() or set()
-                keep = [it for it in extras if it["vid"] not in shorts]
-                extras = [it for it in extras if it["vid"] in shorts]     # nur Shorts werden entfernt
+                if is_list_key(year):
+                    keep = []                                              # Listen enthalten genau die Treffer
+                else:
+                    shorts = known_shorts() or set()
+                    keep = [it for it in extras if it["vid"] not in shorts]
+                    extras = [it for it in extras if it["vid"] in shorts]     # nur Shorts werden entfernt
                 if keep:
                     self.log(L(f"REPAIR {tag} // {len(keep)} VIDEO(S) NOT IN THE LIST // LEFT IN THE PLAYLIST",
                                f"NACHTRAG {tag} // {len(keep)} VIDEO(S) NICHT IN DER LISTE // BLEIBEN IN DER PLAYLIST"), "info")
@@ -2371,8 +2579,8 @@ class Worker(threading.Thread):
                                f"NACHTRAG {tag} // {len(extras)} VIDEO(S) NICHT IN DER LISTE // BLEIBEN VORERST IN DER PLAYLIST"), "warn")
                     extras = []
                 if extras:
-                    self.log(L(f"REPAIR {tag} // REMOVING {len(extras)} SHORT(S)",
-                               f"NACHTRAG {tag} // ENTFERNE {len(extras)} SHORT(S)"), "warn")
+                    self.log(L(f"REPAIR {tag} // REMOVING {len(extras)} {'VIDEO(S)' if is_list_key(year) else 'SHORT(S)'}",
+                               f"NACHTRAG {tag} // ENTFERNE {len(extras)} {'VIDEO(S)' if is_list_key(year) else 'SHORT(S)'}"), "warn")
                     for i in range(0, len(extras), BATCH_SIZE):
                         self.check()
                         self.browser.remove_many(pid, extras[i:i + BATCH_SIZE])
