@@ -93,7 +93,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 109
+BUILD = 110
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -4790,7 +4790,7 @@ class ListDialog(tk.Toplevel):
         self.title(L("Custom list", "Eigene Liste"))
         self.transient(parent or app)
         self.minsize(px(700), px(640))
-        self.geometry(f"{px(780)}x{px(940)}")
+        self.geometry(f"{px(780)}x{px(1000)}")
         self.pool = all_year_videos()
         self.titles = load(titles_file(), {})
         self.shown = []          # (typ, id) je Zeile: "hit" | "add" | "skip"
@@ -4810,6 +4810,20 @@ class ListDialog(tk.Toplevel):
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
         Section(body, L("LIST SETTINGS", "LISTEN-EINSTELLUNGEN"), "NAME // THUMBNAIL").pack(fill="x", pady=(0, px(10)))
 
+        templates = load_lists() if not self.lst_id else []
+        if templates:
+            tk.Label(body, text=L("TEMPLATE  (OPTIONAL, COPIES NAME AND FILTER)", "VORLAGE  (OPTIONAL, ÜBERNIMMT NAME UND FILTER)"),
+                     bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w").pack(fill="x")
+            self.tpl_lb = tk.Listbox(body, bg=BG2, fg=TEXT, selectbackground=mix(CYAN, BG, 0.3), selectforeground=TEXT,
+                                     font=F("mono", 11, False), relief="flat", highlightthickness=1,
+                                     highlightbackground=mix(CYAN, BG, 0.3), activestyle="none", exportselection=False,
+                                     height=min(len(templates) + 1, 4))
+            self.tpl_lb.insert("end", L("— NONE (EMPTY LIST) —", "— KEINE (LEERE LISTE) —"))
+            for t_ in templates:
+                self.tpl_lb.insert("end", t_.get("name") or "?")
+            self.tpl_lb.selection_set(0)
+            self.tpl_lb.pack(fill="x", pady=(px(3), px(8)))
+            self.tpl_lb.bind("<<ListboxSelect>>", lambda e, t=templates: self.pick_template(t))
         self.name_var = tk.StringVar(value=lst.get("name", ""))
         self.field(body, L("NAME (REPLACES {year} IN THE PLAYLIST TITLE)", "NAME (ERSETZT {year} IM PLAYLIST-TITEL)"), self.name_var)
         th = tk.Frame(body, bg=BG)
@@ -4919,6 +4933,20 @@ class ListDialog(tk.Toplevel):
         self.geometry(f"+{max(0, x)}+{max(0, y)}")
         self.grab_set()
         self.focus_force()
+
+    def pick_template(self, templates):
+        sel = self.tpl_lb.curselection()
+        if not sel or sel[0] == 0:
+            return
+        t = templates[sel[0] - 1]
+        self.name_var.set(t.get("name", ""))
+        self.any_var.set(", ".join(t.get("any") or []))
+        self.all_var.set(", ".join(t.get("all") or []))
+        self.none_var.set(", ".join(t.get("none") or []))
+        self.from_var.set(str(t.get("from") or ""))
+        self.to_var.set(str(t.get("to") or ""))
+        self.add, self.skip = set(), set()
+        self.refresh()
 
     def thumb_refresh(self):
         t = (load(thumbs_file(), {}).get(str(self.thumb_key)) or {}) if self.thumb_key else {}
@@ -5674,8 +5702,8 @@ class App(tk.Tk):
         self.new_list_btn = CutButton(left, L("+  CUSTOM LIST", "+  EIGENE LISTE"), self.new_list, height=px(36))
         self.new_list_btn.set_color(CYAN)
         self.new_list_btn.grid(row=4, column=0, sticky="ew", pady=(px(8), 0), padx=(0, sbw))
-        Tooltip(self.new_list_btn, L("Your own playlist besides the years: collects all videos whose title contains your keywords (e.g. a series), in upload order. If you already have lists, you can start from a copy of one.",
-                                     "Eine eigene Playlist neben den Jahren: sammelt alle Videos, in deren Titel deine Stichwörter vorkommen (z. B. eine Serie), in Upload-Reihenfolge. Gibt es schon Listen, kannst du mit einer Kopie davon starten."))
+        Tooltip(self.new_list_btn, L("Your own playlist besides the years: collects all videos whose title contains your keywords (e.g. a series), in upload order.",
+                                     "Eine eigene Playlist neben den Jahren: sammelt alle Videos, in deren Titel deine Stichwörter vorkommen (z. B. eine Serie), in Upload-Reihenfolge."))
         self.rows = {}
         self.order = []
         self.build_rows()
@@ -5829,23 +5857,7 @@ class App(tk.Tk):
         save(SETTINGS_FILE, self.settings)
 
     def new_list(self):
-        lists = load_lists()
-        if not lists:
-            ListDialog(self, None)
-            return
-        m = tk.Menu(self, tearoff=0, bg=BG2, fg=TEXT, activebackground=mix(CYAN, BG, 0.35), activeforeground="#ffffff",
-                    bd=0, font=F("mono", 11, False))
-        m.add_command(label=L("EMPTY LIST", "LEERE LISTE"), command=lambda: ListDialog(self, None))
-        m.add_separator()
-        for lst in lists:
-            nm = lst.get("name") or "?"
-            m.add_command(label=L(f"COPY OF: {nm}", f"KOPIE VON: {nm}"),
-                          command=lambda t=lst: ListDialog(self, None, template=t))
-        b = self.new_list_btn
-        try:
-            m.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
-        finally:
-            m.grab_release()
+        ListDialog(self, None)
 
     def edit_list(self, key):
         if find_list(key):

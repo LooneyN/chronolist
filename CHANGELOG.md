@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
-- CUSTOM LIST: with existing lists the button offers an empty list or a COPY OF one (name and rules are taken over, not the thumbnail or single videos).
+- New list editor offers a TEMPLATE selection when lists already exist (name and filter are copied, not the thumbnail or single videos).
 - HIDE DONE / SHOW DONE in the TARGETS bar collapses all completed cards.
 - Thumbnails are cropped to the exact 16:9 or 1:1 format YouTube's API requires (the Studio does that on its own) and sent as JPEG, fixing HTTP 400 "invalid aspect ratio". Needs Pillow.
 - Links in the log copy to the clipboard on click (with a short "link copied" hint).
