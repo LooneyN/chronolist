@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 86
+BUILD = 87
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -117,6 +117,8 @@ COOLDOWN_PAUSE = (17, 23)       # Sekunden (~20 s)
 LONG_BREAK_EVERY = 1500         # nach so vielen Videos eine lange Pause
 LONG_BREAK_PAUSE = (210, 270)   # Sekunden (~4 min)
 REMOVE_EXTRAS = True            # nur Videos, die nachweislich Shorts sind, werden aus Playlists entfernt
+CARD_H = 62                     # Höhe aller Listen-/Optionskarten
+DECK_H = 72                     # Höhe der Kanalkarte und der Steuerkacheln (gleiche Linie links/rechts)
 PART_MAX = 5000                 # YouTube: höchstens 5.000 Videos pro Playlist -> danach Teil 2, 3, ...
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
@@ -2814,7 +2816,7 @@ def wait_label(label):
 
 class YearRow(Panel):
     def __init__(self, master, year, command, pause_command=None):
-        super().__init__(master, 62, cut=10, command=command)
+        super().__init__(master, CARD_H, cut=10, command=command)
         self.pause_command = pause_command
         self.icon_geo = None       # (x0, y0, x1, y1) des Symbols, klickbar während des Laufs
         self.year = year
@@ -3036,7 +3038,7 @@ class YearRow(Panel):
 
 
 class ToggleCard(Panel):
-    def __init__(self, master, name, sub, value, command, available=True, height=54, compact=False):
+    def __init__(self, master, name, sub, value, command, available=True, height=CARD_H, compact=False):
         super().__init__(master, height, command=command if available else None,
                          state="inactive" if available else "unavailable")
         self.name, self.sub, self.value, self.available = name, sub, value, available
@@ -3131,7 +3133,7 @@ class ChannelCard(Panel):
     Klickbar ist nur der cyan EDIT-Bereich rechts."""
 
     def __init__(self, master, command):
-        super().__init__(master, 84, state="frame", cut=16)
+        super().__init__(master, DECK_H, state="frame", cut=16)
         self.on_edit = command
         self.resolving = False
         self.edit_hover = False
@@ -3146,14 +3148,14 @@ class ChannelCard(Panel):
             self.create_line(ax, ay, ax + sx * k, ay, fill=RED, width=t)
             self.create_line(ax, ay, ax, ay + sy * k, fill=RED, width=t)
         # @-Icon
-        isz = px(42)
+        isz = px(38)
         ix = x0 + px(20)
         icx = ix + isz / 2
         self.create_rectangle(ix, cy - isz / 2, ix + isz, cy + isz / 2, fill=mix(RED, BG, 0.12),
                               outline=mix(RED, BG, 0.7))
         self.create_text(icx, cy, text="@", font=F("mono", 22), fill=RED)
         # EDIT-Bereich (cyan = klickbar)
-        tw = px(96)
+        tw = px(116)            # so breit wie der Prozentblock der Jahreskarten
         tx = x1 - tw
         pts = [(tx, y0 + 1), (x1 - 1, y0 + 1), (x1 - 1, y1 - c), (x1 - c, y1 - 1), (tx, y1 - 1)]
         gradient(self, pts, tx, y0, x1, y1, YELLOW, 0.30 if self.edit_hover else 0.16, steps=6)
@@ -3502,7 +3504,7 @@ class SettingsCard(Panel):
     """Kompakte Karte unter den Optionen. name/sub sind Funktionen, damit sie immer aktuell sind."""
 
     def __init__(self, master, command, name, sub, icon="lines"):
-        super().__init__(master, 54, command=command)
+        super().__init__(master, CARD_H, command=command)
         self.name_fn, self.sub_fn, self.icon = name, sub, icon
 
     def draw_content(self, x0, y0, x1, y1, c, role):
@@ -4423,11 +4425,11 @@ class LoginPanel(Panel):
 class CutButton(tk.Canvas):
     """Eckiger Button mit einer abgeschnittenen Ecke unten rechts (wie die Panels)."""
 
-    def __init__(self, master, text, command, width=0):
-        f = tkfont.Font(family=FONT_MONO, size=-px(12), weight="bold")
+    def __init__(self, master, text, command, width=0, height=36, size=12):
+        f = tkfont.Font(family=FONT_MONO, size=-px(size), weight="bold")
         w = max(px(width), f.measure(text) + px(36))
-        super().__init__(master, width=w, height=px(36), bg=BG, highlightthickness=0, bd=0, cursor="hand2")
-        self.text, self.command = text, command
+        super().__init__(master, width=w, height=px(height), bg=BG, highlightthickness=0, bd=0, cursor="hand2")
+        self.text, self.command, self.size = text, command, size
         self.enabled, self.hover = True, False
         self.color = YELLOW      # Aktions-Knöpfe sind gelb
         self.bind("<Configure>", lambda e: self.redraw())
@@ -4462,7 +4464,7 @@ class CutButton(tk.Canvas):
         w, h = self.winfo_width(), self.winfo_height()
         if w < 10:
             return
-        m, c = px(3), px(7)
+        m, c = px(3), px(10) if h > px(50) else px(7)
         x0, y0, x1, y1 = m, m, w - m - 1, h - m - 1
         col = self.color
         if not self.enabled:
@@ -4475,7 +4477,7 @@ class CutButton(tk.Canvas):
         else:
             fill, edge, tcol = mix(col, BG, 0.20), mix(col, BG, 0.9), col
         self.create_polygon(flat(shape(x0, y0, x1, y1, c)), fill=fill, outline=edge)
-        self.create_text(w / 2, h / 2, text=self.text, font=F("mono", 12), fill=tcol)
+        self.create_text(w / 2, h / 2, text=self.text, font=F("mono", self.size), fill=tcol)
 
 
 class Section(tk.Canvas):
@@ -4845,6 +4847,10 @@ class App(tk.Tk):
         self.year_section.grid(row=2, column=0, sticky="ew", pady=(0, px(6)))
         self.scroll = ScrollArea(left)
         self.scroll.grid(row=3, column=0, sticky="nsew")
+        # Kanalkarte und Überschrift enden rechts bündig mit den Jahreskarten (nicht mit der Scrollleiste)
+        sbw = self.scroll.sb.winfo_reqwidth() + px(6)
+        self.channel_card.grid_configure(padx=(0, sbw))
+        self.year_section.grid_configure(padx=(0, sbw))
         self.rows = {}
         self.order = []
         self.build_rows()
@@ -4857,16 +4863,17 @@ class App(tk.Tk):
 
         Section(right, L("CONTROL", "STEUERUNG"), "HUD // STATUS").grid(row=0, column=0, sticky="ew", pady=(0, px(6)))
         btns = tk.Frame(right, bg=BG)
-        btns.grid(row=1, column=0, sticky="ew", pady=(0, px(8)))
-        self.start_btn = CutButton(btns, "▶  START", self.start, width=100)
-        self.start_btn.pack(side="left")
-        self.pause_btn = CutButton(btns, L("❚❚  PAUSE", "❚❚  PAUSE"), self.toggle_pause, width=112)
-        self.pause_btn.pack(side="left", padx=(px(6), 0))
+        btns.grid(row=1, column=0, sticky="ew", pady=(0, px(16)))
+        for i in range(4):
+            btns.columnconfigure(i, weight=1, uniform="ctl")
+        self.start_btn = CutButton(btns, "▶  START", self.start, height=DECK_H, size=15)
+        self.pause_btn = CutButton(btns, L("❚❚  PAUSE", "❚❚  PAUSE"), self.toggle_pause, height=DECK_H, size=15)
         self.pause_btn.set_enabled(False)
-        self.stop_btn = CutButton(btns, L("■  STOP", "■  STOPP"), self.stop, width=96)
-        self.stop_btn.pack(side="left", padx=(px(6), 0))
-        self.check_btn = CutButton(btns, L("✓  CHECK", "✓  PRÜFEN"), self.run_check, width=104)
-        self.check_btn.pack(side="left", padx=(px(6), 0))
+        self.stop_btn = CutButton(btns, L("■  STOP", "■  STOPP"), self.stop, height=DECK_H, size=15)
+        self.check_btn = CutButton(btns, L("✓  CHECK", "✓  PRÜFEN"), self.run_check, height=DECK_H, size=15)
+        for i, b in enumerate((self.start_btn, self.pause_btn, self.stop_btn, self.check_btn)):
+            b.configure(width=1)
+            b.grid(row=0, column=i, sticky="ew", padx=(0 if i == 0 else px(3), 0 if i == 3 else px(3)))
         for b in (self.start_btn, self.pause_btn, self.stop_btn, self.check_btn):
             b.set_color(YELLOW)   # Hauptsteuerung in Cyberpunk-Gelb
         self.setup_btn = CutButton(self.header, L("API // MISSING", "API // ANMELDEN"), self.edit_credentials, width=150)
@@ -4878,9 +4885,9 @@ class App(tk.Tk):
         self.update_api_button()
         self.stop_btn.set_enabled(False)
 
-        Section(right, L("OPTIONS", "OPTIONEN"), "RUN // SYSTEM").grid(row=3, column=0, sticky="ew", pady=(px(6), px(6)))
+        Section(right, L("OPTIONS", "OPTIONEN"), "RUN // SYSTEM").grid(row=3, column=0, sticky="ew", pady=(0, px(6)))
         opts = tk.Frame(right, bg=BG)
-        opts.grid(row=4, column=0, sticky="ew", pady=(0, px(8)))
+        opts.grid(row=4, column=0, sticky="ew", pady=(0, px(16)))
         opts.columnconfigure(0, weight=1, uniform="opt")
         opts.columnconfigure(1, weight=1, uniform="opt")
         # Zeile 1: Ablauf
