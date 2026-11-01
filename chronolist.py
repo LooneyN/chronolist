@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 120
+BUILD = 121
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2793,7 +2793,9 @@ BG, BG2 = "#0E0E17", "#121221"
 TEXT, TEXT_DIM, TEXT_MUTED = "#FFFFFF", "#B4ECF2", "#94B8C2"
 FLUFF = None  # wird nach mix() gesetzt
 
-S = 1.0                 # DPI-Faktor
+S = 1.0                 # Skalierung = Windows-DPI * eingestellte Textgröße
+UI_SCALES = (100, 125, 150, 175)
+UI_SCALE_DEFAULT = 125
 FONT_UI = "Segoe UI"
 FONT_MONO = "Consolas"
 
@@ -2804,6 +2806,21 @@ def px(n):
 
 def F(kind, size, bold=True):
     return (FONT_UI if kind == "ui" else FONT_MONO, -px(size), "bold" if bold else "normal")
+
+
+def fit(w, h):
+    """Geometrie-String, höchstens so groß wie der Bildschirm (die Textgröße macht Fenster größer)."""
+    root = tk._default_root
+    if root is not None:
+        w, h = min(w, int(root.winfo_screenwidth() * 0.95)), min(h, root.winfo_screenheight() - px(110))
+    return f"{w}x{h}"
+
+
+def fit_min(w, h):
+    root = tk._default_root
+    if root is not None:
+        w, h = min(w, int(root.winfo_screenwidth() * 0.9)), min(h, root.winfo_screenheight() - px(160))
+    return w, h
 
 
 def mix(c1, c2, a):
@@ -3521,8 +3538,8 @@ class SettingsDialog(tk.Toplevel):
         self.app = app
         self.title(L("Playlist settings", "Playlist-Einstellungen"))
         self.transient(app)
-        self.minsize(px(640), px(520))
-        self.geometry(f"{px(720)}x{px(600)}")
+        self.minsize(*fit_min(px(640), px(520)))
+        self.geometry(fit(px(720), px(600)))
         self.focus_field = None
         pad = px(18)
         st = app.settings
@@ -3770,6 +3787,23 @@ class AppSettingsDialog(tk.Toplevel):
                  wraplength=px(460)).pack(fill="x", pady=(px(2), px(14)))
         self.set_language(LANG)
 
+        Section(body, L("TEXT SIZE", "TEXTGRÖSSE"), "UI // SCALE").pack(fill="x", pady=(0, px(6)))
+        size_row = tk.Frame(body, bg=BG)
+        size_row.pack(fill="x", pady=(0, px(4)))
+        self.ui_scale = app.settings.get("ui_scale", UI_SCALE_DEFAULT)
+        if self.ui_scale not in UI_SCALES:
+            self.ui_scale = UI_SCALE_DEFAULT
+        self.size_btns = {}
+        for v in UI_SCALES:
+            b = CutButton(size_row, f"{v} %", lambda v=v: self.set_ui_scale(v), width=96)
+            b.pack(side="left", padx=(0, px(6)))
+            self.size_btns[v] = b
+        tk.Label(body, text=L("SIZE OF ALL TEXT AND CONTROLS. CHRONOLIST RESTARTS WHEN THE SIZE CHANGES.",
+                              "GRÖSSE VON TEXT UND BEDIENELEMENTEN. CHRONOLIST STARTET BEI EINER ÄNDERUNG NEU."),
+                 bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w", justify="left",
+                 wraplength=px(460)).pack(fill="x", pady=(px(2), px(14)))
+        self.set_ui_scale(self.ui_scale)
+
         Section(body, L("START", "START"), "SYSTEM // BOOT").pack(fill="x", pady=(0, px(6)))
         self.autorun = app.autorun
         self.auto_card = ToggleCard(body, L("AUTO-RUN", "AUTOSTART"), L("START WORKING WHEN CHRONOLIST OPENS",
@@ -3804,7 +3838,7 @@ class AppSettingsDialog(tk.Toplevel):
         CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<Return>", lambda e: self.save())
-        self.geometry(f"{px(500)}x{px(450)}")
+        self.geometry(fit(px(500), px(640)))
         style_window(self)
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -3818,6 +3852,12 @@ class AppSettingsDialog(tk.Toplevel):
         for c, b in self.lang_btns.items():
             b.set_color(GREEN if c == code else YELLOW)
             b.set_text(("● " if c == code else "") + LANGUAGES[c])
+
+    def set_ui_scale(self, v):
+        self.ui_scale = v
+        for c, b in self.size_btns.items():
+            b.set_color(GREEN if c == v else YELLOW)
+            b.set_text(("● " if c == v else "") + f"{c} %")
 
     def toggle_auto(self):
         self.autorun = not self.autorun
@@ -3838,6 +3878,8 @@ class AppSettingsDialog(tk.Toplevel):
         self.app.autorun = self.autorun
         st["autorun"] = self.autorun
         lang_changed = self.language != LANG
+        size_changed = self.ui_scale != st.get("ui_scale", UI_SCALE_DEFAULT)
+        st["ui_scale"] = self.ui_scale
         if lang_changed:
             # Standard-Vorlagen wechseln mit der Sprache, eigene Vorlagen bleiben
             for key, fn in (("playlist_template", default_playlist_template),
@@ -3849,10 +3891,10 @@ class AppSettingsDialog(tk.Toplevel):
         self.app.write_log(L("SETTINGS SAVED", "EINSTELLUNGEN GESPEICHERT"), "ok")
         self.app.app_card.redraw()
         self.destroy()
-        if lang_changed:
+        if lang_changed or size_changed:
             if self.app.worker and self.app.worker.is_alive():
-                self.app.write_log(L("NEW LANGUAGE APPLIES AFTER THE NEXT START OF CHRONOLIST",
-                                     "NEUE SPRACHE GILT AB DEM NÄCHSTEN START VON CHRONOLIST"), "info")
+                self.app.write_log(L("THE CHANGE APPLIES AFTER THE NEXT START OF CHRONOLIST",
+                                     "DIE ÄNDERUNG GILT AB DEM NÄCHSTEN START VON CHRONOLIST"), "info")
             else:
                 self.app.restart()
 
@@ -4436,8 +4478,8 @@ class HelpWindow(tk.Toplevel):
     def __init__(self, master):
         super().__init__(master, bg="#16161f")
         self.title(L("Chronolist Help", "Chronolist Hilfe"))
-        self.geometry(f"{px(720)}x{px(760)}")
-        self.minsize(px(480), px(400))
+        self.geometry(fit(px(720), px(760)))
+        self.minsize(*fit_min(px(480), px(400)))
         base = "Segoe UI" if "Segoe UI" in tkfont.families(self) else "TkDefaultFont"
         txt = tk.Text(self, wrap="word", bg="#16161f", fg="#e8e8ee", bd=0, relief="flat",
                       highlightthickness=0, padx=px(28), pady=px(22), cursor="arrow",
@@ -4478,8 +4520,8 @@ class RemovedWindow(tk.Toplevel):
     def __init__(self, master, focus_year=None):
         super().__init__(master, bg="#16161f")
         self.title(L("Left out videos", "Nicht übernommene Videos"))
-        self.geometry(f"{px(760)}x{px(720)}")
-        self.minsize(px(480), px(360))
+        self.geometry(fit(px(760), px(720)))
+        self.minsize(*fit_min(px(480), px(360)))
         base = "Segoe UI" if "Segoe UI" in tkfont.families(self) else "TkDefaultFont"
         txt = tk.Text(self, wrap="word", bg="#16161f", fg="#e8e8ee", bd=0, relief="flat",
                       highlightthickness=0, padx=px(28), pady=px(22), cursor="arrow",
@@ -4577,8 +4619,8 @@ class SuggestDialog(tk.Toplevel):
         self.app = app
         self.title(L("List suggestions", "Listen-Vorschläge"))
         self.transient(app)
-        self.minsize(px(560), px(420))
-        self.geometry(f"{px(620)}x{px(560)}")
+        self.minsize(*fit_min(px(560), px(420)))
+        self.geometry(fit(px(620), px(560)))
         pad = px(18)
         row = tk.Frame(self, bg=BG)
         row.pack(side="bottom", fill="x", padx=pad, pady=pad)
@@ -4669,8 +4711,8 @@ class ListDialog(tk.Toplevel):
         self.add, self.skip = set(lst.get("add") or []), set(lst.get("skip") or [])
         self.title(L("Custom list", "Eigene Liste"))
         self.transient(parent or app)
-        self.minsize(px(700), px(640))
-        self.geometry(f"{px(780)}x{px(1060)}")
+        self.minsize(*fit_min(px(700), px(640)))
+        self.geometry(fit(px(780), px(1060)))
         self.pool = all_year_videos()
         self.titles = load(titles_file(), {})
         self.shown = []          # (typ, id) je Zeile: "hit" | "add" | "skip"
@@ -5483,7 +5525,9 @@ def style_window(win):
 
 def setup_theme(root):
     global S, FONT_UI, FONT_MONO
-    S = max(1.0, root.winfo_fpixels("1i") / 96)
+    ui = load(SETTINGS_FILE, {}).get("ui_scale", UI_SCALE_DEFAULT)
+    ui = ui if ui in UI_SCALES else UI_SCALE_DEFAULT
+    S = max(1.0, root.winfo_fpixels("1i") / 96) * ui / 100
     fams = set(tkfont.families(root))
     FONT_UI = next((f for f in ("Rajdhani", "Orbitron", "Segoe UI") if f in fams), "TkDefaultFont")
     FONT_MONO = next((f for f in ("Consolas", "Cascadia Mono", "Courier New") if f in fams), "TkFixedFont")
@@ -5507,8 +5551,8 @@ class App(tk.Tk):
         setup_theme(self)
         self.title(f"{APP_NAME.upper()}  v{VERSION}")
         self.configure(bg=BG)
-        self.geometry(f"{px(900)}x{px(760)}")
-        self.minsize(px(900), px(640))
+        self.geometry(fit(px(900), px(760)))
+        self.minsize(*fit_min(px(900), px(640)))
         style_titlebar(self)
         try:
             self._icons = [logo_photo(self, 64), logo_photo(self, 32), logo_photo(self, 16)]
