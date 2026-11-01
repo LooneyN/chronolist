@@ -93,7 +93,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 111
+BUILD = 112
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2458,6 +2458,11 @@ class Worker(threading.Thread):
             try:
                 data, mime, tw, th = prepare_thumbnail(path)
             except Exception as e:                      # Pillow fehlt oder Datei nicht lesbar: Original senden
+                if isinstance(e, ImportError):
+                    self.log(L("THUMBNAIL // PILLOW IS MISSING, IMAGE CANNOT BE CROPPED TO 16:9 // INSTALL IT: pip install pillow",
+                               "THUMBNAIL // PILLOW FEHLT, BILD KANN NICHT AUF 16:9 ZUGESCHNITTEN WERDEN // INSTALLIEREN: pip install pillow"), "warn")
+                else:
+                    self.log(L(f"THUMBNAIL // CROPPING FAILED // {str(e)[:100]}", f"THUMBNAIL // ZUSCHNITT FEHLGESCHLAGEN // {str(e)[:100]}"), "warn")
                 data, mime, tw, th = path.read_bytes(), ("image/png" if path.suffix.lower() == ".png" else "image/jpeg"), None, None
             self.log(L(f"THUMBNAIL {year_label(y)} // UPLOADING ...", f"THUMBNAIL {year_label(y)} // WIRD HOCHGELADEN ..."))
             try:
