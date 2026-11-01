@@ -17,6 +17,10 @@
 
 ---
 
+<p align="center">
+  <img src="assets/screenshots/main.png" width="860" alt="Chronolist main window with year and custom list cards">
+</p>
+
 YouTube only lets you sort a channel's uploads by "latest" or "popular". Chronolist fixes that: for any channel you choose, it creates playlists like **"ChannelName 2012 in Upload-Reihenfolge"** and fills them with all videos from that year, oldest first. On top of that you can build your own lists, for example one per series or season, from keywords in the video titles. Perfect for watching a long-running channel from the very beginning.
 
 ## Features
@@ -36,6 +40,12 @@ YouTube only lets you sort a channel's uploads by "latest" or "popular". Chronol
 - **Auto-run** on launch and optional **start with Windows** (in the program settings).
 - **Optional browser fallback** (off by default, see the warning below).
 - **Updates in the app**: a green UPDATE button in the header tells you when a new release is available; one click downloads it, replaces the exe and restarts. Your settings and progress stay.
+
+<p align="center">
+  <img src="assets/screenshots/list-editor.png" width="400" alt="Custom list editor with keyword filter and live preview">
+  &nbsp;
+  <img src="assets/screenshots/suggestions.png" width="400" alt="Series suggestions found in the video titles">
+</p>
 
 ## Download
 
