@@ -93,7 +93,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 110
+BUILD = 111
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2465,11 +2465,10 @@ class Worker(threading.Thread):
                     # list: die Playlist heißt hier "parent" (nicht "playlistId")
                     existing = self.call("GET", "playlistImages", {"part": "snippet", "parent": pid}).get("items", [])
                     meta = {"kind": "youtube#playlistImage", "snippet": {"playlistId": pid, "type": "hero"}}
-                    if tw:
-                        meta["snippet"].update(width=tw, height=th)
                     if existing:
-                        meta["id"] = existing[0]["id"]
-                        self.upload_call("PUT", {"part": "snippet"}, meta, data, mime)
+                        # Ersetzen: nur die ID (im Query und in den Metadaten), kein part, kein snippet
+                        eid = existing[0]["id"]
+                        self.upload_call("PUT", {"id": eid}, {"id": eid}, data, mime)
                     else:
                         self.upload_call("POST", {"part": "snippet"}, meta, data, mime)
                 t.update(status="done", error="", parts=len(pids))
