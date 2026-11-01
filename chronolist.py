@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 100
+BUILD = 101
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -4153,7 +4153,7 @@ HELP_TEXT_DE = [
           "Stichwörtern passen, in Upload-Reihenfolge. Du gibst einen Namen ein (er wird der Playlist-Titel) und Begriffe: "
           "\"enthält eines davon\", \"und alle diese\" und \"aber keines dieser\". Gross-/Kleinschreibung zählt nicht. "
           "Optional grenzt du die Liste auf einen Zeitraum von Jahren ein (z. B. 2016 bis 2020). "
-          "Die Vorschau zeigt sofort, wie viele Videos passen. Videos schließt du aus (mit Strg/Umschalt+Klick mehrere wählen, dann AUSSCHLIESSEN) "
+          "Die Vorschau zeigt sofort, wie viele Videos passen. Videos schließt du aus (mit Strg/Umschalt+Klick mehrere wählen, dann AUSSCHLIESSEN), und in der Ansicht ALLE VIDEOS nimmst du auch Videos auf, die nicht passen "
           "oder nimmst sie über Link oder Video-ID fest hinzu.\n"
           "Eine Liste ist eine Karte wie ein Jahr: anklicken zum Markieren, Rechtsklick zum Bearbeiten. Sie wird nach den Jahren "
           "bearbeitet und bei jedem Lauf neu abgeglichen, also kommen neue Videos automatisch dazu. Ändern sich die "
@@ -4374,7 +4374,7 @@ HELP_TEXT_EN = [
           "order. Enter a name (it becomes the playlist title) and terms: \"contains any of\", \"and all of these\" and "
           "\"but none of these\". Upper/lower case is ignored. Optionally limit the list to a range of years (e.g. 2016 to 2020). "
           "The preview shows right away how many videos match. "
-          "Exclude videos (select with Ctrl/Shift+click, then EXCLUDE) or add them for good with a link or video ID.\n"
+          "Exclude videos (select with Ctrl/Shift+click, then EXCLUDE); the ALL VIDEOS view lets you include videos that do not match or add them for good with a link or video ID.\n"
           "A list is a card like a year: click to select, right-click to edit. It runs after the years and is matched again "
           "on every run, so new videos are added automatically. If you change the terms, the playlist is adjusted on the "
           "next run (this needs FALLBACK on). Chronolist needs the titles of all videos for this. Missing ones are loaded "
@@ -4817,10 +4817,31 @@ class ListDialog(tk.Toplevel):
                              wraplength=px(700))
         self.note.pack(fill="x", pady=(0, px(4)))
 
+        self.view = "hits"
+        bar = tk.Frame(body, bg=BG)
+        bar.pack(fill="x", pady=(0, px(6)))
+        self.view_btns = {}
+        for v_, txt_ in (("hits", L("IN THE LIST", "IN DER LISTE")), ("all", L("ALL VIDEOS", "ALLE VIDEOS"))):
+            b = CutButton(bar, txt_, lambda v_=v_: self.set_view(v_), width=170)
+            b.pack(side="left", padx=(0, px(6)))
+            self.view_btns[v_] = b
+        Tooltip(self.view_btns["all"], L("Shows every video of the channel, also those that do not match, so you can add single ones.",
+                                         "Zeigt alle Videos des Kanals, auch die, die nicht passen, damit du einzelne aufnehmen kannst."))
+        self.filter_var = tk.StringVar()
+        fe = tk.Entry(bar, textvariable=self.filter_var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                      font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
+                      highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), width=22)
+        fe.pack(side="right", ipady=px(5))
+        tk.Label(bar, text=L("FILTER", "FILTER"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="right", padx=(0, px(6)))
+        Tooltip(fe, L("Shows only videos whose title contains this text.", "Zeigt nur Videos, deren Titel diesen Text enthält."))
+        self.filter_var.trace_add("write", lambda *a: self.schedule())
+
         tools = tk.Frame(body, bg=BG)
         tools.pack(side="bottom", fill="x", pady=(px(6), 0))
-        self.toggle_btn = CutButton(tools, L("EXCLUDE SELECTED", "AUSWAHL AUSSCHLIESSEN"), self.toggle_selected, width=230)
-        self.toggle_btn.pack(side="left")
+        self.excl_btn = CutButton(tools, L("EXCLUDE SELECTED", "AUSSCHLIESSEN"), self.exclude_selected, width=190)
+        self.excl_btn.pack(side="left")
+        self.incl_btn = CutButton(tools, L("INCLUDE SELECTED", "AUFNEHMEN"), self.include_selected, width=190)
+        self.incl_btn.pack(side="left", padx=(px(6), 0))
         self.add_var = tk.StringVar()
         ae = tk.Entry(tools, textvariable=self.add_var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
                       font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
@@ -4847,7 +4868,7 @@ class ListDialog(tk.Toplevel):
         for v in (self.name_var, self.any_var, self.all_var, self.none_var, self.from_var, self.to_var):
             v.trace_add("write", lambda *a: self.schedule())
         self.bind("<Escape>", lambda e: self.destroy())
-        self.refresh()
+        self.set_view("hits")
         style_window(self)
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -4929,34 +4950,58 @@ class ListDialog(tk.Toplevel):
         when = fmt_day(d) if d else str(v["year"])
         return f"{when:>11}  {self.titles.get(v['id']) or v['id']}"
 
+    def state_of(self, v, cur):
+        """('hit' | 'add' | 'skip' | 'out', passt_per_regel) – ob das Video in der Liste ist."""
+        vid = v["id"]
+        rule = in_years(cur, v["year"]) and title_matches(cur, self.titles.get(vid, ""))
+        if vid in self.skip:
+            return "skip", rule
+        if vid in self.add:
+            return "add", rule
+        return ("hit" if rule else "out"), rule
+
+    def set_view(self, view):
+        self.view = view
+        for v_, b in self.view_btns.items():
+            b.set_color(GREEN if v_ == view else YELLOW)
+            b.set_text(("● " if v_ == view else "") + {"hits": L("IN THE LIST", "IN DER LISTE"),
+                                                     "all": L("ALL VIDEOS", "ALLE VIDEOS")}[v_])
+        self.lb.selection_clear(0, "end")
+        self.refresh()
+
     def refresh(self):
         self.after_id = None
         cur = self.current()
         sel = {self.shown[i][1] for i in self.lb.curselection() if i < len(self.shown)}
         top = self.lb.yview()[0]
         self.lb.delete(0, "end")
+        self.lb.configure(fg=TEXT if self.view == "hits" else TEXT_MUTED)
         self.shown = []
+        q = norm_text(self.filter_var.get())
         hits = skipped = 0
-        by_id = {v["id"]: v for v in self.pool}
+        capped = False
+        skips = []
         for v in self.pool:
-            vid = v["id"]
-            if vid in self.skip:
-                skipped += 1
-                continue
-            manual = vid in self.add
-            if manual or (in_years(cur, v["year"]) and title_matches(cur, self.titles.get(vid, ""))):
+            st, _ = self.state_of(v, cur)
+            if st in ("hit", "add"):
                 hits += 1
-                if len(self.shown) < self.SHOW_MAX:
-                    self.lb.insert("end", ("+ " if manual else "  ") + self.line(v))
-                    if manual:
-                        self.lb.itemconfig("end", fg=CYAN)
-                    self.shown.append(("add" if manual else "hit", vid))
-        for vid in sorted(self.skip):
-            v = by_id.get(vid)
-            if v:
-                self.lb.insert("end", "✕ " + self.line(v))
-                self.lb.itemconfig("end", fg=RED)
-                self.shown.append(("skip", vid))
+            elif st == "skip":
+                skipped += 1
+            if q and q not in norm_text(self.titles.get(v["id"], "")) and q != v["id"].lower():
+                continue
+            if self.view == "hits":
+                if st == "skip":
+                    skips.append((st, v))
+                    continue
+                if st == "out":
+                    continue
+            if len(self.shown) >= self.SHOW_MAX:
+                capped = True
+                continue
+            self.add_line(st, v)
+        for st, v in skips:                       # ausgeschlossene stehen in dieser Ansicht am Ende
+            if len(self.shown) < self.SHOW_MAX:
+                self.add_line(st, v)
         miss = len(missing_titles(self.pool))
         span = sum(1 for v in self.pool if in_years(cur, v["year"]))
         self.count.configure(text=L(f"{hits} OF {span} VIDEOS MATCH", f"{hits} VON {span} VIDEOS PASSEN")
@@ -4967,43 +5012,58 @@ class ListDialog(tk.Toplevel):
         elif miss:
             notes.append(L(f"{miss} TITLES ARE STILL MISSING AND ARE LOADED ON START. THE PREVIEW IS INCOMPLETE UNTIL THEN.",
                            f"{miss} TITEL FEHLEN NOCH UND WERDEN BEIM START NACHGELADEN. BIS DAHIN IST DIE VORSCHAU UNVOLLSTÄNDIG."))
+        if capped:
+            notes.append(L(f"ONLY THE FIRST {self.SHOW_MAX} ARE SHOWN // USE THE FILTER.", f"ES WERDEN NUR DIE ERSTEN {self.SHOW_MAX} GEZEIGT // NUTZE DEN FILTER."))
         if hits > SHOW_LIMIT_NOTE:
             notes.append(L(f"MORE THAN {PART_MAX} VIDEOS ARE SPLIT INTO SEVERAL PLAYLIST PARTS.",
                            f"AB {PART_MAX} VIDEOS WIRD DIE PLAYLIST IN TEILE AUFGETEILT."))
-        self.note.configure(text="\n".join(notes))
+        self.note.configure(text="\n".join(notes), fg=YELLOW)
         for i, (_, vid) in enumerate(self.shown):
             if vid in sel:
                 self.lb.selection_set(i)
         self.lb.yview_moveto(top)
         self.update_tool()
 
+    def add_line(self, st, v):
+        mark = {"hit": "  ", "add": "+ ", "skip": "✕ ", "out": "  "}[st]
+        self.lb.insert("end", mark + self.line(v))
+        col = {"add": CYAN, "skip": RED, "hit": TEXT if self.view == "all" else None}.get(st)
+        if col:
+            self.lb.itemconfig("end", fg=col)
+        self.shown.append((st, v["id"]))
+
     def picked(self):
         return [self.shown[i] for i in self.lb.curselection() if i < len(self.shown)]
 
     def update_tool(self):
         pick = self.picked()
-        if not pick:
-            self.toggle_btn.set_enabled(False)
-            self.toggle_btn.set_text(L("EXCLUDE SELECTED", "AUSWAHL AUSSCHLIESSEN"))
-            return
-        self.toggle_btn.set_enabled(True)
-        n = f" ({len(pick)})" if len(pick) > 1 else ""
-        restore = all(t == "skip" for t, _ in pick)
-        self.toggle_btn.set_text((L("RESTORE SELECTED", "AUSWAHL WIEDERHERSTELLEN") if restore
-                                  else L("EXCLUDE SELECTED", "AUSWAHL AUSSCHLIESSEN")) + n)
+        ex = [p for p in pick if p[0] in ("hit", "add")]
+        inc = [p for p in pick if p[0] in ("out", "skip")]
+        self.excl_btn.set_enabled(bool(ex))
+        self.incl_btn.set_enabled(bool(inc))
+        self.excl_btn.set_text(L("EXCLUDE SELECTED", "AUSSCHLIESSEN") + (f" ({len(ex)})" if len(ex) > 1 else ""))
+        self.incl_btn.set_text(L("INCLUDE SELECTED", "AUFNEHMEN") + (f" ({len(inc)})" if len(inc) > 1 else ""))
 
-    def toggle_selected(self):
-        pick = self.picked()
-        if not pick:
-            return
-        if all(t == "skip" for t, _ in pick):
-            for _, vid in pick:
-                self.skip.discard(vid)
-        else:
-            for t, vid in pick:
-                if t != "skip":
-                    self.skip.add(vid)
-                    self.add.discard(vid)
+    def exclude_selected(self):
+        cur = self.current()
+        by_id = {v["id"]: v for v in self.pool}
+        for st, vid in self.picked():
+            if st not in ("hit", "add"):
+                continue
+            self.add.discard(vid)
+            if self.state_of(by_id[vid], cur)[1]:
+                self.skip.add(vid)             # passt nach den Regeln -> ausdrücklich ausschließen
+        self.refresh()
+
+    def include_selected(self):
+        cur = self.current()
+        by_id = {v["id"]: v for v in self.pool}
+        for st, vid in self.picked():
+            if st not in ("out", "skip"):
+                continue
+            self.skip.discard(vid)
+            if not self.state_of(by_id[vid], cur)[1]:
+                self.add.add(vid)              # passt nicht nach den Regeln -> fest aufnehmen
         self.refresh()
 
     def add_video(self):
