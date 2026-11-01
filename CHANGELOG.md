@@ -5,12 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-11-01
+
 ### Added
 - ALL / NONE next to the year list selects or deselects every year with one click.
 - Overall progress of all years (percent and bar) next to the year list.
 - Overview of left-out videos (shorts) with titles and links: click the log line "… REMOVED // SHOW ›" or LEFT OUT in the playlist settings.
 - Chronolist remembers the window size and position (and whether it was maximized), as long as that monitor is still connected.
-- Shorts are left out (detected through the channel's shorts list via the API); livestreams stay in, since some channels used them for regular content such as extra perspectives. Videos wrongly left out by earlier dev builds are restored and every playlist is checked and repaired once.
+- Shorts are left out (detected through the channel's shorts list via the API); livestreams stay in, since some channels used them for regular content such as extra perspectives. After the update every playlist is checked and repaired once.
 - The current year (in January also the previous one) is kept up to date: on every run new uploads are appended. It stays selected when done. New channels now select the current year too.
 - Years with more than 5,000 videos are split automatically into "Part 1", "Part 2", … (YouTube's playlist limit). Checking, repairing and thumbnails work per part.
 - Year cards show what is happening right now with progress (reading the channel page, adding, sorting, checking the playlist), on the card of the year it concerns, e.g. the pre-scan of the next year.
@@ -89,7 +91,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v2.10.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v2.11.0...HEAD
+[2.11.0]: https://github.com/LooneyN/chronolist/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/LooneyN/chronolist/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/LooneyN/chronolist/compare/v2.8.0...v2.9.0
 [2.8.0]: https://github.com/LooneyN/chronolist/compare/v2.7.0...v2.8.0
