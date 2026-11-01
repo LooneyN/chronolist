@@ -90,8 +90,8 @@ PRIVACY = "public"              # public / unlisted / private
 PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
-VERSION = "3.0.1"
-BUILD = 124
+VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
+BUILD = 125
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
