@@ -7,6 +7,7 @@
 ## Screenshots
 - `assets/screenshots/` holds the README screenshots (main window, list editor, suggestions). They are made with invented demo data (fake channel name "Example Channel", invented titles), never with a real channel.
 - Only renew them when the UI changes noticeably, not on every change.
+- Major releases (X.0.0) get a roadmap banner `assets/releases/X.0.0.png` (cyberpunk look, shows the finished roadmap steps of that release). It goes only on the GitHub release page (not into `CHANGELOG.md`): the maintainer pastes `![Roadmap](https://raw.githubusercontent.com/LooneyN/chronolist/main/assets/releases/X.0.0.png)` at the top of the release text.
 
 ## Commits
 - Commit messages must not contain links to Claude sessions (no `Claude-Session:` line). A `Co-Authored-By` line is fine.
