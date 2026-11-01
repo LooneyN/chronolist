@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Fixed
+- Window position is now remembered reliably on Windows (also on a second monitor and when maximized). Before, often only the size was restored.
+
 ## [2.11.0] - 2026-11-01
 
 ### Added

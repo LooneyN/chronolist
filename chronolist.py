@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 84
+BUILD = 85
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -4149,6 +4149,50 @@ def monitor_rect(x, y):
         return None
 
 
+def _win_placement_api():
+    import ctypes
+    from ctypes import wintypes
+
+    class WINDOWPLACEMENT(ctypes.Structure):
+        _fields_ = [("length", wintypes.UINT), ("flags", wintypes.UINT), ("showCmd", wintypes.UINT),
+                    ("ptMinPosition", wintypes.POINT), ("ptMaxPosition", wintypes.POINT),
+                    ("rcNormalPosition", wintypes.RECT)]
+    return ctypes, WINDOWPLACEMENT
+
+
+def get_placement(win):
+    """Windows: (links, oben, rechts, unten) der normalen Fensterlage + maximiert? Sonst None."""
+    if os.name != "nt":
+        return None
+    try:
+        ctypes, WP = _win_placement_api()
+        hwnd = int(win.wm_frame(), 16)
+        wp = WP()
+        wp.length = ctypes.sizeof(WP)
+        if not ctypes.windll.user32.GetWindowPlacement(hwnd, ctypes.byref(wp)):
+            return None
+        r = wp.rcNormalPosition
+        return [r.left, r.top, r.right, r.bottom], wp.showCmd == 3      # 3 = SW_SHOWMAXIMIZED
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def set_placement(win, rect, zoomed):
+    """Windows: Fensterlage setzen (auch die 'normale' Lage hinter einem maximierten Fenster)."""
+    if os.name != "nt":
+        return False
+    try:
+        ctypes, WP = _win_placement_api()
+        hwnd = int(win.wm_frame(), 16)
+        wp = WP()
+        wp.length = ctypes.sizeof(WP)
+        wp.showCmd = 3 if zoomed else 1
+        wp.rcNormalPosition.left, wp.rcNormalPosition.top, wp.rcNormalPosition.right, wp.rcNormalPosition.bottom = rect
+        return bool(ctypes.windll.user32.SetWindowPlacement(hwnd, ctypes.byref(wp)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def point_on_screen(x, y):
     """Liegt der Punkt auf einem angeschlossenen Monitor? (Windows; sonst immer True)"""
     if os.name != "nt":
@@ -5531,6 +5575,14 @@ class App(tk.Tk):
         """Letzte Größe/Position (und maximiert) wiederherstellen, wenn der Monitor noch da ist."""
         self._normal_geom = None
         win = self.settings.get("window") or {}
+        rect = win.get("placement")
+        if os.name == "nt" and rect and len(rect) == 4:
+            l, t, r, b = rect
+            if point_on_screen((l + r) // 2, t + 20):
+                # erst nach dem ersten Anzeigen setzen, sonst platziert Windows das Fenster selbst
+                self.after(30, lambda: set_placement(self, rect, bool(win.get("zoomed"))))
+            self.bind("<Configure>", self._track_geometry, add="+")
+            return
         g = win.get("geometry")
         m = re.match(r"^(\d+)x(\d+)([+-]-?\d+)([+-]-?\d+)$", g or "")
         if m:
@@ -5560,6 +5612,12 @@ class App(tk.Tk):
                 pass
 
     def save_window(self):
+        pl = get_placement(self)
+        if pl:
+            rect, zoomed = pl
+            self.settings["window"] = {"placement": rect, "zoomed": zoomed}
+            save(SETTINGS_FILE, self.settings)
+            return
         try:
             zoomed = self.state() == "zoomed" or bool(self.attributes("-zoomed") if os.name != "nt" else False)
         except tk.TclError:
