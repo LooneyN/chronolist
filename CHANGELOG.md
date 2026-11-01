@@ -5,6 +5,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+- ALL / NONE next to the year list selects or deselects every year with one click.
+- Overall progress of all years (percent and bar) next to the year list.
+- Overview of left-out videos (shorts) with titles and links: click the log line "… REMOVED // SHOW ›" or LEFT OUT in the playlist settings.
+- Chronolist remembers the window size and position (and whether it was maximized), as long as that monitor is still connected.
+- Shorts are left out (detected through the channel's shorts list via the API); livestreams stay in, since some channels used them for regular content such as extra perspectives. Videos wrongly left out by earlier dev builds are restored and every playlist is checked and repaired once.
+- The current year (in January also the previous one) is kept up to date: on every run new uploads are appended. It stays selected when done. New channels now select the current year too.
+- Years with more than 5,000 videos are split automatically into "Part 1", "Part 2", … (YouTube's playlist limit). Checking, repairing and thumbnails work per part.
+- Year cards show what is happening right now with progress (reading the channel page, adding, sorting, checking the playlist), on the card of the year it concerns, e.g. the pre-scan of the next year.
+- With FALLBACK on, video lists come from the channel's videos page sorted by oldest (in the Edge window). This is complete, needs no API quota and replaces the gappy API date search for old years. Unscanned years can now be filled entirely without quota.
+- Years found earlier through the date search are checked against the channel page; missing videos are added to the playlist and moved to the right position. The whole order is checked each time, so an interrupted repair is completed on the next run.
+- After an in-app update, the changelog of the new version is shown once in the log.
+
+### Changed
+- The running year's glow pulses more visibly.
+- The help button just says HELP.
+- PROGRAM and PLAYLISTS settings can be opened during a run. Playlist changes apply to playlists created from then on; a language change restarts Chronolist only after the run.
+- Much faster duplicate check: Chronolist remembers the batch in flight and after STOP or on the next start checks only that batch instead of reading the whole playlist. The full check runs at the end of a year and with CHECK; the interval check during a run is gone. Reading a playlist is also faster.
+- Browser fallback is faster: 30 videos per batch (was 20), 4 to 12 seconds between batches (was 10 to 25), a short break of about 20 seconds every 250 videos (was about 1 minute every 150) and a long break of about 4 minutes every 1500 videos (was about 10 minutes every 750).
+- A new release is shown as a green UPDATE button next to HELP instead of a small text tag. In narrow windows HELP shrinks to "?" so the button always fits.
+- Larger, brighter text in the update dialog.
+
 ## [2.10.0] - 2026-10-31
 
 ### Added

@@ -24,12 +24,15 @@ YouTube only lets you sort a channel's uploads by "latest" or "popular". Chronol
 - **Any channel**: enter a `@handle`, channel URL or channel ID; name and start year are detected automatically.
 - **One playlist per year**, filled in exact upload order, with progress saved per channel and year.
 - **Quota-aware**: knows YouTube's daily API limits, remembers when they are used up and shows when they reset (in your local time).
-- **Archive scan**: reads the whole upload list once and prepares all years at very low quota cost; older years beyond YouTube's 20,000-upload cap are found via a month-by-month date search.
-- **Self-checking**: removes duplicate videos and re-syncs progress at start, every 750 videos, after STOP and at the end of each year.
+- **Archive scan**: reads the whole upload list once and prepares all years at very low quota cost; older years beyond YouTube's 20,000-upload cap are found via a month-by-month date search, or, with the browser fallback, completely and without quota via the channel's videos page sorted by oldest.
+- **Self-checking**: remembers the batch in flight and checks only that one after an interruption; a full duplicate check runs at the end of each year and with CHECK.
+- **Videos only**: shorts and livestreams are left out.
 - **Pause, resume, stop, batch limit, skip ahead** to the next ready year.
+- **Keeps the current year up to date**: new uploads are appended on every run.
+- **More than 5,000 videos per year**: split automatically into "Part 1", "Part 2", … because a YouTube playlist holds at most 5,000 videos.
 - **Auto-run** on launch and optional **start with Windows**.
 - **Optional browser fallback** (off by default, see the warning below).
-- **Updates in the app**: a green tag in the header tells you when a new release is available; one click downloads it, replaces the exe and restarts. Your settings and progress stay.
+- **Updates in the app**: a green UPDATE button in the header tells you when a new release is available; one click downloads it, replaces the exe and restarts. Your settings and progress stay.
 
 ## Download
 
