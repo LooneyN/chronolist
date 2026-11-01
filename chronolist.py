@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 126
+BUILD = 127
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1494,8 +1494,13 @@ class Worker(threading.Thread):
             if self.scan_only:
                 self.scan_archive()
                 self.fetch_missing_titles()
-                self.log(L("SCAN COMPLETE // VIDEOS AND TITLES STORED // NO PLAYLIST CHANGED",
-                           "SCAN FERTIG // VIDEOS UND TITEL GESPEICHERT // KEINE PLAYLIST GEÄNDERT"), "ok")
+                this_year = datetime.date.today().year
+                if any(load(videos_file(y), None) is None for y in YEARS if y < this_year):
+                    self.log(L(f"SCAN INCOMPLETE // CLICK SCAN AGAIN AFTER THE RESET {quota_reset_local()}",
+                               f"SCAN UNVOLLSTÄNDIG // NACH DEM RESET {quota_reset_local()} NOCHMAL SCAN KLICKEN"), "warn")
+                else:
+                    self.log(L("SCAN COMPLETE // VIDEOS AND TITLES STORED // NO PLAYLIST CHANGED",
+                               "SCAN FERTIG // VIDEOS UND TITEL GESPEICHERT // KEINE PLAYLIST GEÄNDERT"), "ok")
                 return
             for kind, label in (("units", L("API QUOTA", "API-KONTINGENT")), ("search", L("SEARCH LIMIT", "SUCHLIMIT"))):
                 r = quota_blocked(kind)
