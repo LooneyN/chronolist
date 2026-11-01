@@ -4,6 +4,10 @@
 - Chronolist is a general tool for any YouTube channel. Never add personal data, channel-specific defaults, names, credentials or tokens to code, examples, docs or commits.
 - Personal files (`credentials.json`, `token.json`, `settings.json`, `quota.json`, `data/`, `browser_profile/`) stay out of the repo (see `.gitignore`).
 
+## Screenshots
+- `assets/screenshots/` holds the README screenshots (main window, list editor, suggestions). They are made with invented demo data (fake channel name "Example Channel", invented titles), never with a real channel.
+- Only renew them when the UI changes noticeably, not on every change.
+
 ## Commits
 - Commit messages must not contain links to Claude sessions (no `Claude-Session:` line). A `Co-Authored-By` line is fine.
 
