@@ -6,32 +6,28 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
-- New list editor offers a TEMPLATE selection when lists already exist (name and filter are copied, not the thumbnail or single videos).
+- New list editor offers a TEMPLATE selection when lists already exist (name and filter are copied, not single videos).
 - HIDE DONE / SHOW DONE in the TARGETS bar collapses all completed cards.
-- Thumbnails are cropped to a centered square, the only format the YouTube API accepts for playlist images (the Studio does that on its own), and sent as JPEG; an existing image is deleted and re-inserted. Needs Pillow.
 - Links in the log copy to the clipboard on click (with a short "link copied" hint).
 - Video titles are now stored while scanning (API and channel page, no extra quota). This is the basis for keyword lists.
 - Keyword lists: CUSTOM LIST under the years opens an editor with live preview (hit count and titles). Optionally limit a list to a range of years. Exclude single videos or add videos by link/ID. Lists are cards like years (right-click edits) and run after the years.
 - Keyword lists (details): a list collects videos by title (any / all / exclude terms, plus single videos added or skipped) and is filled like a year in upload order. Missing titles are loaded from your own playlists (API) or via oEmbed. 
 
 ### Changed
-- Custom list editor: FILTER RESULTS / ALL CHANNEL VIDEOS view, a title search, separate LIST SETTINGS (name, thumbnail) and FILTER (keywords, years) sections, and separate EXCLUDE and INCLUDE buttons. The FILTER always searches all videos (several terms separated by commas), so videos that do not match your keywords can be found and included from either view.
-- The custom list editor has its own THUMBNAIL row (choose / remove), so a list is set up in one place. The PLAYLISTS settings still show it too.
+- Custom list editor: FILTER RESULTS / ALL CHANNEL VIDEOS view, a title search, separate LIST SETTINGS (name) and FILTER (keywords, years) sections, and separate EXCLUDE and INCLUDE buttons. The FILTER always searches all videos (several terms separated by commas), so videos that do not match your keywords can be found and included from either view.
 - In the custom list editor you can select several videos (Ctrl/Shift+click, Ctrl+A) and exclude or restore them at once.
-- Custom lists now live in the PLAYLISTS settings too: thumbnails can be set per list there (same as for years), with an EDIT LIST button next to each list. Right-click on a list card still works.
 - The year list is now called TARGETS (lists and years sit side by side); the button is CUSTOM LIST. Loading missing titles shows count and percent on the list card.
 - Cleaner dashboard: only FALLBACK, PROGRAM and PLAYLISTS remain under options. AUTO-RUN and BOOT moved to the program settings.
 - Aligned layout: both columns share one grid. START / PAUSE / STOP / CHECK are large tiles as tall as the channel card, all list and option cards have the same height, and right edges line up.
 - Skipping ahead to the next ready year is now always on; the SKIP AHEAD switch is gone.
 
 ### Removed
+- The optional playlist thumbnail upload. YouTube's API only accepts square playlist images (the Studio crops them itself), so the feature was dropped. Set thumbnails in YouTube Studio. Already uploaded thumbnails stay as they are; the old `thumbs` folder in your data folder can be deleted.
 - BATCH LIMIT (videos per year and run).
 
 ### Fixed
-- Thumbnail upload: YouTube refused the lookup of the existing image with HTTP 400 ("'id'"). The lookup now uses the `parent` parameter the API expects, and the image request carries `kind` as documented.
 - The progress display no longer freezes (log, PAUSE/STOP stuck) when a custom list reports progress.
 - A card no longer says COMPLETE while the run is still working on it (e.g. repairing a playlist). It shows SYNCING, and the repair shows what it is doing from the first moment.
-- Thumbnails that failed to upload are retried on the next run, and each upload attempt is logged.
 - Window position is now remembered reliably on Windows (also on a second monitor and when maximized). Before, often only the size was restored.
 
 ## [2.11.0] - 2026-11-01
@@ -43,7 +39,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Chronolist remembers the window size and position (and whether it was maximized), as long as that monitor is still connected.
 - Shorts are left out (detected through the channel's shorts list via the API); livestreams stay in, since some channels used them for regular content such as extra perspectives. After the update every playlist is checked and repaired once.
 - The current year (in January also the previous one) is kept up to date: on every run new uploads are appended. It stays selected when done. New channels now select the current year too.
-- Years with more than 5,000 videos are split automatically into "Part 1", "Part 2", … (YouTube's playlist limit). Checking, repairing and thumbnails work per part.
+- Years with more than 5,000 videos are split automatically into "Part 1", "Part 2", … (YouTube's playlist limit). Checking and repairing work per part.
 - Year cards show what is happening right now with progress (reading the channel page, adding, sorting, checking the playlist), on the card of the year it concerns, e.g. the pre-scan of the next year.
 - With FALLBACK on, video lists come from the channel's videos page sorted by oldest (in the Edge window). This is complete, needs no API quota and replaces the gappy API date search for old years. Unscanned years can now be filled entirely without quota.
 - Years found earlier through the date search are checked against the channel page; missing videos are added to the playlist and moved to the right position. The whole order is checked each time, so an interrupted repair is completed on the next run.

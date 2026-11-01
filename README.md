@@ -91,7 +91,6 @@ Under **PLAYLISTS** you can set:
 
 - **Title** and optional **description** of new playlists, with placeholders `{channel}`, `{handle}`, `{year}` and `{count}` (number of videos in that year) and a live preview
 - **Visibility**: public, unlisted or private
-- An optional **thumbnail per year** (JPG/PNG, max 2 MB, ideally 1280×720). You can pick it before the playlist exists; it is uploaded via the API (50 units) as soon as the playlist exists. Experimental.
 
 Playlist changes apply to playlists created from then on. Everything is stored in `settings.json` next to the program.
 
@@ -105,7 +104,7 @@ Everything stays in the program folder and is never uploaded anywhere except to 
 | `token.json` | Your Google sign-in |
 | `settings.json` | Settings and selected channel |
 | `quota.json` | Remembered daily limit |
-| `data/<channel>/` | Video lists, progress and thumbnails per year |
+| `data/<channel>/` | Video lists and progress per year |
 | `browser_profile/` | Sign-in of the fallback Edge window |
 
 Never share these files. They are excluded in `.gitignore`.

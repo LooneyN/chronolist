@@ -20,7 +20,6 @@ Einstellungen: settings.json     (u. a. Zielkanal, Playlist-Namensvorlage, Updat
 Fortschritt:   data/<kanal>/videos_<jahr>.json, collect_<jahr>.json, state_<jahr>.json
 """
 import datetime
-import io
 import json
 import os
 import math
@@ -90,10 +89,9 @@ DESCRIPTION_TEMPLATE = "All videos by {channel} from {year} in upload order."
 PRIVACY = "public"              # public / unlisted / private
 PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
-THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 113
+BUILD = 114
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -398,47 +396,6 @@ def year_label(y):
     return list_name(y) if is_list_key(y) else str(y)
 
 
-def prepare_thumbnail(path):
-    """Bild für die API vorbereiten: Playlist-Bilder müssen laut Praxis quadratisch (1:1) sein, 16:9 wird mit
-    INVALID_ASPECT_RATIO abgelehnt (das Studio schneidet selbst zu). Mittig quadratisch zuschneiden, auf höchstens
-    1200 Pixel verkleinern, als JPEG unter 2 MB. Rückgabe: (Bytes, MIME-Typ, Breite, Höhe)."""
-    from PIL import Image
-    im = Image.open(path)
-    im.load()
-    if im.mode != "RGB":
-        bg = Image.new("RGB", im.size, (0, 0, 0))
-        bg.paste(im.convert("RGBA"), mask=im.convert("RGBA").split()[3])
-        im = bg
-    w, h = im.size
-    side = min(w, h)
-    x0, y0 = (w - side) // 2, (h - side) // 2
-    tw = th = min(side, 1200)
-    im = im.resize((tw, th), Image.LANCZOS, box=(x0, y0, x0 + side, y0 + side))
-    for q in (92, 85, 75, 65):
-        buf = io.BytesIO()
-        im.save(buf, "JPEG", quality=q, optimize=True)
-        if buf.tell() <= THUMB_MAX_BYTES:
-            break
-    return buf.getvalue(), "image/jpeg", tw, th
-
-
-def store_thumbnail(key, src):
-    """Bild für eine Playlist (Jahr oder Liste) vormerken: Kopie im Kanal-Ordner, Upload beim nächsten START."""
-    thumbs = load(thumbs_file(), {})
-    old = thumbs.pop(str(key), None)
-    if old and old.get("file") and (thumbs_dir() / old["file"]).exists():
-        try:
-            (thumbs_dir() / old["file"]).unlink()
-        except OSError:
-            pass
-    if src:
-        thumbs_dir().mkdir(parents=True, exist_ok=True)
-        name = f"{key}{Path(src).suffix.lower()}"
-        shutil.copyfile(src, thumbs_dir() / name)
-        thumbs[str(key)] = {"file": name, "status": "queued", "error": ""}
-    save(thumbs_file(), thumbs)
-
-
 def new_list_id():
     have = {lst["id"] for lst in load_lists()}
     while True:
@@ -578,8 +535,6 @@ def growing(y):
     t = datetime.date.today()
     return y >= t.year or (y == t.year - 1 and t.month == 1)
 def playlist_description(y): return fill_template(DESCRIPTION_TEMPLATE, y)
-def thumbs_dir(): return CHAN_DIR / "thumbs"
-def thumbs_file(): return CHAN_DIR / "thumbs.json"
 
 
 def load(path, default):
@@ -1496,10 +1451,6 @@ class Worker(threading.Thread):
                 r = quota_blocked(kind)
                 if r:
                     self.log(L(f"{label} ALREADY USED UP TODAY // SKIPPING IT UNTIL RESET {fmt_reset(r)}", f"{label} HEUTE SCHON AUFGEBRAUCHT // WIRD BIS ZUM RESET {fmt_reset(r)} ÜBERSPRUNGEN"), "warn")
-            try:
-                self.apply_thumbnails()
-            except Exception as e:  # noqa: BLE001
-                self.log(L(f"THUMBNAILS SKIPPED // {str(e)[:120]}", f"THUMBNAILS ÜBERSPRUNGEN // {str(e)[:120]}"), "warn")
             if self.fallback:
                 self.scan_archive()
             queue_ = [y for y in self.years if not is_list_key(y)]
@@ -2384,10 +2335,6 @@ class Worker(threading.Thread):
                        f"{year_label(year)} HAT MEHR ALS {PART_MAX} VIDEOS // PLAYLIST TEIL {n} ANGELEGT // {title}"), "ok")
             if n == 2:
                 self.rename_playlist(parts[0], part_title(year, 1, 2), playlist_description(year))
-        try:
-            self.apply_thumbnails(only_year=year)
-        except Exception as e:  # noqa: BLE001
-            self.log(L(f"THUMBNAIL {year_label(year)} FAILED // {str(e)[:120]}", f"THUMBNAIL {year_label(year)} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
         return parts[k]
 
     def ensure_playlist(self, year):
@@ -2398,87 +2345,7 @@ class Worker(threading.Thread):
             state = {"playlist_id": pid, "parts": [pid], "next": 0, "skipped": []}
             save(sf, state)
             self.log(L(f"PLAYLIST CREATED // {playlist_title(year)}", f"PLAYLIST ANGELEGT // {playlist_title(year)}"), "ok")
-            try:
-                self.apply_thumbnails(only_year=year)
-            except Exception as e:  # noqa: BLE001
-                self.log(L(f"THUMBNAIL {year_label(year)} FAILED // {str(e)[:120]}", f"THUMBNAIL {year_label(year)} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
         return state
-
-    # --- Playlist-Thumbnails (eigenes Bild pro Jahr)
-    def upload_call(self, method, params, meta, data, mime):
-        """Multipart-Upload an /upload/youtube/v3/playlistImages (Metadaten + Bild)."""
-        if quota_blocked("units"):
-            raise QuotaExceeded()
-        boundary = "chronolist" + str(random.randint(10 ** 8, 10 ** 9))
-        body = (f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
-                f"{json.dumps(meta)}\r\n--{boundary}\r\nContent-Type: {mime}\r\n\r\n").encode() + data + \
-            f"\r\n--{boundary}--\r\n".encode()
-        for _ in range(3):
-            if time.time() > self.tok.get("expires_at", 0):
-                self.refresh()
-            r = requests.request(method, "https://www.googleapis.com/upload/youtube/v3/playlistImages",
-                                 params={**params, "uploadType": "multipart"}, data=body, timeout=60,
-                                 headers={"Authorization": f"Bearer {self.tok['access_token']}",
-                                          "Content-Type": f"multipart/related; boundary={boundary}"})
-            if r.ok:
-                return r.json() if r.content else {}
-            if r.status_code == 401:
-                self.refresh()
-                continue
-            try:
-                errs = r.json().get("error", {})
-            except ValueError:
-                errs = {}
-            reasons = {e.get("reason") for e in errs.get("errors", [])}
-            if reasons & {"quotaExceeded", "dailyLimitExceeded"}:
-                mark_quota("units")
-                raise QuotaExceeded()
-            raise ApiError(r.status_code, reasons, errs.get("message") or r.text)
-        raise RuntimeError(L("THUMBNAIL UPLOAD FAILED // AUTH", "THUMBNAIL-UPLOAD FEHLGESCHLAGEN // ANMELDUNG"))
-
-    def apply_thumbnails(self, only_year=None):
-        """Wartende Thumbnails hochladen, sobald die Playlist existiert. Nur über die API (50 Einheiten pro Bild)."""
-        info = load(thumbs_file(), {})
-        todo = [(int(y) if str(y).isdigit() else y, t) for y, t in info.items()
-                if t.get("status") in ("queued", "error")        # Fehlgeschlagene bei jedem Lauf noch einmal versuchen
-                and (only_year is None or (int(y) if str(y).isdigit() else y) == only_year)]
-        for y, t in sorted(todo, key=lambda x: str(x[0])):
-            pids = part_ids(load(state_file(y), {}))
-            path = thumbs_dir() / t.get("file", "")
-            if not pids or not path.exists():
-                continue
-            if self.mode != "api" or quota_blocked("units"):
-                self.log(L(f"THUMBNAIL {year_label(y)} WAITING // NEEDS API QUOTA", f"THUMBNAIL {year_label(y)} WARTET // BRAUCHT API-KONTINGENT"), "warn")
-                return
-            try:
-                data, mime, tw, th = prepare_thumbnail(path)
-            except Exception as e:                      # Pillow fehlt oder Datei nicht lesbar: Original senden
-                if isinstance(e, ImportError):
-                    self.log(L("THUMBNAIL // PILLOW IS MISSING, IMAGE CANNOT BE CROPPED // INSTALL IT: pip install pillow",
-                               "THUMBNAIL // PILLOW FEHLT, BILD KANN NICHT ZUGESCHNITTEN WERDEN // INSTALLIEREN: pip install pillow"), "warn")
-                else:
-                    self.log(L(f"THUMBNAIL // CROPPING FAILED // {str(e)[:100]}", f"THUMBNAIL // ZUSCHNITT FEHLGESCHLAGEN // {str(e)[:100]}"), "warn")
-                data, mime, tw, th = path.read_bytes(), ("image/png" if path.suffix.lower() == ".png" else "image/jpeg"), None, None
-            self.log(L(f"THUMBNAIL {year_label(y)} // UPLOADING ...", f"THUMBNAIL {year_label(y)} // WIRD HOCHGELADEN ..."))
-            try:
-                for pid in pids:
-                    # list: die Playlist heißt hier "parent" (nicht "playlistId")
-                    existing = self.call("GET", "playlistImages", {"part": "snippet", "parent": pid}).get("items", [])
-                    meta = {"kind": "youtube#playlistImage", "snippet": {"playlistId": pid, "type": "hero"}}
-                    if existing:
-                        # Ersetzen: update ist bei YouTube unzuverlässig, daher altes Bild löschen und neu einfügen
-                        self.call("DELETE", "playlistImages", {"id": existing[0]["id"]})
-                    self.upload_call("POST", {"part": "snippet"}, meta, data, mime)
-                t.update(status="done", error="", parts=len(pids))
-                self.log(L(f"THUMBNAIL {year_label(y)} UPLOADED", f"THUMBNAIL {year_label(y)} HOCHGELADEN"), "ok")
-            except QuotaExceeded:
-                self.log(L(f"THUMBNAIL {year_label(y)} WAITING // NEEDS API QUOTA", f"THUMBNAIL {year_label(y)} WARTET // BRAUCHT API-KONTINGENT"), "warn")
-                return
-            except (ApiError, RuntimeError, requests.RequestException) as e:
-                t.update(status="error", error=str(e)[:200])
-                self.log(L(f"THUMBNAIL {year_label(y)} FAILED // {str(e)[:120]}", f"THUMBNAIL {year_label(y)} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
-            info[str(y)] = t
-            save(thumbs_file(), info)
 
     def switch_to_browser(self):
         self.log(L("DAILY API QUOTA REACHED // SWITCHING TO BROWSER FALLBACK", "TAGESKONTINGENT ERREICHT // WECHSEL ZUM FALLBACK"), "warn")
@@ -3602,7 +3469,7 @@ class NCDialog(tk.Toplevel):
 
 
 class SettingsDialog(tk.Toplevel):
-    """Playlist-Einstellungen: Titel, Beschreibung, Sichtbarkeit, Thumbnails pro Jahr."""
+    """Playlist-Einstellungen: Titel, Beschreibung, Sichtbarkeit."""
 
     CHIPS = (("CHANNEL", "{channel}"), ("HANDLE", "{handle}"), ("YEAR", "{year}"), ("COUNT", "{count}"))
 
@@ -3611,8 +3478,8 @@ class SettingsDialog(tk.Toplevel):
         self.app = app
         self.title(L("Playlist settings", "Playlist-Einstellungen"))
         self.transient(app)
-        self.minsize(px(640), px(560))
-        self.geometry(f"{px(720)}x{px(800)}")
+        self.minsize(px(640), px(520))
+        self.geometry(f"{px(720)}x{px(600)}")
         self.focus_field = None
         pad = px(18)
         st = app.settings
@@ -3682,30 +3549,6 @@ class SettingsDialog(tk.Toplevel):
                               "TITEL, BESCHREIBUNG UND SICHTBARKEIT GELTEN FÜR PLAYLISTS, DIE AB JETZT ANGELEGT WERDEN."),
                  bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w").pack(fill="x", pady=(px(2), px(12)))
 
-        Section(body, L("THUMBNAILS (OPTIONAL, EXPERIMENTAL)", "THUMBNAILS (OPTIONAL, EXPERIMENTELL)"), "JPG/PNG // MAX 2 MB").pack(fill="x", pady=(0, px(6)))
-        tk.Label(body, text=L("PICK AN IMAGE PER YEAR OR CUSTOM LIST, ALSO FOR PLAYLISTS THAT DON'T EXIST YET. IT IS UPLOADED VIA "
-                              "THE API (50 UNITS) AS SOON AS THE PLAYLIST EXISTS AND QUOTA IS AVAILABLE. "
-                              "RECOMMENDED: 1280×720.",
-                              "WÄHLE PRO JAHR ODER EIGENE LISTE EIN BILD, AUCH FÜR PLAYLISTS, DIE ES NOCH NICHT GIBT. ES WIRD ÜBER DIE "
-                              "API HOCHGELADEN (50 EINHEITEN), SOBALD DIE PLAYLIST EXISTIERT UND KONTINGENT DA IST. "
-                              "EMPFOHLEN: 1280×720."),
-                 bg=BG, fg=TEXT_MUTED, font=F("mono", 10, False), justify="left", anchor="w",
-                 wraplength=px(660)).pack(fill="x", pady=(0, px(6)))
-        wrap = tk.Frame(body, bg=BG)
-        wrap.pack(fill="both", expand=True)
-        self.thumb_area = ScrollArea(wrap)
-        self.thumb_area.pack(fill="both", expand=True)
-        self.thumbs = load(thumbs_file(), {})
-        self.pending = {}      # jahr -> neuer Dateipfad oder None (= entfernen)
-        self.thumb_rows = {}
-        for y in YEARS:
-            self.build_thumb_row(y)
-        if load_lists():
-            tk.Label(self.thumb_area.inner, text=L("CUSTOM LISTS", "EIGENE LISTEN"), bg=BG, fg=RED, font=F("mono", 11),
-                     anchor="w").pack(fill="x", pady=(px(10), px(4)))
-            for lst in load_lists():
-                self.build_thumb_row(list_key(lst), editable=True)
-
         self.bind("<Escape>", lambda e: self.destroy())
         self.preview()
         style_window(self)
@@ -3752,70 +3595,6 @@ class SettingsDialog(tk.Toplevel):
         self.prev.configure(text="\n".join(lines), fg=TEXT if ok_t and ok_d else RED)
         return ok_t and ok_d
 
-    def thumb_state(self, y):
-        if y in self.pending:
-            return ("NEW", Path(self.pending[y]).name) if self.pending[y] else ("REMOVE", "")
-        t = self.thumbs.get(str(y))
-        if not t:
-            return ("NONE", "")
-        status = {"queued": "QUEUED", "done": "UPLOADED", "error": "ERROR"}.get(t.get("status"), "?")
-        return (status, t.get("file", ""))
-
-    def build_thumb_row(self, y, editable=False):
-        fr = tk.Frame(self.thumb_area.inner, bg=BG)
-        fr.pack(fill="x", pady=(0, px(4)))
-        name = year_label(y)
-        tk.Label(fr, text=name if len(name) <= 18 else name[:17] + "…", bg=BG, fg=TEXT, font=F("ui", 14),
-                 width=18 if editable else 6, anchor="w").pack(side="left")
-        # Knöpfe zuerst packen, damit bei langem Text die Statuszeile gekürzt wird und nicht die Knöpfe
-        rm = CutButton(fr, L("REMOVE", "ENTFERNEN"), lambda: self.remove_thumb(y), width=110)
-        rm.pack(side="right")
-        CutButton(fr, L("CHOOSE…", "AUSWÄHLEN…"), lambda: self.choose_thumb(y), width=120).pack(side="right", padx=(0, px(6)))
-        if editable:
-            CutButton(fr, L("EDIT LIST", "LISTE ÄNDERN"), lambda: ListDialog(self.app, y, parent=self),
-                      width=140).pack(side="right", padx=(0, px(6)))
-        info = tk.Label(fr, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w")
-        info.pack(side="left", fill="x", expand=True)
-        self.thumb_area.wheel(fr)
-        self.thumb_rows[y] = (info, rm)
-        self.refresh_thumb_row(y)
-
-    def refresh_thumb_row(self, y):
-        info, rm = self.thumb_rows[y]
-        status, name = self.thumb_state(y)
-        col = {"UPLOADED": GREEN, "QUEUED": YELLOW, "NEW": CYAN, "ERROR": RED, "REMOVE": RED}.get(status, TEXT_MUTED)
-        shown = {"NEW": L("NEW", "NEU"), "REMOVE": L("REMOVE", "WIRD ENTFERNT"), "NONE": L("NONE", "KEINS"),
-                 "QUEUED": L("QUEUED", "WARTET"), "UPLOADED": L("UPLOADED", "HOCHGELADEN"),
-                 "ERROR": L("ERROR", "FEHLER")}.get(status, status)
-        if len(name) > 26:
-            name = name[:12] + "…" + name[-12:]
-        txt = f"{shown}" + (f" // {name}" if name else "")
-        t = self.thumbs.get(str(y)) or {}
-        if status == "ERROR" and t.get("error"):
-            txt += f" // {t['error'][:60]}"
-        info.configure(text=txt, fg=col)
-        rm.set_enabled(status not in ("NONE", "REMOVE"))
-
-    def choose_thumb(self, y):
-        f = filedialog.askopenfilename(parent=self, title=f"Thumbnail {year_label(y)}",
-                                       filetypes=[(L("Images", "Bilder"), "*.jpg *.jpeg *.png"),
-                                                  (L("All files", "Alle Dateien"), "*.*")])
-        if not f:
-            return
-        p_ = Path(f)
-        if p_.suffix.lower() not in (".jpg", ".jpeg", ".png"):
-            self.app.write_log(L(f"THUMBNAIL {year_label(y)} // ONLY JPG OR PNG", f"THUMBNAIL {year_label(y)} // NUR JPG ODER PNG"), "err")
-            return
-        if p_.stat().st_size > THUMB_MAX_BYTES:
-            self.app.write_log(L(f"THUMBNAIL {year_label(y)} // FILE TOO LARGE (MAX 2 MB)", f"THUMBNAIL {year_label(y)} // DATEI ZU GROSS (MAX 2 MB)"), "err")
-            return
-        self.pending[y] = str(p_)
-        self.refresh_thumb_row(y)
-
-    def remove_thumb(self, y):
-        self.pending[y] = None
-        self.refresh_thumb_row(y)
-
     def reset(self):
         self.title_var.set(default_playlist_template())
         self.desc.delete("1.0", "end")
@@ -3835,21 +3614,6 @@ class SettingsDialog(tk.Toplevel):
         st["privacy"] = self.privacy
         save(SETTINGS_FILE, st)
         apply_templates(st)
-        # Thumbnails übernehmen (Kopie im Kanal-Ordner)
-        if self.pending:
-            thumbs_dir().mkdir(parents=True, exist_ok=True)
-            for y, src in self.pending.items():
-                old = self.thumbs.pop(str(y), None)
-                if old and old.get("file") and (thumbs_dir() / old["file"]).exists():
-                    try:
-                        (thumbs_dir() / old["file"]).unlink()
-                    except OSError:
-                        pass
-                if src:
-                    name = f"{y}{Path(src).suffix.lower()}"
-                    shutil.copyfile(src, thumbs_dir() / name)
-                    self.thumbs[str(y)] = {"file": name, "status": "queued", "error": ""}
-            save(thumbs_file(), self.thumbs)
         self.app.write_log(L("PLAYLIST SETTINGS SAVED", "PLAYLIST-EINSTELLUNGEN GESPEICHERT"), "ok")
         self.app.settings_card.redraw()
         self.destroy()
@@ -4130,7 +3894,6 @@ HELP_TEXT_DE = [
     ("li", "Ein Video einfügen: 50 Einheiten"),
     ("li", "Playlist prüfen: 1 Einheit pro 50 Videos"),
     ("li", "Ein doppeltes Video entfernen: 50 Einheiten"),
-    ("li", "Ein Thumbnail hochladen: 50 Einheiten"),
 
     ("h2", "Oben im Fenster"),
     ("dt", "HILFE"),
@@ -4225,10 +3988,6 @@ HELP_TEXT_DE = [
            "Die Knöpfe unter dem Titelfeld fügen sie an der Stelle ein, an der der Cursor steht. Darunter siehst du "
            "eine Vorschau. Lässt du die Beschreibung leer, bekommt die Playlist keine.\n"
            "Sichtbarkeit: öffentlich, nicht gelistet (nur mit Link) oder privat.\n"
-           "Thumbnails: Für jedes Jahr kannst du ein eigenes Bild auswählen, auch schon bevor es die Playlist gibt. "
-           "Es wird hochgeladen, sobald die Playlist existiert und Kontingent da ist (50 Einheiten pro Bild). "
-           "Erlaubt sind JPG und PNG bis 2 MB, am besten im Format 1280×720. Diese Funktion ist noch neu und "
-           "nicht mit allen Konten getestet.\n"
            "Titel, Beschreibung und Sichtbarkeit gelten für Playlists, die ab jetzt angelegt werden. Schon "
            "vorhandene Playlists bleiben so, wie sie sind."),
 
@@ -4256,7 +4015,7 @@ HELP_TEXT_DE = [
     ("h2", "Wo liegen meine Daten?"),
     ("p", "Alles liegt im Ordner des Programms: credentials.json (Zugangsdaten), token.json (Anmeldung), "
           "settings.json (Einstellungen), quota.json (gemerktes Tageslimit), der Ordner data mit dem Fortschritt "
-          "und den Thumbnails pro Kanal und Jahr und der Ordner browser_profile mit der Anmeldung im Edge-Fenster. "
+          "pro Kanal und der Ordner browser_profile mit der Anmeldung im Edge-Fenster. "
           "Nichts davon wird irgendwohin hochgeladen, außer zu Google/YouTube selbst."),
 
     ("h2", "Updates"),
@@ -4352,7 +4111,6 @@ HELP_TEXT_EN = [
     ("li", "Adding one video: 50 units"),
     ("li", "Checking a playlist: 1 unit per 50 videos"),
     ("li", "Removing one duplicate: 50 units"),
-    ("li", "Uploading a thumbnail: 50 units"),
 
     ("h2", "At the top of the window"),
     ("dt", "HELP"),
@@ -4444,9 +4202,6 @@ HELP_TEXT_EN = [
            "videos in that year. The buttons below the title field insert them at the cursor. Below you see a "
            "preview. Leave the description empty for no description.\n"
            "Visibility: public, unlisted (link only) or private.\n"
-           "Thumbnails: you can pick a custom image for every year, even before the playlist exists. It is "
-           "uploaded as soon as the playlist exists and quota is available (50 units per image). JPG and PNG up to "
-           "2 MB, ideally 1280×720. This feature is new and not tested with every account.\n"
            "Title, description and visibility apply to playlists created from now on. Existing playlists stay as "
            "they are."),
 
@@ -4472,8 +4227,8 @@ HELP_TEXT_EN = [
 
     ("h2", "Where is my data?"),
     ("p", "Everything is in the program folder: credentials.json (credentials), token.json (sign-in), settings.json "
-          "(settings), quota.json (remembered daily limit), the data folder with progress and thumbnails per channel "
-          "and year, and the browser_profile folder with the sign-in for the Edge window. None of it is uploaded "
+          "(settings), quota.json (remembered daily limit), the data folder with progress per channel, "
+          "and the browser_profile folder with the sign-in for the Edge window. None of it is uploaded "
           "anywhere except to Google/YouTube itself."),
 
     ("h2", "Updates"),
@@ -4780,7 +4535,7 @@ class ListDialog(tk.Toplevel):
         self.app, self.key, self.parent_dlg = app, key, parent
         lst = (find_list(key) if key else None) or {}
         if template and not lst:
-            # Vorlage: Name und Regeln übernehmen, aber nicht Thumbnail und einzeln aufgenommene/ausgeschlossene Videos
+            # Vorlage: Name und Regeln übernehmen, aber nicht einzeln aufgenommene/ausgeschlossene Videos
             lst = {k: template[k] for k in ("name", "any", "all", "none", "from", "to") if k in template}
         self.lst_id = lst.get("id") or None
         self.add, self.skip = set(lst.get("add") or []), set(lst.get("skip") or [])
@@ -4805,7 +4560,7 @@ class ListDialog(tk.Toplevel):
             self.del_btn.pack(side="right")
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
-        Section(body, L("LIST SETTINGS", "LISTEN-EINSTELLUNGEN"), "NAME // THUMBNAIL").pack(fill="x", pady=(0, px(10)))
+        Section(body, L("LIST SETTINGS", "LISTEN-EINSTELLUNGEN"), "NAME").pack(fill="x", pady=(0, px(10)))
 
         templates = load_lists() if not self.lst_id else []
         if templates:
@@ -4823,20 +4578,6 @@ class ListDialog(tk.Toplevel):
             self.tpl_lb.bind("<<ListboxSelect>>", lambda e, t=templates: self.pick_template(t))
         self.name_var = tk.StringVar(value=lst.get("name", ""))
         self.field(body, L("NAME (REPLACES {year} IN THE PLAYLIST TITLE)", "NAME (ERSETZT {year} IM PLAYLIST-TITEL)"), self.name_var)
-        th = tk.Frame(body, bg=BG)
-        th.pack(fill="x", pady=(0, px(12)))
-        tk.Label(th, text=L("THUMBNAIL  (OPTIONAL)", "THUMBNAIL  (OPTIONAL)"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11),
-                 anchor="w").pack(side="left")
-        self.thumb_pending = None            # None = unverändert | Pfad = neues Bild | "" = entfernen
-        self.thumb_key = list_key(lst) if self.lst_id else None
-        rmb = CutButton(th, L("REMOVE", "ENTFERNEN"), self.thumb_remove, width=110)
-        rmb.pack(side="right")
-        CutButton(th, L("CHOOSE…", "AUSWÄHLEN…"), self.thumb_choose, width=120).pack(side="right", padx=(0, px(6)))
-        self.thumb_info = tk.Label(th, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w")
-        self.thumb_info.pack(side="left", fill="x", expand=True, padx=(px(14), 0))
-        self.thumb_rm = rmb
-        self.thumb_refresh()
-
         Section(body, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
         self.any_var = tk.StringVar(value=", ".join(lst.get("any") or []))
         self.field(body, L("TITLE CONTAINS ANY OF  (SEPARATE WITH COMMAS)", "TITEL ENTHÄLT EINES DAVON  (MIT KOMMA TRENNEN)"), self.any_var)
@@ -4944,42 +4685,6 @@ class ListDialog(tk.Toplevel):
         self.to_var.set(str(t.get("to") or ""))
         self.add, self.skip = set(), set()
         self.refresh()
-
-    def thumb_refresh(self):
-        t = (load(thumbs_file(), {}).get(str(self.thumb_key)) or {}) if self.thumb_key else {}
-        if self.thumb_pending:
-            txt, col, has = L("NEW // ", "NEU // ") + Path(self.thumb_pending).name, CYAN, True
-        elif self.thumb_pending == "":
-            txt, col, has = L("WILL BE REMOVED", "WIRD ENTFERNT"), RED, False
-        elif t:
-            st = {"queued": L("QUEUED", "WARTET"), "done": L("UPLOADED", "HOCHGELADEN"), "error": L("ERROR", "FEHLER")}.get(t.get("status"), "?")
-            txt, col, has = f"{st} // {t.get('file', '')}", {"done": GREEN, "error": RED}.get(t.get("status"), YELLOW), True
-        else:
-            txt, col, has = L("NONE", "KEINS"), TEXT_MUTED, False
-        if len(txt) > 40:
-            txt = txt[:18] + "…" + txt[-18:]
-        self.thumb_info.configure(text=txt, fg=col)
-        self.thumb_rm.set_enabled(has)
-
-    def thumb_choose(self):
-        f = filedialog.askopenfilename(parent=self, title="Thumbnail",
-                                       filetypes=[(L("Images", "Bilder"), "*.jpg *.jpeg *.png"),
-                                                  (L("All files", "Alle Dateien"), "*.*")])
-        if not f:
-            return
-        p_ = Path(f)
-        if p_.suffix.lower() not in (".jpg", ".jpeg", ".png"):
-            self.note.configure(text=L("THUMBNAIL: ONLY JPG OR PNG.", "THUMBNAIL: NUR JPG ODER PNG."), fg=RED)
-            return
-        if p_.stat().st_size > THUMB_MAX_BYTES:
-            self.note.configure(text=L("THUMBNAIL: FILE TOO LARGE (MAX 2 MB).", "THUMBNAIL: DATEI ZU GROSS (MAX 2 MB)."), fg=RED)
-            return
-        self.thumb_pending = str(p_)
-        self.thumb_refresh()
-
-    def thumb_remove(self):
-        self.thumb_pending = ""
-        self.thumb_refresh()
 
     def destroy(self):
         parent = getattr(self, "parent_dlg", None)
@@ -5185,11 +4890,6 @@ class ListDialog(tk.Toplevel):
         lst.update(name=name, **cur)
         save_lists(lists)
         key = list_key(lst)
-        if self.thumb_pending is not None:
-            try:
-                store_thumbnail(key, self.thumb_pending or None)
-            except OSError as e:
-                self.app.write_log(L(f"THUMBNAIL NOT SAVED // {e}", f"THUMBNAIL NICHT GESPEICHERT // {e}"), "err")
         self.app.lists_changed(select_key=key if not self.lst_id else None)
         if self.app.worker and self.app.worker.is_alive():
             self.app.write_log(L("LIST CHANGES APPLY FROM THE NEXT START", "LISTENÄNDERUNGEN GELTEN AB DEM NÄCHSTEN START"), "info")
@@ -6167,10 +5867,8 @@ class App(tk.Tk):
                                       "Konto."))
         Tooltip(self.app_card, L("Program settings: language, auto-run, start with Windows and update check.",
                                  "Programm-Einstellungen: Sprache, Autostart, Start mit Windows und Update-Prüfung."))
-        Tooltip(self.settings_card, L("Playlist title and description with placeholders, visibility and custom "
-                                      "thumbnails per year.",
-                                      "Playlist-Titel und Beschreibung mit Platzhaltern, Sichtbarkeit und eigene "
-                                      "Thumbnails pro Jahr."))
+        Tooltip(self.settings_card, L("Playlist title and description with placeholders and visibility.",
+                                      "Playlist-Titel und Beschreibung mit Platzhaltern und Sichtbarkeit."))
         Tooltip(self.login_panel, L("Google sign-in: open the link, enter the code, confirm. Clicking the code copies it.",
                                     "Google-Anmeldung: Link öffnen, Code eingeben, bestätigen. Klick auf den Code "
                                     "kopiert ihn."))
