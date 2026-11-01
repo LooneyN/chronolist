@@ -20,6 +20,7 @@ Einstellungen: settings.json     (u. a. Zielkanal, Playlist-Namensvorlage, Updat
 Fortschritt:   data/<kanal>/videos_<jahr>.json, collect_<jahr>.json, state_<jahr>.json
 """
 import datetime
+import io
 import json
 import os
 import math
@@ -92,7 +93,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 106
+BUILD = 109
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -395,6 +396,35 @@ def list_name(key):
 def year_label(y):
     """Anzeigename einer Karte: Jahreszahl oder Listenname."""
     return list_name(y) if is_list_key(y) else str(y)
+
+
+def prepare_thumbnail(path):
+    """Bild für die API vorbereiten: YouTube nimmt nur exakt 16:9 oder 1:1 (das Studio schneidet selbst zu).
+    Mittig zuschneiden aufs nähere Format, auf höchstens 1920 Pixel Breite verkleinern, als JPEG unter 2 MB.
+    Rückgabe: (Bytes, MIME-Typ, Breite, Höhe)."""
+    from PIL import Image
+    im = Image.open(path)
+    im.load()
+    if im.mode != "RGB":
+        bg = Image.new("RGB", im.size, (0, 0, 0))
+        bg.paste(im.convert("RGBA"), mask=im.convert("RGBA").split()[3])
+        im = bg
+    w, h = im.size
+    if w / h >= (16 / 9 + 1) / 2:                      # näher an 16:9 als an 1:1
+        tw = min(w, 1920, (h * 16 // 9))
+        tw -= tw % 16
+        th = tw * 9 // 16
+    else:
+        tw = th = min(w, h, 1080)
+    sw, sh = (w, w * th / tw) if w * th <= h * tw else (h * tw / th, h)   # größter Ausschnitt im Zielformat
+    x0, y0 = (w - sw) / 2, (h - sh) / 2
+    im = im.resize((tw, th), Image.LANCZOS, box=(x0, y0, x0 + sw, y0 + sh))
+    for q in (92, 85, 75, 65):
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=q, optimize=True)
+        if buf.tell() <= THUMB_MAX_BYTES:
+            break
+    return buf.getvalue(), "image/jpeg", tw, th
 
 
 def store_thumbnail(key, src):
@@ -2425,14 +2455,18 @@ class Worker(threading.Thread):
             if self.mode != "api" or quota_blocked("units"):
                 self.log(L(f"THUMBNAIL {year_label(y)} WAITING // NEEDS API QUOTA", f"THUMBNAIL {year_label(y)} WARTET // BRAUCHT API-KONTINGENT"), "warn")
                 return
-            mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+            try:
+                data, mime, tw, th = prepare_thumbnail(path)
+            except Exception as e:                      # Pillow fehlt oder Datei nicht lesbar: Original senden
+                data, mime, tw, th = path.read_bytes(), ("image/png" if path.suffix.lower() == ".png" else "image/jpeg"), None, None
             self.log(L(f"THUMBNAIL {year_label(y)} // UPLOADING ...", f"THUMBNAIL {year_label(y)} // WIRD HOCHGELADEN ..."))
             try:
                 for pid in pids:
                     # list: die Playlist heißt hier "parent" (nicht "playlistId")
                     existing = self.call("GET", "playlistImages", {"part": "snippet", "parent": pid}).get("items", [])
                     meta = {"kind": "youtube#playlistImage", "snippet": {"playlistId": pid, "type": "hero"}}
-                    data = path.read_bytes()
+                    if tw:
+                        meta["snippet"].update(width=tw, height=th)
                     if existing:
                         meta["id"] = existing[0]["id"]
                         self.upload_call("PUT", {"part": "snippet"}, meta, data, mime)
@@ -4744,10 +4778,13 @@ class ListDialog(tk.Toplevel):
     """Stichwortliste anlegen/bearbeiten: Suchbegriffe, Live-Vorschau, einzelne Videos ausschließen/hinzufügen."""
     SHOW_MAX = 4000
 
-    def __init__(self, app, key, parent=None):
+    def __init__(self, app, key, parent=None, template=None):
         super().__init__(app, bg=BG)
         self.app, self.key, self.parent_dlg = app, key, parent
         lst = (find_list(key) if key else None) or {}
+        if template and not lst:
+            # Vorlage: Name und Regeln übernehmen, aber nicht Thumbnail und einzeln aufgenommene/ausgeschlossene Videos
+            lst = {k: template[k] for k in ("name", "any", "all", "none", "from", "to") if k in template}
         self.lst_id = lst.get("id") or None
         self.add, self.skip = set(lst.get("add") or []), set(lst.get("skip") or [])
         self.title(L("Custom list", "Eigene Liste"))
@@ -4780,7 +4817,7 @@ class ListDialog(tk.Toplevel):
         tk.Label(th, text=L("THUMBNAIL  (OPTIONAL)", "THUMBNAIL  (OPTIONAL)"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11),
                  anchor="w").pack(side="left")
         self.thumb_pending = None            # None = unverändert | Pfad = neues Bild | "" = entfernen
-        self.thumb_key = list_key(lst) if lst else None
+        self.thumb_key = list_key(lst) if self.lst_id else None
         rmb = CutButton(th, L("REMOVE", "ENTFERNEN"), self.thumb_remove, width=110)
         rmb.pack(side="right")
         CutButton(th, L("CHOOSE…", "AUSWÄHLEN…"), self.thumb_choose, width=120).pack(side="right", padx=(0, px(6)))
@@ -4873,6 +4910,8 @@ class ListDialog(tk.Toplevel):
             v.trace_add("write", lambda *a: self.schedule())
         self.bind("<Escape>", lambda e: self.destroy())
         self.set_view("hits")
+        if template and not self.lst_id:
+            self.title(L("Custom list (copy)", "Eigene Liste (Kopie)"))
         style_window(self)
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -5275,10 +5314,14 @@ class Section(tk.Canvas):
 class YearSection(Section):
     """Abschnitt JAHRE mit Gesamtfortschritt und ALLE / KEINE zum Markieren."""
 
-    def __init__(self, master, text, on_all, on_none):
+    def __init__(self, master, text, on_all, on_none, on_hide=None, hidden=False):
         super().__init__(master, text)
-        self.on_all, self.on_none = on_all, on_none
+        self.on_all, self.on_none, self.on_hide, self.hidden = on_all, on_none, on_hide, hidden
         self.total = (0, 0)
+
+    def set_hidden(self, hidden):
+        self.hidden = hidden
+        self.redraw()
 
     def set_total(self, done, total):
         if (done, total) != self.total:
@@ -5303,7 +5346,14 @@ class YearSection(Section):
         right = self.link(right, y, L("NONE", "KEINE"), self.on_none) - px(6)
         sep = self.create_text(right, y, text="·", anchor="e", font=F("mono", 11), fill=FLUFF)
         right = self.bbox(sep)[0] - px(6)
-        right = self.link(right, y, L("ALL", "ALLE"), self.on_all) - px(16)
+        right = self.link(right, y, L("ALL", "ALLE"), self.on_all) - px(6)
+        if self.on_hide:
+            sep = self.create_text(right, y, text="·", anchor="e", font=F("mono", 11), fill=FLUFF)
+            right = self.bbox(sep)[0] - px(6)
+            right = self.link(right, y, L("SHOW DONE", "FERTIGE ZEIGEN") if self.hidden else L("HIDE DONE", "FERTIGE AUSBLENDEN"),
+                              self.on_hide) - px(16)
+        else:
+            right -= px(10)
         done, total = self.total
         if total:
             pct = done * 100 / total
@@ -5612,7 +5662,8 @@ class App(tk.Tk):
         self.channel_card.grid(row=1, column=0, sticky="ew", pady=(0, px(16)))
         self.channel_card.update_state()
         self.year_section = YearSection(left, L("TARGETS", "ZIELE"), lambda: self.select_all(True),
-                                        lambda: self.select_all(False))
+                                        lambda: self.select_all(False), self.toggle_hide_done,
+                                        bool(self.settings.get("hide_done")))
         self.year_section.grid(row=2, column=0, sticky="ew", pady=(0, px(6)))
         self.scroll = ScrollArea(left)
         self.scroll.grid(row=3, column=0, sticky="nsew")
@@ -5623,8 +5674,8 @@ class App(tk.Tk):
         self.new_list_btn = CutButton(left, L("+  CUSTOM LIST", "+  EIGENE LISTE"), self.new_list, height=px(36))
         self.new_list_btn.set_color(CYAN)
         self.new_list_btn.grid(row=4, column=0, sticky="ew", pady=(px(8), 0), padx=(0, sbw))
-        Tooltip(self.new_list_btn, L("Your own playlist besides the years: collects all videos whose title contains your keywords (e.g. a series), in upload order.",
-                                     "Eine eigene Playlist neben den Jahren: sammelt alle Videos, in deren Titel deine Stichwörter vorkommen (z. B. eine Serie), in Upload-Reihenfolge."))
+        Tooltip(self.new_list_btn, L("Your own playlist besides the years: collects all videos whose title contains your keywords (e.g. a series), in upload order. If you already have lists, you can start from a copy of one.",
+                                     "Eine eigene Playlist neben den Jahren: sammelt alle Videos, in deren Titel deine Stichwörter vorkommen (z. B. eine Serie), in Upload-Reihenfolge. Gibt es schon Listen, kannst du mit einer Kopie davon starten."))
         self.rows = {}
         self.order = []
         self.build_rows()
@@ -5737,6 +5788,12 @@ class App(tk.Tk):
         for tag, col in (("ts", RED_MILD), ("info", TEXT_DIM), ("ok", GREEN), ("warn", YELLOW),
                          ("err", RED), ("sep", RED), ("leaf", GREEN), ("loglink", YELLOW)):
             self.logbox.tag_configure(tag, foreground=col)
+        self.logbox.tag_configure("urllink", underline=False)
+        self.logbox.tag_bind("urllink", "<Enter>", lambda e: (self.logbox.configure(cursor="hand2"),
+                                                               self.logbox.tag_configure("urllink", underline=True)))
+        self.logbox.tag_bind("urllink", "<Leave>", lambda e: (self.logbox.configure(cursor=""),
+                                                               self.logbox.tag_configure("urllink", underline=False)))
+        self.logbox.tag_bind("urllink", "<Button-1>", self.copy_log_link)
         self.log_panel.windows.append(
             lambda x0, y0, x1, y1, c: self.log_panel.create_window(
                 x0 + px(10), y0 + px(10), window=inner, anchor="nw",
@@ -5772,7 +5829,23 @@ class App(tk.Tk):
         save(SETTINGS_FILE, self.settings)
 
     def new_list(self):
-        ListDialog(self, None)
+        lists = load_lists()
+        if not lists:
+            ListDialog(self, None)
+            return
+        m = tk.Menu(self, tearoff=0, bg=BG2, fg=TEXT, activebackground=mix(CYAN, BG, 0.35), activeforeground="#ffffff",
+                    bd=0, font=F("mono", 11, False))
+        m.add_command(label=L("EMPTY LIST", "LEERE LISTE"), command=lambda: ListDialog(self, None))
+        m.add_separator()
+        for lst in lists:
+            nm = lst.get("name") or "?"
+            m.add_command(label=L(f"COPY OF: {nm}", f"KOPIE VON: {nm}"),
+                          command=lambda t=lst: ListDialog(self, None, template=t))
+        b = self.new_list_btn
+        try:
+            m.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
+        finally:
+            m.grab_release()
 
     def edit_list(self, key):
         if find_list(key):
@@ -5804,6 +5877,35 @@ class App(tk.Tk):
         self.save_settings()
         if self.worker and self.worker.is_alive():
             self.write_log(L("SELECTION APPLIES FROM THE NEXT START", "AUSWAHL GILT AB DEM NÄCHSTEN START"), "info")
+
+    def is_hidden_row(self, y):
+        r = self.rows[y]
+        return bool(self.settings.get("hide_done")) and r.info.get("code") == "done" and not r.running
+
+    def repack(self):
+        """Karten in der gespeicherten Reihenfolge anordnen; fertige ausblenden, wenn gewünscht."""
+        for yy in self.order:
+            self.rows[yy].pack_forget()
+        for yy in self.order:
+            if not self.is_hidden_row(yy):
+                self.rows[yy].pack(fill="x", pady=(0, px(4)))
+        self.hidden_now = {yy for yy in self.order if self.is_hidden_row(yy)}
+
+    def watch_hidden(self):
+        """Ändert sich, welche Karten fertig sind (oder laufen), die Ansicht nachziehen."""
+        try:
+            if not getattr(self, "drag", None) or not self.drag.get("on"):
+                if {yy for yy in self.order if self.is_hidden_row(yy)} != getattr(self, "hidden_now", set()):
+                    self.repack()
+        finally:
+            self.after(700, self.watch_hidden)
+
+    def toggle_hide_done(self):
+        self.settings["hide_done"] = not self.settings.get("hide_done")
+        save(SETTINGS_FILE, self.settings)
+        self.year_section.set_hidden(bool(self.settings["hide_done"]))
+        self.repack()
+        self.scroll.canvas.yview_moveto(0)
 
     def update_total(self):
         done = total = 0
@@ -5894,12 +5996,15 @@ class App(tk.Tk):
         for y in self.order:
             row = YearRow(self.scroll.inner, y, command=lambda y=y: self.toggle_year(y), pause_command=self.toggle_pause)
             Tooltip(row, lambda r=row: self.year_tip(r))
-            row.pack(fill="x", pady=(0, px(4)))
             row.refresh(selected=y in selected)
             self.bind_drag(row)
             if is_list_key(y):
                 row.bind("<Button-3>", lambda e, k=y: self.edit_list(k), add="+")
             self.rows[y] = row
+        self.repack()
+        if not getattr(self, "watch_started", False):
+            self.watch_started = True
+            self.after(700, self.watch_hidden)
         self.scroll.canvas.yview_moveto(0)
         self.update_total()
 
@@ -5916,12 +6021,13 @@ class App(tk.Tk):
         """Index, vor dem eingefügt wird, und die y-Position der Markierung (im inneren Frame)."""
         inner = self.scroll.inner
         rel = y_root - inner.winfo_rooty()
-        rows = [self.rows[y] for y in self.order]
-        for i, r in enumerate(rows):
+        vis = [y for y in self.order if not self.is_hidden_row(y)]
+        for y in vis:
+            r = self.rows[y]
             if rel < r.winfo_y() + r.winfo_height() / 2:
-                return i, max(0, r.winfo_y() - px(3))
-        last = rows[-1]
-        return len(rows), last.winfo_y() + last.winfo_height() + px(1)
+                return self.order.index(y), max(0, r.winfo_y() - px(3))
+        last = self.rows[vis[-1]]
+        return len(self.order), last.winfo_y() + last.winfo_height() + px(1)
 
     def drag_motion(self, row, e):
         d = getattr(self, "drag", None)
@@ -5963,10 +6069,7 @@ class App(tk.Tk):
         if idx is not None and idx not in (old, old + 1):
             self.order.remove(y)
             self.order.insert(idx - 1 if idx > old else idx, y)
-            for yy in self.order:
-                self.rows[yy].pack_forget()
-            for yy in self.order:
-                self.rows[yy].pack(fill="x", pady=(0, px(4)))
+            self.repack()
             self.save_settings()
             if self.worker and self.worker.is_alive():
                 self.write_log(L("NEW ORDER APPLIES FROM THE NEXT START", "NEUE REIHENFOLGE GILT AB DEM NÄCHSTEN START"),
@@ -6386,6 +6489,29 @@ class App(tk.Tk):
         self.clipboard_append(self.code)
         self.write_log(L("CODE COPIED TO CLIPBOARD", "CODE IN DIE ZWISCHENABLAGE KOPIERT"), "info")
 
+    def copy_log_link(self, e):
+        """Klick auf einen Link im Log: in die Zwischenablage kopieren, kurzer Hinweis am Mauszeiger."""
+        rng = self.logbox.tag_prevrange("urllink", f"@{e.x},{e.y}+1c")
+        if not rng:
+            return "break"
+        url = self.logbox.get(*rng).strip()
+        self.clipboard_clear()
+        self.clipboard_append(url)
+        tip = tk.Toplevel(self)
+        tip.wm_overrideredirect(True)
+        try:
+            tip.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        base = "Segoe UI" if "Segoe UI" in tkfont.families(self) else "TkDefaultFont"
+        fr = tk.Frame(tip, bg=mix(GREEN, BG, 0.55), padx=1, pady=1)
+        fr.pack()
+        tk.Label(fr, text=L("LINK COPIED", "LINK KOPIERT"), bg="#1c1c28", fg=GREEN, font=(base, -px(13)),
+                 padx=px(10), pady=px(6)).pack()
+        tip.geometry(f"+{e.x_root + px(12)}+{e.y_root + px(18)}")
+        tip.after(1300, tip.destroy)
+        return "break"
+
     # --- Nachrichten vom Worker
     def write_log(self, text, level="info"):
         stamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -6407,7 +6533,12 @@ class App(tk.Tk):
             self.logbox.insert("end", m.group(2), "leaf")
             self.logbox.insert("end", f"{m.group(3)}\n", level)
         else:
-            self.logbox.insert("end", f"{text}\n", level)
+            for part in re.split(r"(https?://\S+)", text):       # Links im Log: Klick kopiert sie
+                if re.match(r"https?://", part):
+                    self.logbox.insert("end", part, (level, "urllink"))
+                elif part:
+                    self.logbox.insert("end", part, level)
+            self.logbox.insert("end", "\n", level)
         if getattr(self, "log_follow", True):
             self.logbox.see("end")
         self.logbox.config(state="disabled")

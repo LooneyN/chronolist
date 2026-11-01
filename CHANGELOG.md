@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
+- CUSTOM LIST: with existing lists the button offers an empty list or a COPY OF one (name and rules are taken over, not the thumbnail or single videos).
+- HIDE DONE / SHOW DONE in the TARGETS bar collapses all completed cards.
+- Thumbnails are cropped to the exact 16:9 or 1:1 format YouTube's API requires (the Studio does that on its own) and sent as JPEG, fixing HTTP 400 "invalid aspect ratio". Needs Pillow.
+- Links in the log copy to the clipboard on click (with a short "link copied" hint).
 - Video titles are now stored while scanning (API and channel page, no extra quota). This is the basis for keyword lists.
 - Keyword lists: CUSTOM LIST under the years opens an editor with live preview (hit count and titles). Optionally limit a list to a range of years. Exclude single videos or add videos by link/ID. Lists are cards like years (right-click edits) and run after the years.
 - Keyword lists (details): a list collects videos by title (any / all / exclude terms, plus single videos added or skipped) and is filled like a year in upload order. Missing titles are loaded from your own playlists (API) or via oEmbed. 
