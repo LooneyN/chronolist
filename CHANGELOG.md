@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-11-01
+
 ### Added
 - SUGGESTIONS button: finds series in the stored titles (same beginning, then an episode number such as "#12", "Folge 3", "Teil 7") and opens the list editor with name and keyword filled in. Series that an existing list already covers are left out. A search box narrows the suggestions by keyword.
 - Custom lists can have their own DESCRIPTION (optional). Empty = the description template from the PLAYLISTS settings.
@@ -119,7 +121,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v2.11.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/LooneyN/chronolist/compare/v2.11.0...v3.0.0
 [2.11.0]: https://github.com/LooneyN/chronolist/compare/v2.10.0...v2.11.0
 [2.10.0]: https://github.com/LooneyN/chronolist/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/LooneyN/chronolist/compare/v2.8.0...v2.9.0
