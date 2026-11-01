@@ -92,7 +92,7 @@ TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 THUMB_MAX_BYTES = 2 * 1024 * 1024
 APP_NAME = "Chronolist"
 VERSION = "3.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 92
+BUILD = 93
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2396,15 +2396,16 @@ class Worker(threading.Thread):
     def apply_thumbnails(self, only_year=None):
         """Wartende Thumbnails hochladen, sobald die Playlist existiert. Nur über die API (50 Einheiten pro Bild)."""
         info = load(thumbs_file(), {})
-        todo = [(int(y), t) for y, t in info.items()
-                if t.get("status") == "queued" and (only_year is None or int(y) == only_year)]
-        for y, t in sorted(todo):
+        todo = [(int(y) if str(y).isdigit() else y, t) for y, t in info.items()
+                if t.get("status") == "queued"
+                and (only_year is None or (int(y) if str(y).isdigit() else y) == only_year)]
+        for y, t in sorted(todo, key=lambda x: str(x[0])):
             pids = part_ids(load(state_file(y), {}))
             path = thumbs_dir() / t.get("file", "")
             if not pids or not path.exists():
                 continue
             if self.mode != "api" or quota_blocked("units"):
-                self.log(L(f"THUMBNAIL {y} WAITING // NEEDS API QUOTA", f"THUMBNAIL {y} WARTET // BRAUCHT API-KONTINGENT"), "warn")
+                self.log(L(f"THUMBNAIL {year_label(y)} WAITING // NEEDS API QUOTA", f"THUMBNAIL {year_label(y)} WARTET // BRAUCHT API-KONTINGENT"), "warn")
                 return
             mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
             try:
@@ -2417,13 +2418,13 @@ class Worker(threading.Thread):
                     else:
                         self.upload_call("POST", {"part": "snippet"}, meta, path.read_bytes(), mime)
                 t.update(status="done", error="", parts=len(pids))
-                self.log(L(f"THUMBNAIL {y} UPLOADED", f"THUMBNAIL {y} HOCHGELADEN"), "ok")
+                self.log(L(f"THUMBNAIL {year_label(y)} UPLOADED", f"THUMBNAIL {year_label(y)} HOCHGELADEN"), "ok")
             except QuotaExceeded:
-                self.log(L(f"THUMBNAIL {y} WAITING // NEEDS API QUOTA", f"THUMBNAIL {y} WARTET // BRAUCHT API-KONTINGENT"), "warn")
+                self.log(L(f"THUMBNAIL {year_label(y)} WAITING // NEEDS API QUOTA", f"THUMBNAIL {year_label(y)} WARTET // BRAUCHT API-KONTINGENT"), "warn")
                 return
             except (ApiError, RuntimeError, requests.RequestException) as e:
                 t.update(status="error", error=str(e)[:200])
-                self.log(L(f"THUMBNAIL {y} FAILED // {str(e)[:120]}", f"THUMBNAIL {y} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
+                self.log(L(f"THUMBNAIL {year_label(y)} FAILED // {str(e)[:120]}", f"THUMBNAIL {year_label(y)} FEHLGESCHLAGEN // {str(e)[:120]}"), "err")
             info[str(y)] = t
             save(thumbs_file(), info)
 
@@ -3584,8 +3585,8 @@ class SettingsDialog(tk.Toplevel):
         chips.pack(fill="x", pady=(px(2), px(6)))
         tk.Label(chips, text=L("INSERT:", "EINFÜGEN:"), bg=BG, fg=TEXT_MUTED, font=F("mono", 10)).pack(side="left", padx=(0, px(6)))
         tips = {"{channel}": L("channel name", "Name des Kanals"), "{handle}": L("@handle of the channel", "@Handle des Kanals"),
-                "{year}": L("year of the playlist", "Jahr der Playlist"),
-                "{count}": L("number of videos in that year", "Anzahl der Videos in diesem Jahr")}
+                "{year}": L("year of the playlist (name of the list for custom lists)", "Jahr der Playlist (bei eigenen Listen der Listenname)"),
+                "{count}": L("number of videos in the playlist", "Anzahl der Videos in der Playlist")}
         chip_names = {"{channel}": L("CHANNEL", "KANAL"), "{handle}": "HANDLE", "{year}": L("YEAR", "JAHR"),
                       "{count}": L("COUNT", "ANZAHL")}
         for label, tok in self.CHIPS:
@@ -3627,10 +3628,10 @@ class SettingsDialog(tk.Toplevel):
                  bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w").pack(fill="x", pady=(px(2), px(12)))
 
         Section(body, L("THUMBNAILS (OPTIONAL, EXPERIMENTAL)", "THUMBNAILS (OPTIONAL, EXPERIMENTELL)"), "JPG/PNG // MAX 2 MB").pack(fill="x", pady=(0, px(6)))
-        tk.Label(body, text=L("PICK AN IMAGE PER YEAR, ALSO FOR PLAYLISTS THAT DON'T EXIST YET. IT IS UPLOADED VIA "
+        tk.Label(body, text=L("PICK AN IMAGE PER YEAR OR CUSTOM LIST, ALSO FOR PLAYLISTS THAT DON'T EXIST YET. IT IS UPLOADED VIA "
                               "THE API (50 UNITS) AS SOON AS THE PLAYLIST EXISTS AND QUOTA IS AVAILABLE. "
                               "RECOMMENDED: 1280×720.",
-                              "WÄHLE PRO JAHR EIN BILD, AUCH FÜR PLAYLISTS, DIE ES NOCH NICHT GIBT. ES WIRD ÜBER DIE "
+                              "WÄHLE PRO JAHR ODER EIGENE LISTE EIN BILD, AUCH FÜR PLAYLISTS, DIE ES NOCH NICHT GIBT. ES WIRD ÜBER DIE "
                               "API HOCHGELADEN (50 EINHEITEN), SOBALD DIE PLAYLIST EXISTIERT UND KONTINGENT DA IST. "
                               "EMPFOHLEN: 1280×720."),
                  bg=BG, fg=TEXT_MUTED, font=F("mono", 10, False), justify="left", anchor="w",
@@ -3644,6 +3645,11 @@ class SettingsDialog(tk.Toplevel):
         self.thumb_rows = {}
         for y in YEARS:
             self.build_thumb_row(y)
+        if load_lists():
+            tk.Label(self.thumb_area.inner, text=L("CUSTOM LISTS", "EIGENE LISTEN"), bg=BG, fg=RED, font=F("mono", 11),
+                     anchor="w").pack(fill="x", pady=(px(10), px(4)))
+            for lst in load_lists():
+                self.build_thumb_row(list_key(lst), editable=True)
 
         self.bind("<Escape>", lambda e: self.destroy())
         self.preview()
@@ -3700,15 +3706,20 @@ class SettingsDialog(tk.Toplevel):
         status = {"queued": "QUEUED", "done": "UPLOADED", "error": "ERROR"}.get(t.get("status"), "?")
         return (status, t.get("file", ""))
 
-    def build_thumb_row(self, y):
+    def build_thumb_row(self, y, editable=False):
         fr = tk.Frame(self.thumb_area.inner, bg=BG)
         fr.pack(fill="x", pady=(0, px(4)))
-        tk.Label(fr, text=str(y), bg=BG, fg=TEXT, font=F("ui", 14), width=6, anchor="w").pack(side="left")
+        name = year_label(y)
+        tk.Label(fr, text=name if len(name) <= 18 else name[:17] + "…", bg=BG, fg=TEXT, font=F("ui", 14),
+                 width=18 if editable else 6, anchor="w").pack(side="left")
         info = tk.Label(fr, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w")
         info.pack(side="left", fill="x", expand=True)
         rm = CutButton(fr, L("REMOVE", "ENTFERNEN"), lambda: self.remove_thumb(y), width=110)
         rm.pack(side="right")
         CutButton(fr, L("CHOOSE…", "AUSWÄHLEN…"), lambda: self.choose_thumb(y), width=120).pack(side="right", padx=(0, px(6)))
+        if editable:
+            CutButton(fr, L("EDIT LIST", "LISTE ÄNDERN"), lambda: ListDialog(self.app, y, parent=self),
+                      width=140).pack(side="right", padx=(0, px(6)))
         self.thumb_area.wheel(fr)
         self.thumb_rows[y] = (info, rm)
         self.refresh_thumb_row(y)
@@ -3728,17 +3739,17 @@ class SettingsDialog(tk.Toplevel):
         rm.set_enabled(status not in ("NONE", "REMOVE"))
 
     def choose_thumb(self, y):
-        f = filedialog.askopenfilename(parent=self, title=f"Thumbnail {y}",
+        f = filedialog.askopenfilename(parent=self, title=f"Thumbnail {year_label(y)}",
                                        filetypes=[(L("Images", "Bilder"), "*.jpg *.jpeg *.png"),
                                                   (L("All files", "Alle Dateien"), "*.*")])
         if not f:
             return
         p_ = Path(f)
         if p_.suffix.lower() not in (".jpg", ".jpeg", ".png"):
-            self.app.write_log(L(f"THUMBNAIL {y} // ONLY JPG OR PNG", f"THUMBNAIL {y} // NUR JPG ODER PNG"), "err")
+            self.app.write_log(L(f"THUMBNAIL {year_label(y)} // ONLY JPG OR PNG", f"THUMBNAIL {year_label(y)} // NUR JPG ODER PNG"), "err")
             return
         if p_.stat().st_size > THUMB_MAX_BYTES:
-            self.app.write_log(L(f"THUMBNAIL {y} // FILE TOO LARGE (MAX 2 MB)", f"THUMBNAIL {y} // DATEI ZU GROSS (MAX 2 MB)"), "err")
+            self.app.write_log(L(f"THUMBNAIL {year_label(y)} // FILE TOO LARGE (MAX 2 MB)", f"THUMBNAIL {year_label(y)} // DATEI ZU GROSS (MAX 2 MB)"), "err")
             return
         self.pending[y] = str(p_)
         self.refresh_thumb_row(y)
@@ -4706,14 +4717,14 @@ class ListDialog(tk.Toplevel):
     """Stichwortliste anlegen/bearbeiten: Suchbegriffe, Live-Vorschau, einzelne Videos ausschließen/hinzufügen."""
     SHOW_MAX = 4000
 
-    def __init__(self, app, key):
+    def __init__(self, app, key, parent=None):
         super().__init__(app, bg=BG)
-        self.app, self.key = app, key
+        self.app, self.key, self.parent_dlg = app, key, parent
         lst = (find_list(key) if key else None) or {}
         self.lst_id = lst.get("id") or None
         self.add, self.skip = set(lst.get("add") or []), set(lst.get("skip") or [])
         self.title(L("Custom list", "Eigene Liste"))
-        self.transient(app)
+        self.transient(parent or app)
         self.minsize(px(700), px(640))
         self.geometry(f"{px(780)}x{px(820)}")
         self.pool = all_year_videos()
@@ -4736,7 +4747,7 @@ class ListDialog(tk.Toplevel):
         Section(body, L("CUSTOM LIST", "EIGENE LISTE"), "TITLE // FILTER").pack(fill="x", pady=(0, px(10)))
 
         self.name_var = tk.StringVar(value=lst.get("name", ""))
-        self.field(body, L("NAME (BECOMES THE PLAYLIST TITLE)", "NAME (WIRD DER PLAYLIST-TITEL)"), self.name_var)
+        self.field(body, L("NAME (REPLACES {year} IN THE PLAYLIST TITLE)", "NAME (ERSETZT {year} IM PLAYLIST-TITEL)"), self.name_var)
         self.any_var = tk.StringVar(value=", ".join(lst.get("any") or []))
         self.field(body, L("TITLE CONTAINS ANY OF  (SEPARATE WITH COMMAS)", "TITEL ENTHÄLT EINES DAVON  (MIT KOMMA TRENNEN)"), self.any_var)
         self.all_var = tk.StringVar(value=", ".join(lst.get("all") or []))
@@ -4802,6 +4813,17 @@ class ListDialog(tk.Toplevel):
         self.geometry(f"+{max(0, x)}+{max(0, y)}")
         self.grab_set()
         self.focus_force()
+
+    def destroy(self):
+        parent = getattr(self, "parent_dlg", None)
+        super().destroy()
+        if parent is not None:
+            try:
+                if parent.winfo_exists():
+                    parent.grab_set()
+                    parent.focus_force()
+            except tk.TclError:
+                pass
 
     def field(self, parent, label, var):
         tk.Label(parent, text=label, bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w").pack(fill="x")

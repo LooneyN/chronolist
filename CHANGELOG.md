@@ -11,6 +11,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Keyword lists (details): a list collects videos by title (any / all / exclude terms, plus single videos added or skipped) and is filled like a year in upload order. Missing titles are loaded from your own playlists (API) or via oEmbed. 
 
 ### Changed
+- Custom lists now live in the PLAYLISTS settings too: thumbnails can be set per list there (same as for years), with an EDIT LIST button next to each list. Right-click on a list card still works.
 - The year list is now called TARGETS (lists and years sit side by side); the button is CUSTOM LIST. Loading missing titles shows count and percent on the list card.
 - Cleaner dashboard: only FALLBACK, PROGRAM and PLAYLISTS remain under options. AUTO-RUN and BOOT moved to the program settings.
 - Aligned layout: both columns share one grid. START / PAUSE / STOP / CHECK are large tiles as tall as the channel card, all list and option cards have the same height, and right edges line up.
