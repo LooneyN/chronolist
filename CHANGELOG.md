@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-11-03
+
 ### Added
 - SCAN button: loads all videos and titles of the channel without creating or changing any playlist. This makes SUGGESTIONS and custom lists usable right away, for example with a new channel.
 - Quota reserve: Chronolist counts the API units it uses and stops a little early, so 20 units are always left to add or change a channel. The count is an estimate (other programs in the same Google project are not counted).
@@ -148,7 +150,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/LooneyN/chronolist/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/LooneyN/chronolist/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/LooneyN/chronolist/compare/v2.11.0...v3.0.0
 [2.11.0]: https://github.com/LooneyN/chronolist/compare/v2.10.0...v2.11.0
