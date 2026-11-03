@@ -13,7 +13,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Changed
 - The main window's option cards are now AUTO-CHECK, FALLBACK, PLAYLISTS and PROGRAM.
 - The release notes window uses the same crisp font as the help.
-- New logo for the program icon (Chronolist.exe) and the project page.
+- New logo for the program window, the program icon (Chronolist.exe) and the project page.
+- PLAYLISTS settings: the hint text is now easier to read.
 - PROGRAM settings: buttons and cards line up, hint texts are easier to read, and BOOT is now START ON BOOT with START MINIMIZED below it (greyed out while START ON BOOT is off).
 
 ## [3.1.0] - 2026-11-03
