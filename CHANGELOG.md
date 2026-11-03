@@ -7,7 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 - AUTO-CHECK card in the main window: while Chronolist is open it looks for new videos by itself. When it is on, every card (year or custom list) shows an AUTO switch; only cards with AUTO on are kept up to date. It uses only a few API units, is skipped when the quota is used up and never opens the browser.
-- Interval for the AUTO-CHECK in the PROGRAM settings: 30 minutes, 1, 2 or 6 hours, or your own value (multiples of 5, at least 15 minutes).
+- Schedule for the AUTO-CHECK in the PROGRAM settings: either an interval (30 minutes, 1, 2 or 6 hours, or your own value in multiples of 5, at least 15 minutes) or up to four fixed times per day.
 - MINIMIZED in the PROGRAM settings: when Chronolist starts with Windows, the window opens minimized in the taskbar.
 
 ### Changed

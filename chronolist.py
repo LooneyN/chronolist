@@ -102,7 +102,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.2.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 138
+BUILD = 139
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -248,6 +248,43 @@ def interval_label(m):
     if m < 60:
         return f"{m} MIN"
     return f"{m // 60} H" if m % 60 == 0 else f"{m // 60} H {m % 60} MIN"
+
+
+AUTO_TIME_SLOTS = 4      # so viele feste Uhrzeiten lassen sich eintragen
+
+
+def parse_time(v):
+    """'8', '08', '8:30', '08.30', '0830' -> '08:30'. Ungültig -> None, leer -> ''."""
+    v = str(v).strip().replace(".", ":")
+    if not v:
+        return ""
+    if ":" in v:
+        h, _, m = v.partition(":")
+    elif len(v) in (3, 4):
+        h, m = v[:-2], v[-2:]
+    else:
+        h, m = v, "0"
+    if not (h.isdigit() and m.isdigit()):
+        return None
+    h, m = int(h), int(m)
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        return None
+    return f"{h:02d}:{m:02d}"
+
+
+def next_time_at(times, now=None):
+    """Zeitpunkt (Unix-Zeit) der nächsten der festen Uhrzeiten nach `now` (Ortszeit)."""
+    now = now or time.time()
+    base = datetime.datetime.fromtimestamp(now)
+    best = None
+    for t in times:
+        h, m = map(int, t.split(":"))
+        cand = base.replace(hour=h, minute=m, second=0, microsecond=0)
+        if cand.timestamp() <= now + 1:
+            cand += datetime.timedelta(days=1)
+        if best is None or cand < best:
+            best = cand
+    return best.timestamp() if best else now + 3600
 
 
 AUTO_SHOW = False        # AUTO-CHECK eingeschaltet: Karten zeigen den AUTO-Schalter
@@ -5140,30 +5177,58 @@ class AppSettingsDialog(tk.Toplevel):
                "GRÖSSE VON TEXT UND BEDIENELEMENTEN. CHRONOLIST STARTET BEI EINER ÄNDERUNG NEU."))
         self.set_ui_scale(self.ui_scale)
 
-        Section(body, L("AUTO-CHECK", "AUTO-PRÜFUNG"), "BACKGROUND // INTERVAL").pack(fill="x", pady=(0, px(8)))
-        iv_row, bw = btn_row(len(AUTO_INTERVALS))
+        Section(body, L("AUTO-CHECK", "AUTO-PRÜFUNG"), "BACKGROUND // SCHEDULE").pack(fill="x", pady=(0, px(8)))
+        mode_row, bw = btn_row(2)
+        self.auto_mode = app.auto_mode
+        self.mode_btns = {}
+        for k, (code, txt) in enumerate((("interval", L("INTERVAL", "INTERVALL")),
+                                         ("times", L("FIXED TIMES", "FESTE UHRZEITEN")))):
+            b = CutButton(mode_row, txt, lambda c=code: self.set_mode(c), width=bw)
+            b.pack(side="left", padx=(0, px(6)) if k == 0 else 0)
+            self.mode_btns[code] = b
+        holder = tk.Frame(body, bg=BG)
+        holder.pack(fill="x", pady=(px(10), 0))
+
+        # Intervall
+        self.iv_frame = tk.Frame(holder, bg=BG)
+        iv_row = tk.Frame(self.iv_frame, bg=BG)
+        iv_row.pack(fill="x")
+        bw = (W - 6 * (len(AUTO_INTERVALS) - 1)) // len(AUTO_INTERVALS)
         self.auto_interval = app.auto_interval
         self.iv_btns = {}
         for k, m in enumerate(AUTO_INTERVALS):
             b = CutButton(iv_row, interval_label(m), lambda m=m: self.set_interval(m), width=bw, size=11, pad=18)
             b.pack(side="left", padx=(0, px(6)) if k < len(AUTO_INTERVALS) - 1 else 0)
             self.iv_btns[m] = b
-        man = tk.Frame(body, bg=BG)
+        man = tk.Frame(self.iv_frame, bg=BG)
         man.pack(fill="x", pady=(px(6), 0))
         self.iv_var = tk.StringVar()
-        self.iv_entry = tk.Entry(man, textvariable=self.iv_var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
-                                 width=7, justify="center", font=F("mono", 13, False), highlightthickness=1,
-                                 highlightcolor=CYAN, highlightbackground=mix(CYAN, BG, 0.4),
-                                 selectbackground=mix(CYAN, BG, 0.3))
+        self.iv_entry = self.small_entry(man, self.iv_var, 7)
         self.iv_entry.pack(side="left", ipady=px(5))
         tk.Label(man, text=L("MINUTES  //  OWN INTERVAL", "MINUTEN  //  EIGENES INTERVALL"), bg=BG, fg=TEXT_MUTED,
                  font=F("mono", 11, False)).pack(side="left", padx=(px(10), 0))
+
+        # Feste Uhrzeiten
+        self.tm_frame = tk.Frame(holder, bg=BG)
+        tm_row = tk.Frame(self.tm_frame, bg=BG)
+        tm_row.pack(fill="x")
+        self.tm_vars = []
+        have = list(app.auto_times)
+        for k in range(AUTO_TIME_SLOTS):
+            v = tk.StringVar(value=have[k] if k < len(have) else "")
+            e = self.small_entry(tm_row, v, 7)
+            e.pack(side="left", ipady=px(5), padx=(0, px(8)))
+            v.trace_add("write", lambda *a: self.show_interval_note())
+            self.tm_vars.append(v)
+        tk.Label(tm_row, text=L("HH:MM", "HH:MM"), bg=BG, fg=TEXT_MUTED,
+                 font=F("mono", 11, False)).pack(side="left", padx=(px(4), 0))
+
         self.iv_var.trace_add("write", lambda *a: self.typed_interval())
         self.set_interval(self.auto_interval)
         self.iv_note = tk.Label(body, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w",
                                 justify="left", wraplength=px(W))
         self.iv_note.pack(fill="x", pady=(px(8), px(18)))
-        self.show_interval_note()
+        self.set_mode(self.auto_mode)
 
         Section(body, L("START", "START"), "SYSTEM // BOOT").pack(fill="x", pady=(0, px(8)))
         self.autorun = app.autorun
@@ -5242,6 +5307,34 @@ class AppSettingsDialog(tk.Toplevel):
         self.minimized = not self.minimized
         self.min_card.update_value(self.minimized)
 
+    def small_entry(self, parent, var, width):
+        return tk.Entry(parent, textvariable=var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                        width=width, justify="center", font=F("mono", 13, False), highlightthickness=1,
+                        highlightcolor=CYAN, highlightbackground=mix(CYAN, BG, 0.4),
+                        selectbackground=mix(CYAN, BG, 0.3))
+
+    def set_mode(self, code):
+        """Entweder Intervall oder feste Uhrzeiten."""
+        self.auto_mode = code
+        for c, b in self.mode_btns.items():
+            b.set_color(GREEN if c == code else YELLOW)
+            b.set_text(("● " if c == code else "") + (L("INTERVAL", "INTERVALL") if c == "interval"
+                                                       else L("FIXED TIMES", "FESTE UHRZEITEN")))
+        (self.tm_frame if code == "interval" else self.iv_frame).pack_forget()
+        (self.iv_frame if code == "interval" else self.tm_frame).pack(fill="x")
+        self.show_interval_note()
+
+    def typed_times(self):
+        """(gültige Uhrzeiten sortiert, ungültige Eingaben)"""
+        ok, bad = set(), []
+        for v in self.tm_vars:
+            t = parse_time(v.get())
+            if t is None:
+                bad.append(v.get().strip())
+            elif t:
+                ok.add(t)
+        return sorted(ok), bad
+
     def set_interval(self, m):
         self.auto_interval = m
         for v, b in self.iv_btns.items():
@@ -5263,15 +5356,31 @@ class AppSettingsDialog(tk.Toplevel):
     def show_interval_note(self):
         if not hasattr(self, "iv_note"):
             return
+        tail = L(" SWITCH AUTO-CHECK ON IN THE MAIN WINDOW, THEN SET THE AUTO SWITCH ON EACH CARD YOU WANT KEPT UP "
+                 "TO DATE. A CHECK USES ONLY A FEW API UNITS AND IS SKIPPED WHEN THE QUOTA IS USED UP.",
+                 " AUTO-CHECK IM HAUPTFENSTER EINSCHALTEN UND DANN BEI JEDER KARTE, DIE AKTUELL BLEIBEN SOLL, DEN "
+                 "AUTO-SCHALTER SETZEN. EINE PRÜFUNG KOSTET NUR WENIGE API-EINHEITEN UND ENTFÄLLT, WENN DAS "
+                 "KONTINGENT AUFGEBRAUCHT IST.")
+        if self.auto_mode == "times":
+            ok, bad = self.typed_times()
+            if bad:
+                self.iv_note.configure(fg=RED, text=L(f"INVALID TIME: {', '.join(bad)} // USE HH:MM, E.G. 08:00 OR 20:30.",
+                                                      f"UNGÜLTIGE UHRZEIT: {', '.join(bad)} // FORMAT HH:MM, Z. B. 08:00 ODER 20:30."))
+            elif not ok:
+                self.iv_note.configure(fg=RED, text=L("ENTER AT LEAST ONE TIME, E.G. 08:00.",
+                                                      "MINDESTENS EINE UHRZEIT EINTRAGEN, Z. B. 08:00."))
+            else:
+                self.iv_note.configure(fg=TEXT_MUTED, text=L(
+                    f"UP TO {AUTO_TIME_SLOTS} TIMES PER DAY, EMPTY FIELDS ARE IGNORED. CHRONOLIST MUST BE OPEN AT THAT "
+                    f"TIME; A TIME THAT FALLS INTO ANOTHER RUN IS DONE RIGHT AFTER IT.",
+                    f"BIS ZU {AUTO_TIME_SLOTS} UHRZEITEN AM TAG, LEERE FELDER ZÄHLEN NICHT. CHRONOLIST MUSS ZU DER ZEIT "
+                    f"OFFEN SEIN; FÄLLT EINE UHRZEIT IN EINEN ANDEREN LAUF, WIRD SIE DIREKT DANACH NACHGEHOLT.") + tail)
+            return
         v = self.iv_var.get().strip()
         ok = v.isdigit() and int(v) % AUTO_STEP == 0 and AUTO_MIN <= int(v) <= AUTO_MAX
         self.iv_note.configure(
-            text=L(f"MULTIPLES OF {AUTO_STEP}, FROM {AUTO_MIN} MINUTES UP TO 24 HOURS. SWITCH AUTO-CHECK ON IN THE MAIN "
-                   f"WINDOW, THEN SET THE AUTO SWITCH ON EACH CARD YOU WANT KEPT UP TO DATE. A CHECK USES ONLY A FEW "
-                   f"API UNITS AND IS SKIPPED WHEN THE QUOTA IS USED UP.",
-                   f"VIELFACHE VON {AUTO_STEP}, VON {AUTO_MIN} MINUTEN BIS 24 STUNDEN. AUTO-CHECK IM HAUPTFENSTER "
-                   f"EINSCHALTEN UND DANN BEI JEDER KARTE, DIE AKTUELL BLEIBEN SOLL, DEN AUTO-SCHALTER SETZEN. EINE "
-                   f"PRÜFUNG KOSTET NUR WENIGE API-EINHEITEN UND ENTFÄLLT, WENN DAS KONTINGENT AUFGEBRAUCHT IST.")
+            text=L(f"MULTIPLES OF {AUTO_STEP}, FROM {AUTO_MIN} MINUTES UP TO 24 HOURS.",
+                   f"VIELFACHE VON {AUTO_STEP}, VON {AUTO_MIN} MINUTEN BIS 24 STUNDEN.") + tail
             if ok or not v else L(f"INVALID // USE A MULTIPLE OF {AUTO_STEP} BETWEEN {AUTO_MIN} AND {AUTO_MAX}. "
                                   f"THE LAST VALID INTERVAL ({interval_label(self.auto_interval)}) APPLIES.",
                                   f"UNGÜLTIG // EIN VIELFACHES VON {AUTO_STEP} ZWISCHEN {AUTO_MIN} UND {AUTO_MAX} "
@@ -5288,15 +5397,23 @@ class AppSettingsDialog(tk.Toplevel):
         self.upd_card.update_value(self.updates)
 
     def save(self):
+        times, bad = self.typed_times()
+        if self.auto_mode == "times" and (bad or not times):
+            self.show_interval_note()                # Fehler steht rot unter den Feldern
+            return
+        if not times:
+            times = list(self.app.auto_times)
         st = self.app.settings
         st["check_updates"] = self.updates
         self.app.set_windows(self.boot, self.minimized and self.boot)
         self.app.autorun = self.autorun
         self.app.auto_interval = self.auto_interval
-        self.app.auto_next = time.time() + 60
+        self.app.auto_mode, self.app.auto_times = self.auto_mode, times
+        self.app.auto_next = self.app.plan_auto(first=True)
         self.app.auto_card.sub = self.app.auto_sub()
         self.app.auto_card.redraw()
-        st.update(auto_interval=self.auto_interval, start_minimized=self.minimized)
+        st.update(auto_interval=self.auto_interval, auto_mode=self.auto_mode, auto_times=times,
+                  start_minimized=self.minimized)
         st["autorun"] = self.autorun
         lang_changed = self.language != LANG
         size_changed = self.ui_scale != st.get("ui_scale", UI_SCALE_DEFAULT)
@@ -5497,9 +5614,11 @@ HELP_TEXT_DE = [
            "jede Karte (Jahr oder Liste) einen kleinen AUTO-Schalter. Nur Karten mit eingeschaltetem AUTO werden "
            "aktuell gehalten. Bei Jahren ist das nur beim laufenden Jahr sinnvoll, bei Listen kommt jedes neue "
            "passende Video dazu.\n"
-           "Das Intervall stellst du unter PROGRAMM ein: 30 Minuten, 1, 2 oder 6 Stunden oder ein eigener Wert "
-           "(Vielfache von 5, mindestens 15 Minuten). Der Abstand läuft ab dem Ende des letzten Durchlaufs, auch eines "
-           "manuellen.\n"
+           "Wann geprüft wird, stellst du unter PROGRAMM ein, entweder als Intervall oder zu festen Uhrzeiten. "
+           "Intervall: 30 Minuten, 1, 2 oder 6 Stunden oder ein eigener Wert (Vielfache von 5, mindestens 15 Minuten). "
+           "Der Abstand läuft ab dem Ende des letzten Durchlaufs, auch eines manuellen. Feste Uhrzeiten: bis zu "
+           "vier Uhrzeiten am Tag (HH:MM). Chronolist muss dann offen sein; fällt eine Uhrzeit in einen anderen "
+           "Lauf, wird die Prüfung direkt danach nachgeholt.\n"
            "Jede Prüfung kostet nur wenige API-Einheiten und entfällt, wenn das Kontingent aufgebraucht ist. Läuft "
            "gerade ein anderer Durchlauf, wartet sie. Sie öffnet nie den Browser (kein FALLBACK). Voraussetzung: "
            "Chronolist ist schon einmal angemeldet und die Videos des Jahres sind schon gesucht."),
@@ -5728,8 +5847,10 @@ HELP_TEXT_EN = [
     ("dd", "The AUTO-CHECK card in the main window switches on the automatic search for new videos. Then every card "
            "(year or list) shows a small AUTO switch. Only cards with AUTO switched on are kept up to date. For years "
            "that only makes sense for the current year, for lists every new matching video is added.\n"
-           "You set the interval under PROGRAM: 30 minutes, 1, 2 or 6 hours, or your own value (multiples of 5, at "
-           "least 15 minutes). The wait starts when the last run ends, a manual one included.\n"
+           "Under PROGRAM you choose when it checks: at an interval or at fixed times. Interval: 30 minutes, 1, 2 or 6 "
+           "hours, or your own value (multiples of 5, at least 15 minutes). The wait starts when the last run ends, a "
+           "manual one included. Fixed times: up to four times per day (HH:MM). Chronolist must be open then; if a "
+           "time falls into another run, the check follows right after it.\n"
            "A check costs only a few API units and is skipped when the quota is used up. If another run is active it "
            "waits. It never opens the browser (no FALLBACK). It needs a finished sign-in and a year whose videos were "
            "already scanned."),
@@ -7153,7 +7274,11 @@ class App(tk.Tk):
         self.auto_interval = self.settings.get("auto_interval", AUTO_INTERVAL_DEFAULT)
         if self.auto_interval not in AUTO_INTERVALS:
             self.auto_interval = AUTO_INTERVAL_DEFAULT
-        self.auto_next = time.time() + 60
+        self.auto_mode = "times" if self.settings.get("auto_mode") == "times" else "interval"
+        self.auto_times = sorted({t for t in (parse_time(x) for x in self.settings.get("auto_times", [])) if t})
+        if not self.auto_times:
+            self.auto_mode = "interval"
+        self.auto_next = self.plan_auto(first=True)
         global AUTO_SHOW
         AUTO_SHOW = self.auto_check
         AUTO_YEARS.clear()
@@ -7397,15 +7522,30 @@ class App(tk.Tk):
 
     # --- Automatische Prüfung
     def auto_sub(self):
-        return (L("EVERY ", "ALLE ") + interval_label(self.auto_interval)) if self.auto_check \
-            else L("NEW VIDEOS IN THE BACKGROUND", "NEUE VIDEOS IM HINTERGRUND")
+        if not self.auto_check:
+            return L("NEW VIDEOS IN THE BACKGROUND", "NEUE VIDEOS IM HINTERGRUND")
+        if self.auto_mode == "times":
+            return L("AT ", "UM ") + " · ".join(self.auto_times)
+        return L("EVERY ", "ALLE ") + interval_label(self.auto_interval)
+
+    def plan_auto(self, first=False):
+        """Zeitpunkt der nächsten automatischen Prüfung: feste Uhrzeiten oder Intervall
+        (beim Einschalten bzw. Programmstart im Intervall-Modus schon nach einer Minute)."""
+        if self.auto_mode == "times" and self.auto_times:
+            return next_time_at(self.auto_times)
+        return time.time() + (60 if first else self.auto_interval * 60)
+
+    def auto_next_text(self):
+        if self.auto_mode == "times" and self.auto_times:
+            return L("NEXT AT ", "NÄCHSTE UM ") + datetime.datetime.fromtimestamp(self.auto_next).strftime("%H:%M")
+        return L("NEXT IN ", "NÄCHSTE IN ") + interval_label(self.auto_interval)
 
     def toggle_auto_check(self):
         global AUTO_SHOW
         self.auto_check = not self.auto_check
         AUTO_SHOW = self.auto_check
         self.settings["auto_check"] = self.auto_check
-        self.auto_next = time.time() + 60
+        self.auto_next = self.plan_auto(first=True)
         self.auto_card.sub = self.auto_sub()
         self.auto_card.update_value(self.auto_check)
         for r in self.rows.values():
@@ -7432,11 +7572,10 @@ class App(tk.Tk):
         keys = [y for y in YEARS if y in AUTO_YEARS and growing(y)] + \
                [list_key(x) for x in load_lists() if x.get("auto")]
         keys = [k for k in keys if k in self.rows]
-        self.auto_next = time.time() + self.auto_interval * 60
+        self.auto_next = self.plan_auto()
         if not keys:
             return
-        self.write_log(L(f"AUTO-CHECK // {datetime.datetime.now():%H:%M} // NEXT IN {interval_label(self.auto_interval)}",
-                         f"AUTO-PRÜFUNG // {datetime.datetime.now():%H:%M} // NÄCHSTE IN {interval_label(self.auto_interval)}"), "sep")
+        self.write_log(L("AUTO-CHECK", "AUTO-PRÜFUNG") + f" // {datetime.datetime.now():%H:%M} // " + self.auto_next_text(), "sep")
         self.worker = Worker(keys, 0, self.out, fallback=False, auto=True)
         self.run_mode = "running"
         self.pause_info = None
@@ -8178,7 +8317,10 @@ class App(tk.Tk):
                 elif kind == "code_done":
                     self.login.grid_remove()
                 elif kind == "done":
-                    self.auto_next = time.time() + self.auto_interval * 60
+                    # Intervall: zählt ab dem Ende jedes Laufs. Feste Uhrzeiten: nur nach einer Auto-Prüfung neu planen
+                    # (eine fällige Uhrzeit, die in einen manuellen Lauf fiel, wird danach nachgeholt)
+                    if self.auto_mode != "times" or getattr(self.worker, "auto", False):
+                        self.auto_next = self.plan_auto()
                     self.start_btn.set_enabled(True)
                     self.check_btn.set_enabled(True)
                     self.scan_btn.set_enabled(True)
