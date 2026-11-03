@@ -48,7 +48,7 @@ except ImportError:  # nicht unter Windows
 # Zugangsdaten stehen NICHT im Code, sondern in credentials.json (wird über API SETUP angelegt).
 # Kanal wird im Programm eingegeben und in settings.json gespeichert.
 # Standard-Vorlagen; im Programm unter PLAYLISTS änderbar (gespeichert in settings.json).
-# Platzhalter: {channel} {handle} {year} {count}
+# Platzhalter: {channel} {handle} {year} {count}, für eigene Listen zusätzlich {name}
 # --- Sprache der Oberfläche: "en" oder "de" (in settings.json "language", im Programm unter PROGRAMM)
 LANGUAGES = {"en": "ENGLISH", "de": "DEUTSCH"}
 LANG = "en"
@@ -84,14 +84,25 @@ def default_description_template():
              "Alle Videos von {channel} aus {year} in Upload-Reihenfolge.")
 
 
+def default_list_title_template():
+    return "{name}"
+
+
+def default_list_description_template():
+    return L("{name}: {count} videos by {channel} in upload order.",
+             "{name}: {count} Videos von {channel} in Upload-Reihenfolge.")
+
+
 PLAYLIST_TEMPLATE = "{channel} {year} in upload order"
 DESCRIPTION_TEMPLATE = "All videos by {channel} from {year} in upload order."
+LIST_TITLE_TEMPLATE = "{name}"   # eigene Listen: Titel- und Beschreibungs-Vorlage (eigener Reiter LISTS)
+LIST_DESCRIPTION_TEMPLATE = "{name}: {count} videos by {channel} in upload order."
 PRIVACY = "public"              # public / unlisted / private
 PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 132
+BUILD = 133
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -589,12 +600,16 @@ def template_values(y, count=None):
     if is_list_key(y):
         if count is None:
             vids = load(videos_file(y), None)
+            if vids is None and find_list(y):
+                vids = list_videos(find_list(y))       # noch nicht abgeglichen: Treffer jetzt zählen
             count = len(vids) if vids is not None else "?"
-        return {"channel": channel_name(), "handle": CHANNEL.get("handle", ""), "year": list_name(y), "count": count}
+        name = list_name(y)
+        return {"channel": channel_name(), "handle": CHANNEL.get("handle", ""), "name": name, "year": name,
+                "count": count}
     if count is None:
         vids = load(videos_file(y), None)
         count = len(vids) if vids is not None else "?"
-    return {"channel": channel_name(), "handle": CHANNEL.get("handle", ""), "year": y, "count": count}
+    return {"channel": channel_name(), "handle": CHANNEL.get("handle", ""), "year": y, "name": y, "count": count}
 
 
 def fill_template(t, y, count=None):
@@ -605,8 +620,10 @@ def fill_template(t, y, count=None):
 
 
 def playlist_title(y):
-    """Jahre: Titel-Vorlage. Eigene Listen: der Listenname allein ist der Titel."""
-    return (list_name(y) if is_list_key(y) else None) or fill_template(PLAYLIST_TEMPLATE, y)
+    """Jahre: Jahres-Vorlage. Eigene Listen: Listen-Vorlage (Standard: nur der Listenname)."""
+    if is_list_key(y):
+        return fill_template(LIST_TITLE_TEMPLATE, y).strip() or list_name(y)
+    return fill_template(PLAYLIST_TEMPLATE, y)
 
 
 def part_title(y, n, total_parts):
@@ -629,9 +646,11 @@ def growing(y):
     t = datetime.date.today()
     return y >= t.year or (y == t.year - 1 and t.month == 1)
 def playlist_description(y):
-    """Jahre: Beschreibungs-Vorlage. Eigene Listen: eigene Beschreibung, sonst die Vorlage."""
-    own = ((find_list(y) or {}).get("desc") or "").strip() if is_list_key(y) else ""
-    return own or fill_template(DESCRIPTION_TEMPLATE, y)
+    """Jahre: Jahres-Vorlage. Eigene Listen: eigene Beschreibung (Platzhalter erlaubt), sonst die Listen-Vorlage."""
+    if is_list_key(y):
+        own = ((find_list(y) or {}).get("desc") or "").strip()
+        return fill_template(own or LIST_DESCRIPTION_TEMPLATE, y)
+    return fill_template(DESCRIPTION_TEMPLATE, y)
 
 
 def load(path, default):
@@ -713,7 +732,7 @@ def set_windows_autostart(on):
 
 def _template_ok(t):
     try:
-        t.format(channel="X", handle="@x", year=2000, count=1)
+        t.format(channel="X", handle="@x", year=2000, name="X", count=1)
         return True
     except (KeyError, IndexError, ValueError, AttributeError):
         return False
@@ -721,11 +740,15 @@ def _template_ok(t):
 
 def apply_templates(settings):
     """Playlist-Titel und -Beschreibung aus settings.json übernehmen (Platzhalter: {channel}, {year})."""
-    global PLAYLIST_TEMPLATE, DESCRIPTION_TEMPLATE, PRIVACY
+    global PLAYLIST_TEMPLATE, DESCRIPTION_TEMPLATE, LIST_TITLE_TEMPLATE, LIST_DESCRIPTION_TEMPLATE, PRIVACY
     pt = settings.get("playlist_template") or default_playlist_template()
     dt = settings.get("description_template", default_description_template())   # "" = keine Beschreibung
     PLAYLIST_TEMPLATE = pt if isinstance(pt, str) and _template_ok(pt) else default_playlist_template()
     DESCRIPTION_TEMPLATE = dt if isinstance(dt, str) and _template_ok(dt) else default_description_template()
+    lt = settings.get("list_title_template") or default_list_title_template()
+    ld = settings.get("list_description_template", default_list_description_template())
+    LIST_TITLE_TEMPLATE = lt if isinstance(lt, str) and _template_ok(lt) else default_list_title_template()
+    LIST_DESCRIPTION_TEMPLATE = ld if isinstance(ld, str) and _template_ok(ld) else default_list_description_template()
     pv = settings.get("privacy", "public")
     PRIVACY = pv if pv in PRIVACY_OPTIONS else "public"
 
@@ -3715,22 +3738,27 @@ class ChannelDialog(tk.Toplevel):
 
 
 class SettingsDialog(tk.Toplevel):
-    """Playlist-Einstellungen: Titel, Beschreibung, Sichtbarkeit."""
+    """Playlist-Einstellungen: je eine Vorlage für Jahre und für eigene Listen (Reiter), Sichtbarkeit für alle."""
 
-    CHIPS = (("CHANNEL", "{channel}"), ("HANDLE", "{handle}"), ("YEAR", "{year}"), ("COUNT", "{count}"))
+    KINDS = ("years", "lists")
+    CHIPS = {"years": ("{channel}", "{handle}", "{year}", "{count}"),
+             "lists": ("{name}", "{channel}", "{handle}", "{count}")}
+    KEYS = {"years": ("playlist_template", "description_template"),
+            "lists": ("list_title_template", "list_description_template")}
 
-    def __init__(self, app):
+    def __init__(self, app, kind="years"):
         super().__init__(app, bg=BG)
         self.app = app
         self.title(L("Playlist settings", "Playlist-Einstellungen"))
         self.transient(app)
-        self.minsize(*fit_min(px(640), px(520)))
-        self.geometry(fit(px(720), px(600)))
-        self.focus_field = None
+        self.minsize(*fit_min(px(640), px(560)))
+        self.geometry(fit(px(720), px(660)))
         pad = px(18)
         st = app.settings
-        sample = (app.selected_years() or YEARS or [datetime.date.today().year - 1])[0]
-        self.sample_year = sample
+        self.sample_year = (app.selected_years() and [y for y in app.selected_years() if not is_list_key(y)] or YEARS
+                            or [datetime.date.today().year - 1])[0]
+        lists = load_lists()
+        self.sample_list = list_key(lists[0]) if lists else None
 
         row = tk.Frame(self, bg=BG)
         row.pack(side="bottom", fill="x", padx=pad, pady=pad)
@@ -3743,42 +3771,25 @@ class SettingsDialog(tk.Toplevel):
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
 
         Section(body, L("PLAYLIST SETTINGS", "PLAYLIST-EINSTELLUNGEN"), "TEMPLATE // VISIBILITY").pack(fill="x", pady=(0, px(10)))
-        self.lbl(body, L("TITLE", "TITEL"))
-        self.title_var = tk.StringVar(value=st.get("playlist_template") or default_playlist_template())
-        self.title_entry = self.entry(body, self.title_var)
-        self.title_entry.bind("<FocusIn>", lambda e: setattr(self, "focus_field", self.title_entry))
-        self.focus_field = self.title_entry
-
-        chips = tk.Frame(body, bg=BG)
-        chips.pack(fill="x", pady=(px(2), px(6)))
-        tk.Label(chips, text=L("INSERT:", "EINFÜGEN:"), bg=BG, fg=TEXT_MUTED, font=F("mono", 10)).pack(side="left", padx=(0, px(6)))
-        tips = {"{channel}": L("channel name", "Name des Kanals"), "{handle}": L("@handle of the channel", "@Handle des Kanals"),
-                "{year}": L("year of the playlist (name of the list for custom lists)", "Jahr der Playlist (bei eigenen Listen der Listenname)"),
-                "{count}": L("number of videos in the playlist", "Anzahl der Videos in der Playlist")}
-        chip_names = {"{channel}": L("CHANNEL", "KANAL"), "{handle}": "HANDLE", "{year}": L("YEAR", "JAHR"),
-                      "{count}": L("COUNT", "ANZAHL")}
-        for label, tok in self.CHIPS:
-            label = chip_names[tok]
-            b = CutButton(chips, label, lambda t=tok: self.insert(t))
+        tabs = tk.Frame(body, bg=BG)
+        tabs.pack(fill="x", pady=(0, px(10)))
+        self.tab_btns = {}
+        for k, label in (("years", L("YEARS", "JAHRE")), ("lists", L("CUSTOM LISTS", "EIGENE LISTEN"))):
+            b = CutButton(tabs, label, lambda k=k: self.show(k), width=170, pad=24)
             b.pack(side="left", padx=(0, px(6)))
-            Tooltip(b, L(f"Inserts {tok}: {tips[tok]}.", f"Fügt {tok} ein: {tips[tok]}."))
+            self.tab_btns[k] = b
+        Tooltip(self.tab_btns["years"], L("Template for the year playlists.", "Vorlage für die Jahres-Playlists."))
+        Tooltip(self.tab_btns["lists"], L("Template for your custom lists. A list's own description always wins.",
+                                          "Vorlage für deine eigenen Listen. Die eigene Beschreibung einer Liste hat "
+                                          "immer Vorrang."))
 
-        self.lbl(body, L("DESCRIPTION (OPTIONAL, LEAVE EMPTY FOR NONE)", "BESCHREIBUNG (OPTIONAL, LEER = KEINE)"))
-        self.desc = tk.Text(body, height=4, wrap="word", bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
-                            font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
-                            highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3),
-                            padx=px(6), pady=px(6))
-        self.desc.insert("1.0", st.get("description_template", default_description_template()))
-        self.desc.pack(fill="x", pady=(px(4), px(8)))
-        self.desc.bind("<FocusIn>", lambda e: setattr(self, "focus_field", self.desc))
-        self.desc.bind("<KeyRelease>", lambda e: self.preview())
-        self.title_var.trace_add("write", lambda *a: self.preview())
+        self.page_holder = tk.Frame(body, bg=BG)
+        self.page_holder.pack(fill="x")
+        self.pages, self.title_vars, self.title_entries, self.descs, self.prevs = {}, {}, {}, {}, {}
+        for k in self.KINDS:
+            self.build_page(k, st)
 
-        self.prev = tk.Label(body, text="", bg=BG, fg=TEXT, font=F("mono", 11, False), justify="left", anchor="w",
-                             wraplength=px(640))
-        self.prev.pack(fill="x", pady=(0, px(8)))
-
-        self.lbl(body, L("VISIBILITY", "SICHTBARKEIT"))
+        self.lbl(body, L("VISIBILITY  (YEARS AND LISTS)", "SICHTBARKEIT  (JAHRE UND LISTEN)"))
         vis = tk.Frame(body, bg=BG)
         vis.pack(fill="x", pady=(px(4), px(4)))
         self.privacy = st.get("privacy", "public")
@@ -3795,8 +3806,9 @@ class SettingsDialog(tk.Toplevel):
                               "TITEL, BESCHREIBUNG UND SICHTBARKEIT GELTEN FÜR PLAYLISTS, DIE AB JETZT ANGELEGT WERDEN."),
                  bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w").pack(fill="x", pady=(px(2), px(12)))
 
+        self.kind = None
+        self.show(kind)
         self.bind("<Escape>", lambda e: self.destroy())
-        self.preview()
         style_window(self)
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -3804,6 +3816,62 @@ class SettingsDialog(tk.Toplevel):
         self.geometry(f"+{max(0, x)}+{max(0, y)}")
         self.grab_set()
         self.focus_force()
+
+    def build_page(self, k, st):
+        page = tk.Frame(self.page_holder, bg=BG)
+        self.pages[k] = page
+        tkey, dkey = self.KEYS[k]
+        dflt_t = default_playlist_template() if k == "years" else default_list_title_template()
+        dflt_d = default_description_template() if k == "years" else default_list_description_template()
+        self.lbl(page, L("TITLE", "TITEL"))
+        var = tk.StringVar(value=st.get(tkey) or dflt_t)
+        self.title_vars[k] = var
+        e = self.entry(page, var)
+        self.title_entries[k] = e
+        e.bind("<FocusIn>", lambda ev, w=e: setattr(self, "focus_field", w))
+
+        chips = tk.Frame(page, bg=BG)
+        chips.pack(fill="x", pady=(px(2), px(6)))
+        tk.Label(chips, text=L("INSERT:", "EINFÜGEN:"), bg=BG, fg=TEXT_MUTED, font=F("mono", 10)).pack(side="left", padx=(0, px(6)))
+        tips = {"{channel}": L("channel name", "Name des Kanals"), "{handle}": L("@handle of the channel", "@Handle des Kanals"),
+                "{year}": L("year of the playlist", "Jahr der Playlist"), "{name}": L("name of the list", "Name der Liste"),
+                "{count}": L("number of videos in the playlist", "Anzahl der Videos in der Playlist")}
+        names = {"{channel}": L("CHANNEL", "KANAL"), "{handle}": "HANDLE", "{year}": L("YEAR", "JAHR"),
+                 "{name}": "NAME", "{count}": L("COUNT", "ANZAHL")}
+        for tok in self.CHIPS[k]:
+            b = CutButton(chips, names[tok], lambda t=tok: self.insert(t))
+            b.pack(side="left", padx=(0, px(6)))
+            Tooltip(b, L(f"Inserts {tok}: {tips[tok]}.", f"Fügt {tok} ein: {tips[tok]}."))
+
+        self.lbl(page, L("DESCRIPTION (OPTIONAL, LEAVE EMPTY FOR NONE)", "BESCHREIBUNG (OPTIONAL, LEER = KEINE)")
+                 if k == "years" else
+                 L("DESCRIPTION (FOR LISTS WITHOUT AN OWN ONE, EMPTY = NONE)",
+                   "BESCHREIBUNG (FÜR LISTEN OHNE EIGENE, LEER = KEINE)"))
+        d = tk.Text(page, height=4, wrap="word", bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                    font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
+                    highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3),
+                    padx=px(6), pady=px(6))
+        d.insert("1.0", st.get(dkey, dflt_d))
+        d.pack(fill="x", pady=(px(4), px(8)))
+        d.bind("<FocusIn>", lambda ev, w=d: setattr(self, "focus_field", w))
+        d.bind("<KeyRelease>", lambda ev: self.preview())
+        self.descs[k] = d
+        var.trace_add("write", lambda *a: self.preview())
+        p = tk.Label(page, text="", bg=BG, fg=TEXT, font=F("mono", 11, False), justify="left", anchor="w",
+                     wraplength=px(640))
+        p.pack(fill="x", pady=(0, px(8)))
+        self.prevs[k] = p
+
+    def show(self, k):
+        if self.kind:
+            self.pages[self.kind].pack_forget()
+        self.kind = k
+        self.pages[k].pack(fill="x")
+        for kk, b in self.tab_btns.items():
+            b.set_color(GREEN if kk == k else YELLOW)
+            b.set_text(("● " if kk == k else "") + (L("YEARS", "JAHRE") if kk == "years" else L("CUSTOM LISTS", "EIGENE LISTEN")))
+        self.focus_field = self.title_entries[k]
+        self.preview()
 
     # --- Bausteine
     def lbl(self, parent, text):
@@ -3817,7 +3885,7 @@ class SettingsDialog(tk.Toplevel):
         return e
 
     def insert(self, tok):
-        w = self.focus_field or self.title_entry
+        w = self.focus_field or self.title_entries[self.kind]
         w.insert("insert", tok)
         w.focus_set()
         self.preview()
@@ -3828,35 +3896,58 @@ class SettingsDialog(tk.Toplevel):
             b.set_color(GREEN if o == opt else YELLOW)
             b.set_text(("● " if o == opt else "") + privacy_label(o))
 
+    def sample_values(self, k):
+        if k == "years":
+            return year_label(self.sample_year), template_values(self.sample_year)
+        if self.sample_list:
+            return list_name(self.sample_list), template_values(self.sample_list)
+        name = L("My list", "Meine Liste")
+        return name, {"channel": channel_name(), "handle": CHANNEL.get("handle", ""), "name": name, "year": name,
+                      "count": 25}
+
+    def check(self, k):
+        t, d = self.title_vars[k].get(), self.descs[k].get("1.0", "end").strip()
+        return _template_ok(t), (_template_ok(d) if d else True)
+
     def preview(self):
-        t, d = self.title_var.get(), self.desc.get("1.0", "end").strip()
-        ok_t, ok_d = _template_ok(t), _template_ok(d) if d else True
-        y = self.sample_year
-        lines = [f"{L('PREVIEW', 'VORSCHAU')} {year_label(y)}: " + (fill_template(t, y) if ok_t else L("INVALID PLACEHOLDER IN TITLE", "UNGÜLTIGER PLATZHALTER IM TITEL"))]
+        k = getattr(self, "kind", None)
+        if not k:
+            return True
+        t, d = self.title_vars[k].get(), self.descs[k].get("1.0", "end").strip()
+        ok_t, ok_d = self.check(k)
+        label, vals = self.sample_values(k)
+        lines = [f"{L('PREVIEW', 'VORSCHAU')} {label}: " + (t.format(**vals) if ok_t else L("INVALID PLACEHOLDER IN TITLE", "UNGÜLTIGER PLATZHALTER IM TITEL"))]
         if d:
-            short = fill_template(d, y) if ok_d else L("INVALID PLACEHOLDER IN DESCRIPTION", "UNGÜLTIGER PLATZHALTER IN DER BESCHREIBUNG")
+            short = d.format(**vals) if ok_d else L("INVALID PLACEHOLDER IN DESCRIPTION", "UNGÜLTIGER PLATZHALTER IN DER BESCHREIBUNG")
             lines.append(L("DESCRIPTION: ", "BESCHREIBUNG: ") + (short if len(short) < 140 else short[:137] + "..."))
         else:
             lines.append(L("DESCRIPTION: (NONE)", "BESCHREIBUNG: (KEINE)"))
-        self.prev.configure(text="\n".join(lines), fg=TEXT if ok_t and ok_d else RED)
+        self.prevs[k].configure(text="\n".join(lines), fg=TEXT if ok_t and ok_d else RED)
         return ok_t and ok_d
 
     def reset(self):
-        self.title_var.set(default_playlist_template())
-        self.desc.delete("1.0", "end")
-        self.desc.insert("1.0", default_description_template())
-        self.set_privacy("public")
+        """Setzt den gerade offenen Reiter zurück."""
+        k = self.kind
+        self.title_vars[k].set(default_playlist_template() if k == "years" else default_list_title_template())
+        self.descs[k].delete("1.0", "end")
+        self.descs[k].insert("1.0", default_description_template() if k == "years" else default_list_description_template())
         self.preview()
 
     def save(self):
-        if not self.preview():
-            self.app.write_log(L("SETTINGS NOT SAVED // INVALID PLACEHOLDER (USE {channel} {handle} {year} {count})",
-                                 "NICHT GESPEICHERT // UNGÜLTIGER PLATZHALTER (ERLAUBT: {channel} {handle} {year} {count})"),
-                               "err")
-            return
+        for k in self.KINDS:
+            if not all(self.check(k)):
+                self.show(k)
+                self.preview()
+                self.app.write_log(L("SETTINGS NOT SAVED // INVALID PLACEHOLDER (USE {channel} {handle} {year} {name} {count})",
+                                     "NICHT GESPEICHERT // UNGÜLTIGER PLATZHALTER (ERLAUBT: {channel} {handle} {year} {name} {count})"),
+                                   "err")
+                return
         st = self.app.settings
-        st["playlist_template"] = self.title_var.get().strip() or default_playlist_template()
-        st["description_template"] = self.desc.get("1.0", "end").strip()
+        for k in self.KINDS:
+            tkey, dkey = self.KEYS[k]
+            dflt = default_playlist_template() if k == "years" else default_list_title_template()
+            st[tkey] = self.title_vars[k].get().strip() or dflt
+            st[dkey] = self.descs[k].get("1.0", "end").strip()
         st["privacy"] = self.privacy
         save(SETTINGS_FILE, st)
         apply_templates(st)
@@ -4321,6 +4412,9 @@ HELP_TEXT_DE = [
            "zum Kanalnamen, {handle} zum @Handle, {year} zum Jahr und {count} zur Anzahl der Videos in diesem Jahr. "
            "Die Knöpfe unter dem Titelfeld fügen sie an der Stelle ein, an der der Cursor steht. Darunter siehst du "
            "eine Vorschau. Lässt du die Beschreibung leer, bekommt die Playlist keine.\n"
+           "Zwei Reiter: JAHRE gilt für die Jahres-Playlists, EIGENE LISTEN für deine Listen. Bei Listen gibt es statt "
+           "{year} den Platzhalter {name} für den Listennamen; der Titel ist standardmäßig nur der Name. Hat eine Liste "
+           "im Listen-Editor eine eigene Beschreibung, gilt diese (auch dort gehen Platzhalter), sonst die Vorlage.\n"
            "Sichtbarkeit: öffentlich, nicht gelistet (nur mit Link) oder privat.\n"
            "Titel, Beschreibung und Sichtbarkeit gelten für Playlists, die ab jetzt angelegt werden. Schon "
            "vorhandene Playlists bleiben so, wie sie sind."),
@@ -4538,6 +4632,9 @@ HELP_TEXT_EN = [
            "{channel} becomes the channel name, {handle} the @handle, {year} the year and {count} the number of "
            "videos in that year. The buttons below the title field insert them at the cursor. Below you see a "
            "preview. Leave the description empty for no description.\n"
+           "Two tabs: YEARS is for the year playlists, CUSTOM LISTS for your lists. For lists, {name} (the list name) "
+           "takes the place of {year}; by default the title is just the name. If a list has its own description in "
+           "the list editor, that one is used (placeholders work there too), otherwise the template.\n"
            "Visibility: public, unlisted (link only) or private.\n"
            "Title, description and visibility apply to playlists created from now on. Existing playlists stay as "
            "they are."),
@@ -5004,15 +5101,19 @@ class ListDialog(tk.Toplevel):
             self.tpl_lb.pack(fill="x", pady=(px(3), px(8)))
             self.tpl_lb.bind("<<ListboxSelect>>", lambda e, t=templates: self.pick_template(t))
         self.name_var = tk.StringVar(value=lst.get("name", ""))
-        self.field(left, L("NAME (USED AS THE PLAYLIST TITLE)", "NAME (WIRD ZUM PLAYLIST-TITEL)"), self.name_var)
-        self.lbl_desc = tk.Label(left, text=L("DESCRIPTION  (OPTIONAL, EMPTY = PLAYLISTS SETTINGS)",
-                                              "BESCHREIBUNG  (OPTIONAL, LEER = PLAYLIST-EINSTELLUNGEN)"),
+        self.field(left, L("NAME  (THE PLAYLIST TITLE BY DEFAULT)", "NAME  (STANDARDMÄSSIG DER PLAYLIST-TITEL)"), self.name_var)
+        self.lbl_desc = tk.Label(left, text=L("DESCRIPTION  (OPTIONAL, EMPTY = LISTS TEMPLATE)",
+                                              "BESCHREIBUNG  (OPTIONAL, LEER = LISTEN-VORLAGE)"),
                                  bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w")
         self.lbl_desc.pack(fill="x")
         self.desc_box = tk.Text(left, height=2, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat", wrap="word",
                                 font=F("mono", 12, False), highlightthickness=1, highlightcolor=CYAN,
                                 highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), padx=px(6), pady=px(4))
         self.desc_box.insert("1.0", lst.get("desc", ""))
+        Tooltip(self.desc_box, L("Own description for this list. Placeholders: {name} {channel} {handle} {count}. "
+                                 "Empty = the CUSTOM LISTS template under PLAYLISTS.",
+                                 "Eigene Beschreibung für diese Liste. Platzhalter: {name} {channel} {handle} {count}. "
+                                 "Leer = die Vorlage im Reiter EIGENE LISTEN unter PLAYLISTS."))
         self.desc_box.pack(fill="x", pady=(px(3), px(12)))
 
         Section(left, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))

@@ -12,6 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Each channel keeps its own view: selected years and lists, their order and HIDE DONE are stored per channel. Switching back to a channel you used before restores everything as it was, without an API call.
 
 ### Changed
+- PLAYLISTS settings have two tabs, YEARS and CUSTOM LISTS, each with its own title and description template. Lists get the placeholder {name} (the list name); by default the title is just the name and the description reads "{name}: {count} videos by {channel} in upload order." A list's own description (placeholders allowed) still wins. Visibility applies to both.
 - After an update, the release notes appear once in their own window instead of in the log.
 - Years without any videos (for example before a channel's first upload) are skipped and deselected instead of stopping the run.
 
