@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 131
+BUILD = 132
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -3628,6 +3628,92 @@ class NCDialog(tk.Toplevel):
             self.destroy()
 
 
+class ChannelDialog(tk.Toplevel):
+    """Zielkanal eingeben. Die manuellen Felder (ohne API) sind zugeklappt und öffnen sich von selbst,
+    wenn das API-Kontingent aufgebraucht ist."""
+
+    def __init__(self, app, initial, on_save):
+        super().__init__(app, bg=BG)
+        self.title(L("Target Channel", "Zielkanal"))
+        self.resizable(False, False)
+        self.transient(app)
+        self.on_save = on_save
+        self.vars = {}
+        pad = px(18)
+        Section(self, L("TARGET CHANNEL", "ZIELKANAL"), "INPUT // SECURE").pack(fill="x", padx=pad, pady=(pad, px(10)))
+        self.field(self, "channel", L("@HANDLE, CHANNEL URL OR CHANNEL ID", "@HANDLE, KANAL-LINK ODER KANAL-ID"),
+                   initial, pad)
+        tk.Label(self, text=L("EXAMPLES: @CHANNELNAME // YOUTUBE.COM/@CHANNELNAME // UC...\n"
+                              "A channel you used before is restored without the API.",
+                              "BEISPIELE: @KANALNAME // YOUTUBE.COM/@KANALNAME // UC...\n"
+                              "Ein schon benutzter Kanal wird ohne API wiederhergestellt."),
+                 bg=BG, fg=FLUFF, font=F("mono", 10, False), justify="left", anchor="w",
+                 wraplength=px(520)).pack(fill="x", padx=pad, pady=(0, px(12)))
+        blocked = bool(quota_blocked("units")) and not reserve_only()
+        self.toggle = tk.Label(self, bg=BG, fg=YELLOW if blocked else CYAN, font=F("mono", 11), anchor="w",
+                               cursor="hand2")
+        self.toggle.pack(fill="x", padx=pad, pady=(0, px(8)))
+        self.toggle.bind("<Button-1>", lambda e: self.set_open(not self.open))
+        self.holder = tk.Frame(self, bg=BG)          # bleibt immer gepackt, damit die Reihenfolge stimmt
+        self.holder.pack(fill="x")
+        self.manual = tk.Frame(self.holder, bg=BG)
+        if blocked:
+            tk.Label(self.manual, text=L("The API quota is used up for today, so a new channel can't be looked up. "
+                                         "Enter it manually:",
+                                         "Das API-Kontingent ist für heute aufgebraucht, ein neuer Kanal kann nicht "
+                                         "nachgeschlagen werden. Trag ihn manuell ein:"),
+                     bg=BG, fg=YELLOW, font=F("ui", 13, False), justify="left", anchor="w",
+                     wraplength=px(520)).pack(fill="x", padx=pad, pady=(0, px(10)))
+        self.field(self.manual, "m_id", L("CHANNEL ID (UC...)", "KANAL-ID (UC...)"), "", pad)
+        tk.Label(self.manual, text=L("On the channel page: More about this channel -> Share channel -> Copy channel ID",
+                                     "Auf der Kanalseite: More about this channel -> Share channel -> Copy channel ID"),
+                 bg=BG, fg=FLUFF, font=F("mono", 10, False), justify="left", anchor="w",
+                 wraplength=px(520)).pack(fill="x", padx=pad, pady=(0, px(12)))
+        self.field(self.manual, "m_title", L("NAME (OPTIONAL)", "NAME (OPTIONAL)"), "", pad)
+        self.field(self.manual, "m_year", L("FIRST YEAR OF THE CHANNEL", "STARTJAHR DES KANALS"), "", pad, width=8,
+                   fill=None)
+        row = tk.Frame(self, bg=BG)
+        row.pack(fill="x", padx=pad, pady=(px(4), pad))
+        CutButton(row, L("SAVE", "SPEICHERN"), self.save, width=120).pack(side="left")
+        CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
+        self.open = False
+        self.set_open(blocked)
+        self.bind("<Return>", lambda e: self.save())
+        self.bind("<Escape>", lambda e: self.destroy())
+        style_window(self)
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - self.winfo_height()) // 3
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.grab_set()
+        self.focus_force()
+
+    def field(self, parent, key, label, initial, pad, width=52, fill="x"):
+        tk.Label(parent, text=label, bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w").pack(fill="x", padx=pad)
+        v = tk.StringVar(value=initial)
+        e = tk.Entry(parent, textvariable=v, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                     font=F("mono", 13, False), width=width, highlightthickness=1, highlightcolor=CYAN,
+                     highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3))
+        e.pack(fill=fill, anchor="w", padx=pad, pady=(px(4), px(12)), ipady=px(6))
+        self.vars[key] = v
+
+    def set_open(self, open_):
+        self.open = open_
+        self.toggle.configure(text=("▾  " if open_ else "▸  ")
+                              + L("NO API QUOTA? ENTER THE CHANNEL MANUALLY", "KEIN API-KONTINGENT? KANAL MANUELL EINTRAGEN"))
+        if open_:
+            self.manual.pack(fill="x")
+        else:
+            self.manual.pack_forget()
+
+    def save(self):
+        v = {k: var.get().strip() for k, var in self.vars.items()}
+        if not self.open:                        # zugeklappt = manuelle Felder gelten nicht
+            v.update(m_id="", m_title="", m_year="")
+        if self.on_save(v) is not False:
+            self.destroy()
+
+
 class SettingsDialog(tk.Toplevel):
     """Playlist-Einstellungen: Titel, Beschreibung, Sichtbarkeit."""
 
@@ -6359,22 +6445,7 @@ class App(tk.Tk):
     def edit_channel(self):
         if self.busy():
             return
-        NCDialog(self, L("Target Channel", "Zielkanal"), [
-            ("channel", L("@HANDLE, CHANNEL URL OR CHANNEL ID", "@HANDLE, KANAL-LINK ODER KANAL-ID"),
-             CHANNEL.get("handle") or CHANNEL.get("id", ""), False),
-            ("m_id", L("CHANNEL ID (OPTIONAL, MANUAL)", "KANAL-ID (OPTIONAL, MANUELL)"), "", False),
-            ("m_title", L("NAME (OPTIONAL, MANUAL)", "NAME (OPTIONAL, MANUELL)"), "", False),
-            ("m_year", L("FIRST YEAR (OPTIONAL, MANUAL)", "STARTJAHR (OPTIONAL, MANUELL)"), "", False),
-        ], L("EXAMPLES: @CHANNELNAME // YOUTUBE.COM/@CHANNELNAME // UC...\n"
-             "A channel you used before is restored without the API. The manual fields are only needed when the "
-             "API quota is used up: enter the channel ID (UC..., on the channel page under More about this "
-             "channel -> Share channel -> Copy channel ID) and the year the channel started; then no API call "
-             "is needed.",
-             "BEISPIELE: @KANALNAME // YOUTUBE.COM/@KANALNAME // UC...\n"
-             "Ein schon benutzter Kanal wird ohne API wiederhergestellt. Die manuellen Felder brauchst du nur, "
-             "wenn das API-Kontingent leer ist: Kanal-ID (UC..., auf der Kanalseite unter More about this "
-             "channel -> Share channel -> Copy channel ID) und das Startjahr des Kanals eintragen, dann ist keine "
-             "API-Abfrage nötig."), self.save_channel)
+        ChannelDialog(self, CHANNEL.get("handle") or CHANNEL.get("id", ""), self.save_channel)
 
     def save_channel(self, v):
         m_id, m_title, m_year = v.get("m_id", ""), v.get("m_title", ""), v.get("m_year", "")
