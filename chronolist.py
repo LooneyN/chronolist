@@ -102,7 +102,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.2.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 135
+BUILD = 136
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -230,12 +230,47 @@ def mark_quota(kind, by="api"):
         save(QUOTA_FILE, q)
 
 
-AUTO_INTERVALS = (30, 60, 120, 360)     # Minuten zwischen zwei automatischen Prüfungen
+AUTO_INTERVALS = (30, 60, 120, 360)     # Voreinstellungen (Minuten zwischen zwei automatischen Prüfungen)
 AUTO_INTERVAL_DEFAULT = 60
+AUTO_MIN, AUTO_MAX, AUTO_STEP = 15, 1440, 5      # eigenes Intervall: mindestens 15 Min, nur in 5er-Schritten
+
+
+def clean_interval(v):
+    """Eingabe auf ein erlaubtes Intervall bringen (Vielfaches von 5, 15 Minuten bis 24 Stunden)."""
+    try:
+        v = int(round(float(str(v).strip().replace(",", ".")) / AUTO_STEP)) * AUTO_STEP
+    except ValueError:
+        return None
+    return max(AUTO_MIN, min(AUTO_MAX, v))
 
 
 def interval_label(m):
-    return f"{m} MIN" if m < 60 else f"{m // 60} H"
+    if m < 60:
+        return f"{m} MIN"
+    return f"{m // 60} H" if m % 60 == 0 else f"{m // 60} H {m % 60} MIN"
+
+
+AUTO_SHOW = False        # AUTO-CHECK eingeschaltet: Karten zeigen den AUTO-Schalter
+AUTO_YEARS = set()       # Jahre, die der AUTO-CHECK mit aktuell hält (Listen: Feld "auto" in der Liste)
+
+
+def auto_on(key):
+    if is_list_key(key):
+        return bool((find_list(key) or {}).get("auto"))
+    return key in AUTO_YEARS
+
+
+def set_auto(key, on):
+    if is_list_key(key):
+        lists = load_lists()
+        for x in lists:
+            if list_key(x) == key:
+                x["auto"] = bool(on)
+        save_lists(lists)
+    elif on:
+        AUTO_YEARS.add(key)
+    else:
+        AUTO_YEARS.discard(key)
 
 
 QUOTA_DAILY = 10000      # Standard-Tageskontingent eines Google-Projekts
@@ -3260,6 +3295,8 @@ class YearRow(Panel):
         self.role = status_role(self.info["code"])
         self.geo = None
         self.last_label = None
+        self.auto_geo = None       # (x0, y0, x1, y1) des AUTO-Schalters
+        self.auto_command = None
 
     def palette(self):
         # laufende Karte leuchtet in ihrer Zustandsfarbe statt pauschal grün
@@ -3328,7 +3365,12 @@ class YearRow(Panel):
 
         tx = self.right_tag(x0, y0, x1, y1, c, px(116), role, on)
         nx = ix + isz + px(12)
-        self.create_text(nx, y0 + h * 0.32, text=year_label(self.year), anchor="w", font=F("ui", 16),
+        name_w = tx - px(14) - nx
+        self.auto_geo = None
+        if AUTO_SHOW:
+            name_w -= self.draw_auto(tx - px(14), y0 + h * 0.32, on, faded) + px(10)
+        self.create_text(nx, y0 + h * 0.32, text=fit_text(year_label(self.year), F("ui", 16), name_w), anchor="w",
+                         font=F("ui", 16),
                          fill=TEXT if on else mix(TEXT_DIM, BG, 0.5) if faded else mix(TEXT_DIM, BG, 0.75))
         text, blinking = self.status_text()
         scol = (CYAN if self.activity else
@@ -3372,9 +3414,33 @@ class YearRow(Panel):
         if self.running:
             self.tick(time.time())
 
+    def draw_auto(self, xr, cy, on, faded):
+        """AUTO-Schalter: kleines Feld mit LED und Text, rechts in der Namenszeile. An = cyan wie die Karte
+        AUTO-CHECK, aus = gedämpft. Gibt die Breite zurück."""
+        flag = auto_on(self.year)
+        col = CYAN if flag else mix(TEXT_MUTED, BG, 0.45 if not faded else 0.3)
+        fnt = F("mono", 10)
+        tw = tkfont.Font(font=fnt).measure("AUTO")
+        w, hh, cut = tw + px(30), px(20), px(5)
+        x0, y0, x1, y1 = xr - w, cy - hh / 2, xr, cy + hh / 2
+        self.create_polygon(x0, y0, x1, y0, x1, y1 - cut, x1 - cut, y1, x0, y1,
+                            fill=mix(CYAN, BG, 0.16) if flag else "", outline=col, width=1)
+        k = px(6)
+        lx = x0 + px(9)
+        self.create_rectangle(lx - k / 2, cy - k / 2, lx + k / 2, cy + k / 2,
+                              fill=CYAN if flag else "", outline=col)
+        self.create_text(lx + k / 2 + px(6), cy, text="AUTO", anchor="w", font=fnt, fill=col)
+        self.auto_geo = (x0 - px(3), y0 - px(3), x1 + px(3), y1 + px(3))
+        return w
+
     # --- Animation der aktiven Karte: nur Ladebalken + ruhiger Glow
     def _click(self, e):
         if getattr(self, "dragging", False):
+            return
+        a = self.auto_geo
+        if AUTO_SHOW and a and a[0] <= e.x <= a[2] and a[1] <= e.y <= a[3]:
+            if self.auto_command:
+                self.auto_command(self.year)
             return
         g = self.icon_geo
         if (self.running and self.pause_command and g
@@ -4070,14 +4136,15 @@ class WhatsNewDialog(tk.Toplevel):
         CutButton(foot, "OK", self.destroy, width=100).pack(side="right")
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=pad)
+        base = "Segoe UI" if "Segoe UI" in tkfont.families(self) else "TkDefaultFont"     # wie die Hilfe: scharf lesbar
         txt = tk.Text(body, wrap="word", bg=BG2, fg=TEXT, bd=0, relief="flat", highlightthickness=1,
                       highlightbackground=mix(CYAN, BG, 0.3), padx=px(16), pady=px(12), cursor="arrow",
-                      font=F("ui", 15, False), spacing1=px(2), spacing3=px(4), selectbackground=mix(CYAN, BG, 0.3))
+                      font=(base, -px(15)), spacing1=px(2), spacing3=px(5), selectbackground=mix(CYAN, BG, 0.3))
         sb = ttk.Scrollbar(body, orient="vertical", command=txt.yview, style="NC.Vertical.TScrollbar")
         txt.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         txt.pack(side="left", fill="both", expand=True)
-        txt.tag_configure("h", font=F("ui", 15), foreground=CYAN, spacing1=px(12), spacing3=px(4))
+        txt.tag_configure("h", font=(base, -px(15), "bold"), foreground=CYAN, spacing1=px(14), spacing3=px(4))
         txt.tag_configure("li", lmargin1=px(4), lmargin2=px(22))
         txt.tag_configure("p", foreground=TEXT_DIM)
         lines = notes_lines(notes) or [("p", L("No release notes available.", "Keine Release-Notizen vorhanden."))]
@@ -4179,18 +4246,9 @@ class AppSettingsDialog(tk.Toplevel):
                  wraplength=px(520)).pack(fill="x", pady=(px(2), px(14)))
         self.set_ui_scale(self.ui_scale)
 
-        Section(body, L("AUTO-CHECK", "AUTO-PRÜFUNG"), "BACKGROUND // NEW VIDEOS").pack(fill="x", pady=(0, px(6)))
-        self.auto_check = app.auto_check
-        self.auto_check_card = ToggleCard(body, L("AUTO-CHECK", "AUTO-PRÜFUNG"),
-                                          L("LOOK FOR NEW VIDEOS BY ITSELF", "VON ALLEIN NACH NEUEN VIDEOS SUCHEN"),
-                                          self.auto_check, self.toggle_auto_check, compact=True)
-        self.auto_check_card.pack(fill="x", pady=(0, px(4)))
-        Tooltip(self.auto_check_card, L("While Chronolist is open, it looks for new videos at the chosen interval and "
-                                        "adds them to the current year and to every list with AUTO-UPDATE switched on.",
-                                        "Solange Chronolist offen ist, sucht es im gewählten Abstand nach neuen Videos "
-                                        "und ergänzt das laufende Jahr und jede Liste mit eingeschaltetem AUTO-AKTUALISIEREN."))
+        Section(body, L("AUTO-CHECK", "AUTO-PRÜFUNG"), "BACKGROUND // INTERVAL").pack(fill="x", pady=(0, px(6)))
         iv_row = tk.Frame(body, bg=BG)
-        iv_row.pack(fill="x", pady=(0, px(4)))
+        iv_row.pack(fill="x", pady=(0, px(6)))
         tk.Label(iv_row, text=L("EVERY", "ALLE"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="left", padx=(0, px(8)))
         self.auto_interval = app.auto_interval
         self.iv_btns = {}
@@ -4198,18 +4256,22 @@ class AppSettingsDialog(tk.Toplevel):
             b = CutButton(iv_row, interval_label(m), lambda m=m: self.set_interval(m), width=70, size=11, pad=18)
             b.pack(side="left", padx=(0, px(4)))
             self.iv_btns[m] = b
+        man = tk.Frame(body, bg=BG)
+        man.pack(fill="x", pady=(0, px(4)))
+        tk.Label(man, text=L("OWN", "EIGENES"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="left", padx=(0, px(8)))
+        self.iv_var = tk.StringVar()
+        self.iv_entry = tk.Entry(man, textvariable=self.iv_var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
+                                 width=6, justify="center", font=F("mono", 13, False), highlightthickness=1,
+                                 highlightcolor=CYAN, highlightbackground=mix(CYAN, BG, 0.4),
+                                 selectbackground=mix(CYAN, BG, 0.3))
+        self.iv_entry.pack(side="left", ipady=px(4))
+        tk.Label(man, text=L("MINUTES", "MINUTEN"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="left", padx=(px(8), 0))
+        self.iv_var.trace_add("write", lambda *a: self.typed_interval())
         self.set_interval(self.auto_interval)
-        self.auto_year = app.auto_year
-        self.auto_year_card = ToggleCard(body, L("CURRENT YEAR", "LAUFENDES JAHR"),
-                                         L("ALSO KEEP ITS PLAYLIST UP TO DATE", "AUCH DESSEN PLAYLIST AKTUELL HALTEN"),
-                                         self.auto_year, self.toggle_auto_year, compact=True)
-        self.auto_year_card.pack(fill="x", pady=(0, px(4)))
-        tk.Label(body, text=L("LISTS: SWITCH 'AUTO-UPDATE' ON IN EACH LIST'S EDITOR. EACH CHECK USES A FEW API UNITS "
-                              "AND STOPS BY ITSELF WHEN THE QUOTA IS USED UP.",
-                              "LISTEN: 'AUTO-AKTUALISIEREN' IM EDITOR DER LISTE EINSCHALTEN. JEDE PRÜFUNG KOSTET WENIGE "
-                              "API-EINHEITEN UND ENDET VON ALLEIN, WENN DAS KONTINGENT AUFGEBRAUCHT IST."),
-                 bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w", justify="left",
-                 wraplength=px(520)).pack(fill="x", pady=(px(2), px(14)))
+        self.iv_note = tk.Label(body, text="", bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w", justify="left",
+                                wraplength=px(520))
+        self.iv_note.pack(fill="x", pady=(px(2), px(14)))
+        self.show_interval_note()
 
         Section(body, L("START", "START"), "SYSTEM // BOOT").pack(fill="x", pady=(0, px(6)))
         self.autorun = app.autorun
@@ -4253,7 +4315,7 @@ class AppSettingsDialog(tk.Toplevel):
         CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<Return>", lambda e: self.save())
-        self.geometry(fit(px(560), px(900)))
+        self.geometry(fit(px(560), px(820)))
         style_window(self)
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -4278,14 +4340,6 @@ class AppSettingsDialog(tk.Toplevel):
         self.autorun = not self.autorun
         self.auto_card.update_value(self.autorun)
 
-    def toggle_auto_check(self):
-        self.auto_check = not self.auto_check
-        self.auto_check_card.update_value(self.auto_check)
-
-    def toggle_auto_year(self):
-        self.auto_year = not self.auto_year
-        self.auto_year_card.update_value(self.auto_year)
-
     def toggle_minimized(self):
         self.minimized = not self.minimized
         self.min_card.update_value(self.minimized)
@@ -4295,6 +4349,36 @@ class AppSettingsDialog(tk.Toplevel):
         for v, b in self.iv_btns.items():
             b.set_color(GREEN if v == m else YELLOW)
             b.set_text(("● " if v == m else "") + interval_label(v))
+        if self.iv_var.get() != str(m):
+            self.iv_var.set(str(m))
+
+    def typed_interval(self):
+        """Eigenes Intervall getippt: gültige Werte (Vielfache von 5, mindestens 15) gelten sofort."""
+        v = self.iv_var.get().strip()
+        if v.isdigit() and int(v) % AUTO_STEP == 0 and AUTO_MIN <= int(v) <= AUTO_MAX:
+            self.auto_interval = int(v)
+            for k, b in self.iv_btns.items():
+                b.set_color(GREEN if k == self.auto_interval else YELLOW)
+                b.set_text(("● " if k == self.auto_interval else "") + interval_label(k))
+        self.show_interval_note()
+
+    def show_interval_note(self):
+        if not hasattr(self, "iv_note"):
+            return
+        v = self.iv_var.get().strip()
+        ok = v.isdigit() and int(v) % AUTO_STEP == 0 and AUTO_MIN <= int(v) <= AUTO_MAX
+        self.iv_note.configure(
+            text=L(f"MULTIPLES OF {AUTO_STEP}, FROM {AUTO_MIN} MINUTES UP TO 24 HOURS. SWITCH AUTO-CHECK ON IN THE MAIN "
+                   f"WINDOW, THEN SET THE AUTO SWITCH ON EACH CARD YOU WANT KEPT UP TO DATE. A CHECK USES ONLY A FEW "
+                   f"API UNITS AND IS SKIPPED WHEN THE QUOTA IS USED UP.",
+                   f"VIELFACHE VON {AUTO_STEP}, VON {AUTO_MIN} MINUTEN BIS 24 STUNDEN. AUTO-CHECK IM HAUPTFENSTER "
+                   f"EINSCHALTEN UND DANN BEI JEDER KARTE, DIE AKTUELL BLEIBEN SOLL, DEN AUTO-SCHALTER SETZEN. EINE "
+                   f"PRÜFUNG KOSTET NUR WENIGE API-EINHEITEN UND ENTFÄLLT, WENN DAS KONTINGENT AUFGEBRAUCHT IST.")
+            if ok or not v else L(f"INVALID // USE A MULTIPLE OF {AUTO_STEP} BETWEEN {AUTO_MIN} AND {AUTO_MAX}. "
+                                  f"THE LAST VALID INTERVAL ({interval_label(self.auto_interval)}) APPLIES.",
+                                  f"UNGÜLTIG // EIN VIELFACHES VON {AUTO_STEP} ZWISCHEN {AUTO_MIN} UND {AUTO_MAX} "
+                                  f"VERWENDEN. ES GILT DAS LETZTE GÜLTIGE INTERVALL ({interval_label(self.auto_interval)})."),
+            fg=FLUFF if ok or not v else RED)
 
     def toggle_boot(self):
         self.boot = not self.boot
@@ -4309,10 +4393,11 @@ class AppSettingsDialog(tk.Toplevel):
         st["check_updates"] = self.updates
         self.app.set_windows(self.boot, self.minimized)
         self.app.autorun = self.autorun
-        self.app.auto_check, self.app.auto_interval, self.app.auto_year = self.auto_check, self.auto_interval, self.auto_year
+        self.app.auto_interval = self.auto_interval
         self.app.auto_next = time.time() + 60
-        st.update(auto_check=self.auto_check, auto_interval=self.auto_interval, auto_year=self.auto_year,
-                  start_minimized=self.minimized)
+        self.app.auto_card.sub = self.app.auto_sub()
+        self.app.auto_card.redraw()
+        st.update(auto_interval=self.auto_interval, start_minimized=self.minimized)
         st["autorun"] = self.autorun
         lang_changed = self.language != LANG
         size_changed = self.ui_scale != st.get("ui_scale", UI_SCALE_DEFAULT)
@@ -4507,13 +4592,18 @@ HELP_TEXT_DE = [
            "Autostart: legt beim Öffnen von Chronolist sofort los.\n"
            "Boot: startet Chronolist zusammen mit Windows. Zusammen mit Autostart läuft dann alles von allein.\n"
            "Minimiert: Chronolist öffnet sich beim Start mit Windows minimiert in der Taskleiste.\n"
-           "Auto-Prüfung: Solange Chronolist offen ist, sucht es im gewählten Abstand (30 Minuten bis 6 Stunden) von "
-           "allein nach neuen Videos. Es ergänzt das laufende Jahr (wenn eingeschaltet) und jede Liste, bei der im "
-           "Listen-Editor AUTO-AKTUALISIEREN an ist. Jede Prüfung kostet nur wenige API-Einheiten, ist das Kontingent "
-           "aufgebraucht, wird sie übersprungen. Läuft gerade ein anderer Durchlauf, wartet sie. Die Prüfung öffnet nie "
-           "den Browser (kein FALLBACK). Voraussetzung: Chronolist ist schon einmal angemeldet und die Videos des "
-           "Jahres sind schon gesucht.\n"
            "Update-Prüfung: ob Chronolist beim Start bei GitHub nach einer neuen Version fragt."),
+    ("dt", "AUTO-CHECK"),
+    ("dd", "Die Karte AUTO-CHECK im Hauptfenster schaltet die automatische Suche nach neuen Videos ein. Dann zeigt "
+           "jede Karte (Jahr oder Liste) einen kleinen AUTO-Schalter. Nur Karten mit eingeschaltetem AUTO werden "
+           "aktuell gehalten. Bei Jahren ist das nur beim laufenden Jahr sinnvoll, bei Listen kommt jedes neue "
+           "passende Video dazu.\n"
+           "Das Intervall stellst du unter PROGRAMM ein: 30 Minuten, 1, 2 oder 6 Stunden oder ein eigener Wert "
+           "(Vielfache von 5, mindestens 15 Minuten). Der Abstand läuft ab dem Ende des letzten Durchlaufs, auch eines "
+           "manuellen.\n"
+           "Jede Prüfung kostet nur wenige API-Einheiten und entfällt, wenn das Kontingent aufgebraucht ist. Läuft "
+           "gerade ein anderer Durchlauf, wartet sie. Sie öffnet nie den Browser (kein FALLBACK). Voraussetzung: "
+           "Chronolist ist schon einmal angemeldet und die Videos des Jahres sind schon gesucht."),
     ("dt", "PLAYLISTS"),
     ("dd", "Titel und Beschreibung: Du kannst Platzhalter verwenden, die beim Anlegen ersetzt werden. {channel} wird "
            "zum Kanalnamen, {handle} zum @Handle, {year} zum Jahr und {count} zur Anzahl der Videos in diesem Jahr. "
@@ -4734,12 +4824,16 @@ HELP_TEXT_EN = [
            "Auto-run: starts working as soon as Chronolist opens.\n"
            "Boot: starts Chronolist together with Windows. Together with auto-run everything runs by itself.\n"
            "Minimized: when Chronolist starts with Windows, its window opens minimized in the taskbar.\n"
-           "Auto-check: while Chronolist is open it looks for new videos by itself at the chosen interval (30 minutes "
-           "to 6 hours). It adds them to the current year (if switched on) and to every list with AUTO-UPDATE switched "
-           "on in the list editor. A check costs only a few API units and is skipped when the quota is used up. If "
-           "another run is active it waits. The check never opens the browser (no FALLBACK). It needs a finished "
-           "sign-in and a year whose videos were already scanned.\n"
            "Update check: whether Chronolist asks GitHub for a new version on start."),
+    ("dt", "AUTO-CHECK"),
+    ("dd", "The AUTO-CHECK card in the main window switches on the automatic search for new videos. Then every card "
+           "(year or list) shows a small AUTO switch. Only cards with AUTO switched on are kept up to date. For years "
+           "that only makes sense for the current year, for lists every new matching video is added.\n"
+           "You set the interval under PROGRAM: 30 minutes, 1, 2 or 6 hours, or your own value (multiples of 5, at "
+           "least 15 minutes). The wait starts when the last run ends, a manual one included.\n"
+           "A check costs only a few API units and is skipped when the quota is used up. If another run is active it "
+           "waits. It never opens the browser (no FALLBACK). It needs a finished sign-in and a year whose videos were "
+           "already scanned."),
     ("dt", "PLAYLISTS"),
     ("dd", "Title and description: you can use placeholders that are filled in when the playlist is created. "
            "{channel} becomes the channel name, {handle} the @handle, {year} the year and {count} the number of "
@@ -5229,16 +5323,6 @@ class ListDialog(tk.Toplevel):
                                  "Leer = die Vorlage im Reiter EIGENE LISTEN unter PLAYLISTS."))
         self.desc_box.pack(fill="x", pady=(px(3), px(12)))
 
-        self.auto = bool(lst.get("auto", False))
-        self.auto_card = ToggleCard(left, L("AUTO-UPDATE", "AUTO-AKTUALISIEREN"),
-                                    L("ADD NEW VIDEOS BY ITSELF", "NEUE VIDEOS VON ALLEIN ERGÄNZEN"),
-                                    self.auto, self.toggle_list_auto, compact=True)
-        self.auto_card.pack(fill="x", pady=(0, px(12)))
-        Tooltip(self.auto_card, L("The AUTO-CHECK in the PROGRAM settings adds new matching videos to this list "
-                                  "in the background. Switch AUTO-CHECK on there as well.",
-                                  "Die AUTO-PRÜFUNG in den PROGRAMM-Einstellungen ergänzt diese Liste im Hintergrund "
-                                  "um neue passende Videos. Dort muss die AUTO-PRÜFUNG ebenfalls an sein."))
-
         Section(left, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
         tk.Label(left, text=L("A VIDEO IS INCLUDED IF ITS TITLE CONTAINS ...", "EIN VIDEO KOMMT IN DIE LISTE, WENN SEIN TITEL ... ENTHÄLT"),
                  bg=BG, fg=CYAN, font=F("mono", 11), anchor="w").pack(fill="x", pady=(0, px(6)))
@@ -5570,10 +5654,6 @@ class ListDialog(tk.Toplevel):
         self.add_var.set("")
         self.refresh()
 
-    def toggle_list_auto(self):
-        self.auto = not self.auto
-        self.auto_card.update_value(self.auto)
-
     def save(self):
         name = self.name_var.get().strip()
         cur = self.current()
@@ -5591,7 +5671,7 @@ class ListDialog(tk.Toplevel):
         if lst is None:
             lst = {"id": self.lst_id or new_list_id()}
             lists.append(lst)
-        lst.update(name=name, desc=self.desc_box.get("1.0", "end").strip(), auto=self.auto, **cur)
+        lst.update(name=name, desc=self.desc_box.get("1.0", "end").strip(), **cur)
         save_lists(lists)
         key = list_key(lst)
         self.app.lists_changed(select_key=key if not self.lst_id else None)
@@ -6164,7 +6244,7 @@ class App(tk.Tk):
             r.refresh_blocked()
         self.fallback_card = ToggleCard(opts, "FALLBACK", L("EDGE AFTER QUOTA", "EDGE BEI LIMIT"),
                                         self.fallback, self.toggle_fallback, compact=True)
-        self.fallback_card.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, px(4)))
+        self.fallback_card.grid(row=0, column=1, sticky="ew", padx=(px(3), 0), pady=(0, px(4)))
         self.skip_ahead = True                       # immer: nächstes bereites markiertes Jahr vorziehen
         self.autorun = bool(self.settings.get("autorun", False))
         self.win_on = get_windows_autostart()
@@ -6173,19 +6253,30 @@ class App(tk.Tk):
         self.auto_interval = self.settings.get("auto_interval", AUTO_INTERVAL_DEFAULT)
         if self.auto_interval not in AUTO_INTERVALS:
             self.auto_interval = AUTO_INTERVAL_DEFAULT
-        self.auto_year = bool(self.settings.get("auto_year", True))
         self.auto_next = time.time() + 60
+        global AUTO_SHOW
+        AUTO_SHOW = self.auto_check
+        AUTO_YEARS.clear()
+        AUTO_YEARS.update(y for y in self.settings.get("auto_years", []) if isinstance(y, int))
+        self.auto_card = ToggleCard(opts, "AUTO-CHECK", self.auto_sub(), self.auto_check,
+                                    self.toggle_auto_check, compact=True)
+        self.auto_card.grid(row=0, column=0, sticky="ew", padx=(0, px(3)), pady=(0, px(4)))
+        Tooltip(self.auto_card, L("Looks for new videos by itself while Chronolist is open. When on, every card "
+                                  "shows an AUTO switch: only cards with AUTO on are kept up to date. The interval "
+                                  "is set in the PROGRAM settings.",
+                                  "Sucht von allein nach neuen Videos, solange Chronolist offen ist. Ist es an, "
+                                  "zeigt jede Karte einen AUTO-Schalter: nur Karten mit AUTO werden aktuell "
+                                  "gehalten. Das Intervall stellst du in den PROGRAMM-Einstellungen ein."))
         self.app_card = SettingsCard(opts, self.edit_app_settings, lambda: L("PROGRAM", "PROGRAMM"),
                                      lambda: " // ".join([LANGUAGES[LANG]]
                                                          + ([L("AUTO-RUN", "AUTOSTART")] if self.autorun else [])
-                                                         + ([f"AUTO {interval_label(self.auto_interval)}"] if self.auto_check else [])
                                                          + (["BOOT"] if self.win_on else [])), icon="gear")
-        self.app_card.grid(row=1, column=0, sticky="ew", padx=(0, px(3)))
+        self.app_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
         self.settings_card = SettingsCard(opts, self.edit_settings, lambda: "PLAYLISTS",
                                           lambda: f"{privacy_label(PRIVACY)} // "
                                                   + fill_template(PLAYLIST_TEMPLATE, YEARS[0] if YEARS
                                                                   else datetime.date.today().year - 1))
-        self.settings_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
+        self.settings_card.grid(row=1, column=0, sticky="ew", padx=(0, px(3)))
 
         self.login = tk.Frame(right, bg=BG)
         self.login.columnconfigure(0, weight=1)
@@ -6276,6 +6367,7 @@ class App(tk.Tk):
 
     def save_settings(self):
         self.settings.update(years=self.selected_years(), year_order=list(self.order), autorun=self.autorun,
+                             auto_years=sorted(AUTO_YEARS),
                              browser_fallback=getattr(self, "fallback", False),
                              )
         save(SETTINGS_FILE, self.settings)
@@ -6288,7 +6380,8 @@ class App(tk.Tk):
         save(view_file(), {"channel": dict(CHANNEL),
                            "years": list(self.settings.get("years", [])),
                            "year_order": list(self.settings.get("year_order", [])),
-                           "hide_done": bool(self.settings.get("hide_done"))})
+                           "hide_done": bool(self.settings.get("hide_done")),
+                           "auto_years": sorted(AUTO_YEARS)})
 
     def new_list(self):
         ListDialog(self, None)
@@ -6403,6 +6496,28 @@ class App(tk.Tk):
         self.win_min = bool(minimized)
 
     # --- Automatische Prüfung
+    def auto_sub(self):
+        return (L("EVERY ", "ALLE ") + interval_label(self.auto_interval)) if self.auto_check \
+            else L("NEW VIDEOS IN THE BACKGROUND", "NEUE VIDEOS IM HINTERGRUND")
+
+    def toggle_auto_check(self):
+        global AUTO_SHOW
+        self.auto_check = not self.auto_check
+        AUTO_SHOW = self.auto_check
+        self.settings["auto_check"] = self.auto_check
+        self.auto_next = time.time() + 60
+        self.auto_card.sub = self.auto_sub()
+        self.auto_card.update_value(self.auto_check)
+        for r in self.rows.values():
+            r.redraw()
+        self.save_settings()
+
+    def toggle_row_auto(self, key):
+        set_auto(key, not auto_on(key))
+        if key in self.rows:
+            self.rows[key].redraw()
+        self.save_settings()
+
     def auto_tick(self):
         self.after(30000, self.auto_tick)
         if not self.auto_check or time.time() < self.auto_next:
@@ -6414,7 +6529,7 @@ class App(tk.Tk):
         self.run_auto()
 
     def run_auto(self):
-        keys = ([datetime.date.today().year] if self.auto_year else []) + \
+        keys = [y for y in YEARS if y in AUTO_YEARS and growing(y)] + \
                [list_key(x) for x in load_lists() if x.get("auto")]
         keys = [k for k in keys if k in self.rows]
         self.auto_next = time.time() + self.auto_interval * 60
@@ -6480,6 +6595,7 @@ class App(tk.Tk):
         for y in self.order:
             row = YearRow(self.scroll.inner, y, command=lambda y=y: self.toggle_year(y), pause_command=self.toggle_pause)
             Tooltip(row, lambda r=row: self.year_tip(r))
+            row.auto_command = self.toggle_row_auto
             row.refresh(selected=y in selected)
             self.bind_drag(row)
             if is_list_key(y):
@@ -6771,6 +6887,9 @@ class App(tk.Tk):
         self.settings["years"] = view.get("years", list(YEARS))
         self.settings["year_order"] = view.get("year_order", list(YEARS))
         self.settings["hide_done"] = bool(view.get("hide_done", False))
+        AUTO_YEARS.clear()
+        AUTO_YEARS.update(y for y in view.get("auto_years", []) if isinstance(y, int))
+        self.settings["auto_years"] = sorted(AUTO_YEARS)
         save(SETTINGS_FILE, self.settings)
         self.build_rows()
         self.save_view()
