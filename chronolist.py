@@ -102,7 +102,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.2.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 139
+BUILD = 140
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -5213,15 +5213,16 @@ class AppSettingsDialog(tk.Toplevel):
         tm_row = tk.Frame(self.tm_frame, bg=BG)
         tm_row.pack(fill="x")
         self.tm_vars = []
+        self.tm_strict = False          # leere Felder erst beim Speichern als Fehler zeigen
         have = list(app.auto_times)
         for k in range(AUTO_TIME_SLOTS):
+            tm_row.columnconfigure(k, weight=1, uniform="tm")
             v = tk.StringVar(value=have[k] if k < len(have) else "")
-            e = self.small_entry(tm_row, v, 7)
-            e.pack(side="left", ipady=px(5), padx=(0, px(8)))
+            e = self.small_entry(tm_row, v, 5)
+            e.grid(row=0, column=k, sticky="ew", ipady=px(5), padx=(0, px(6)) if k < AUTO_TIME_SLOTS - 1 else 0)
+            self.placeholder(e, v, "HH:MM")
             v.trace_add("write", lambda *a: self.show_interval_note())
             self.tm_vars.append(v)
-        tk.Label(tm_row, text=L("HH:MM", "HH:MM"), bg=BG, fg=TEXT_MUTED,
-                 font=F("mono", 11, False)).pack(side="left", padx=(px(4), 0))
 
         self.iv_var.trace_add("write", lambda *a: self.typed_interval())
         self.set_interval(self.auto_interval)
@@ -5313,6 +5314,21 @@ class AppSettingsDialog(tk.Toplevel):
                         highlightcolor=CYAN, highlightbackground=mix(CYAN, BG, 0.4),
                         selectbackground=mix(CYAN, BG, 0.3))
 
+    def placeholder(self, entry, var, text):
+        """Schwacher Platzhaltertext in einem leeren Feld (verschwindet beim Hineinklicken)."""
+        lab = tk.Label(entry, text=text, bg=BG2, fg=mix(TEXT_MUTED, BG2, 0.45), font=F("mono", 12, False), cursor="xterm")
+        lab.bind("<Button-1>", lambda e: entry.focus_set())
+
+        def update(*_):
+            if var.get() or entry.focus_get() is entry:
+                lab.place_forget()
+            else:
+                lab.place(relx=0.5, rely=0.5, anchor="center")
+        var.trace_add("write", update)
+        entry.bind("<FocusIn>", update, add="+")
+        entry.bind("<FocusOut>", lambda e: entry.after(1, update), add="+")
+        update()
+
     def set_mode(self, code):
         """Entweder Intervall oder feste Uhrzeiten."""
         self.auto_mode = code
@@ -5366,7 +5382,7 @@ class AppSettingsDialog(tk.Toplevel):
             if bad:
                 self.iv_note.configure(fg=RED, text=L(f"INVALID TIME: {', '.join(bad)} // USE HH:MM, E.G. 08:00 OR 20:30.",
                                                       f"UNGÜLTIGE UHRZEIT: {', '.join(bad)} // FORMAT HH:MM, Z. B. 08:00 ODER 20:30."))
-            elif not ok:
+            elif not ok and self.tm_strict:
                 self.iv_note.configure(fg=RED, text=L("ENTER AT LEAST ONE TIME, E.G. 08:00.",
                                                       "MINDESTENS EINE UHRZEIT EINTRAGEN, Z. B. 08:00."))
             else:
@@ -5399,6 +5415,7 @@ class AppSettingsDialog(tk.Toplevel):
     def save(self):
         times, bad = self.typed_times()
         if self.auto_mode == "times" and (bad or not times):
+            self.tm_strict = True
             self.show_interval_note()                # Fehler steht rot unter den Feldern
             return
         if not times:
