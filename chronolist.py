@@ -102,7 +102,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.2.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 136
+BUILD = 137
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -3169,6 +3169,7 @@ class Panel(tk.Canvas):
         "frame": (0.85, 0.10, False),
         "unavailable": (0.45, 0.04, False),
         "faded": (0.28, 0.05, False),     # fertige Jahre: in den Hintergrund
+        "dim": (0.30, 0.03, False),       # gesperrt, weil eine andere Einstellung aus ist: ausgegraut, nicht rot
     }
 
     def __init__(self, master, height, role=CYAN, state="inactive", cut=16, command=None):
@@ -3201,9 +3202,10 @@ class Panel(tk.Canvas):
             self.redraw()
 
     def palette(self):
-        role = GREEN if self.st == "running" else RED if self.st in ("frame", "unavailable") else self.role
+        role = (GREEN if self.st == "running" else RED if self.st in ("frame", "unavailable")
+                else NEUTRAL if self.st == "dim" else self.role)
         edge, tint, glow = self.STATES[self.st]
-        if self.hover and self.st != "unavailable":
+        if self.hover and self.st not in ("unavailable", "dim"):
             edge, tint, glow = min(1.0, edge + 0.3), tint + 0.05, True
         return role, edge, tint, glow
 
@@ -3418,17 +3420,17 @@ class YearRow(Panel):
         """AUTO-Schalter: kleines Feld mit LED und Text, rechts in der Namenszeile. An = cyan wie die Karte
         AUTO-CHECK, aus = gedämpft. Gibt die Breite zurück."""
         flag = auto_on(self.year)
-        col = CYAN if flag else mix(TEXT_MUTED, BG, 0.45 if not faded else 0.3)
+        col = CYAN if flag else mix(TEXT_MUTED, BG, 0.8 if not faded else 0.65)
         fnt = F("mono", 10)
         tw = tkfont.Font(font=fnt).measure("AUTO")
         w, hh, cut = tw + px(30), px(20), px(5)
         x0, y0, x1, y1 = xr - w, cy - hh / 2, xr, cy + hh / 2
         self.create_polygon(x0, y0, x1, y0, x1, y1 - cut, x1 - cut, y1, x0, y1,
-                            fill=mix(CYAN, BG, 0.16) if flag else "", outline=col, width=1)
+                            fill=mix(CYAN, BG, 0.16) if flag else BG, outline=col, width=1)
         k = px(6)
         lx = x0 + px(9)
         self.create_rectangle(lx - k / 2, cy - k / 2, lx + k / 2, cy + k / 2,
-                              fill=CYAN if flag else "", outline=col)
+                              fill=CYAN if flag else BG, outline=col)
         self.create_text(lx + k / 2 + px(6), cy, text="AUTO", anchor="w", font=fnt, fill=col)
         self.auto_geo = (x0 - px(3), y0 - px(3), x1 + px(3), y1 + px(3))
         return w
@@ -3539,21 +3541,29 @@ class YearRow(Panel):
 
 
 class ToggleCard(Panel):
-    def __init__(self, master, name, sub, value, command, available=True, height=CARD_H, compact=False):
+    def __init__(self, master, name, sub, value, command, available=True, height=CARD_H, compact=False,
+                 locked_sub=None):
         super().__init__(master, height, command=command if available else None,
                          state="inactive" if available else "unavailable")
         self.name, self.sub, self.value, self.available = name, sub, value, available
         self.compact = compact
+        self.locked = False
+        self.locked_sub = locked_sub       # Text, solange die Karte von einer anderen abhängt und gesperrt ist
         self.update_value(value)
+
+    def set_locked(self, on):
+        """Ausgegraut, solange eine andere Einstellung aus ist (z. B. MINIMIERT STARTEN ohne MIT WINDOWS STARTEN)."""
+        self.locked = bool(on) and self.available
+        self.update_value(self.value)
 
     def update_value(self, value):
         self.value = value
         if self.available:
-            self.st = "active" if value else "inactive"
+            self.st = "dim" if self.locked else "active" if value else "inactive"
         self.redraw()
 
     def draw_content(self, x0, y0, x1, y1, c, role):
-        on = self.value and self.available
+        on = self.value and self.available and not self.locked
         h = y1 - y0
         cy = (y0 + y1) / 2
         isz = px(24 if self.compact else 32)
@@ -3572,11 +3582,11 @@ class ToggleCard(Panel):
         fn, fs = F("ui", 14 if self.compact else 15), F("mono", 10 if self.compact else 11)
         self.create_text(nx, y0 + h * 0.34, text=fit_text(self.name, fn, maxw), anchor="w",
                          font=fn, fill=TEXT if on else TEXT_DIM)
-        sub = self.sub if self.available else L("UNAVAILABLE", "NICHT VERFÜGBAR")
+        sub = (self.locked_sub or self.sub) if self.locked else self.sub if self.available else L("UNAVAILABLE", "NICHT VERFÜGBAR")
         self.create_text(nx, y0 + h * 0.66, text=fit_text(sub, fs, maxw), anchor="w",
                          font=fs, fill=role if on else TEXT_MUTED)
         mid = (y0 + y1 - c / 2) / 2
-        tag = (L("ON", "AN") if self.value else L("OFF", "AUS")) if self.available else "--"
+        tag = (L("ON", "AN") if self.value else L("OFF", "AUS")) if self.available and not self.locked else "--"
         self.create_text((tx + x1) / 2, mid, text=tag, font=F("mono", 13),
                          fill=role if on else TEXT_MUTED)
 
@@ -4214,94 +4224,101 @@ class AppSettingsDialog(tk.Toplevel):
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
 
-        Section(body, L("LANGUAGE", "SPRACHE"), "UI // HELP // LOG").pack(fill="x", pady=(0, px(6)))
-        lang_row = tk.Frame(body, bg=BG)
-        lang_row.pack(fill="x", pady=(0, px(4)))
+        W = 524                                   # Inhaltsbreite: alle Knopfreihen und Karten enden bündig
+
+        def hint(text, last=False):
+            tk.Label(body, text=text, bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w", justify="left",
+                     wraplength=px(W)).pack(fill="x", pady=(px(2), px(18 if last else 8)))
+
+        def btn_row(n):
+            fr = tk.Frame(body, bg=BG)
+            fr.pack(fill="x", pady=(0, px(2)))
+            return fr, (W - 6 * (n - 1)) // n
+
+        Section(body, L("LANGUAGE", "SPRACHE"), "UI // HELP // LOG").pack(fill="x", pady=(0, px(8)))
+        lang_row, bw = btn_row(len(LANGUAGES))
         self.language = LANG
         self.lang_btns = {}
-        for code, name in LANGUAGES.items():
-            b = CutButton(lang_row, name, lambda c=code: self.set_language(c), width=140)
-            b.pack(side="left", padx=(0, px(6)))
+        for k, (code, name) in enumerate(LANGUAGES.items()):
+            b = CutButton(lang_row, name, lambda c=code: self.set_language(c), width=bw)
+            b.pack(side="left", padx=(0, px(6)) if k < len(LANGUAGES) - 1 else 0)
             self.lang_btns[code] = b
-        tk.Label(body, text=L("INTERFACE, TOOLTIPS, HELP AND LOG. CHRONOLIST RESTARTS WHEN THE LANGUAGE CHANGES.",
-                              "OBERFLÄCHE, TOOLTIPS, HILFE UND PROTOKOLL. CHRONOLIST STARTET BEIM SPRACHWECHSEL NEU."),
-                 bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w", justify="left",
-                 wraplength=px(520)).pack(fill="x", pady=(px(2), px(14)))
+        hint(L("INTERFACE, TOOLTIPS, HELP AND LOG. CHRONOLIST RESTARTS WHEN THE LANGUAGE CHANGES.",
+               "OBERFLÄCHE, TOOLTIPS, HILFE UND PROTOKOLL. CHRONOLIST STARTET BEIM SPRACHWECHSEL NEU."))
         self.set_language(LANG)
 
-        Section(body, L("TEXT SIZE", "TEXTGRÖSSE"), "UI // SCALE").pack(fill="x", pady=(0, px(6)))
-        size_row = tk.Frame(body, bg=BG)
-        size_row.pack(fill="x", pady=(0, px(4)))
+        Section(body, L("TEXT SIZE", "TEXTGRÖSSE"), "UI // SCALE").pack(fill="x", pady=(0, px(8)))
+        size_row, bw = btn_row(len(UI_SCALES))
         self.ui_scale = app.settings.get("ui_scale", UI_SCALE_DEFAULT)
         if self.ui_scale not in UI_SCALES:
             self.ui_scale = UI_SCALE_DEFAULT
         self.size_btns = {}
-        for v in UI_SCALES:
-            b = CutButton(size_row, f"{v} %", lambda v=v: self.set_ui_scale(v), width=60, size=11, pad=18)
-            b.pack(side="left", padx=(0, px(4)))
+        for k, v in enumerate(UI_SCALES):
+            b = CutButton(size_row, f"{v} %", lambda v=v: self.set_ui_scale(v), width=bw, size=11, pad=18)
+            b.pack(side="left", padx=(0, px(6)) if k < len(UI_SCALES) - 1 else 0)
             self.size_btns[v] = b
-        tk.Label(body, text=L("SIZE OF ALL TEXT AND CONTROLS. CHRONOLIST RESTARTS WHEN THE SIZE CHANGES.",
-                              "GRÖSSE VON TEXT UND BEDIENELEMENTEN. CHRONOLIST STARTET BEI EINER ÄNDERUNG NEU."),
-                 bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w", justify="left",
-                 wraplength=px(520)).pack(fill="x", pady=(px(2), px(14)))
+        hint(L("SIZE OF ALL TEXT AND CONTROLS. CHRONOLIST RESTARTS WHEN THE SIZE CHANGES.",
+               "GRÖSSE VON TEXT UND BEDIENELEMENTEN. CHRONOLIST STARTET BEI EINER ÄNDERUNG NEU."))
         self.set_ui_scale(self.ui_scale)
 
-        Section(body, L("AUTO-CHECK", "AUTO-PRÜFUNG"), "BACKGROUND // INTERVAL").pack(fill="x", pady=(0, px(6)))
-        iv_row = tk.Frame(body, bg=BG)
-        iv_row.pack(fill="x", pady=(0, px(6)))
-        tk.Label(iv_row, text=L("EVERY", "ALLE"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="left", padx=(0, px(8)))
+        Section(body, L("AUTO-CHECK", "AUTO-PRÜFUNG"), "BACKGROUND // INTERVAL").pack(fill="x", pady=(0, px(8)))
+        iv_row, bw = btn_row(len(AUTO_INTERVALS))
         self.auto_interval = app.auto_interval
         self.iv_btns = {}
-        for m in AUTO_INTERVALS:
-            b = CutButton(iv_row, interval_label(m), lambda m=m: self.set_interval(m), width=70, size=11, pad=18)
-            b.pack(side="left", padx=(0, px(4)))
+        for k, m in enumerate(AUTO_INTERVALS):
+            b = CutButton(iv_row, interval_label(m), lambda m=m: self.set_interval(m), width=bw, size=11, pad=18)
+            b.pack(side="left", padx=(0, px(6)) if k < len(AUTO_INTERVALS) - 1 else 0)
             self.iv_btns[m] = b
         man = tk.Frame(body, bg=BG)
-        man.pack(fill="x", pady=(0, px(4)))
-        tk.Label(man, text=L("OWN", "EIGENES"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="left", padx=(0, px(8)))
+        man.pack(fill="x", pady=(px(6), 0))
         self.iv_var = tk.StringVar()
         self.iv_entry = tk.Entry(man, textvariable=self.iv_var, bg=BG2, fg=CYAN, insertbackground=CYAN, relief="flat",
-                                 width=6, justify="center", font=F("mono", 13, False), highlightthickness=1,
+                                 width=7, justify="center", font=F("mono", 13, False), highlightthickness=1,
                                  highlightcolor=CYAN, highlightbackground=mix(CYAN, BG, 0.4),
                                  selectbackground=mix(CYAN, BG, 0.3))
-        self.iv_entry.pack(side="left", ipady=px(4))
-        tk.Label(man, text=L("MINUTES", "MINUTEN"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="left", padx=(px(8), 0))
+        self.iv_entry.pack(side="left", ipady=px(5))
+        tk.Label(man, text=L("MINUTES  //  OWN INTERVAL", "MINUTEN  //  EIGENES INTERVALL"), bg=BG, fg=TEXT_MUTED,
+                 font=F("mono", 11, False)).pack(side="left", padx=(px(10), 0))
         self.iv_var.trace_add("write", lambda *a: self.typed_interval())
         self.set_interval(self.auto_interval)
-        self.iv_note = tk.Label(body, text="", bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w", justify="left",
-                                wraplength=px(520))
-        self.iv_note.pack(fill="x", pady=(px(2), px(14)))
+        self.iv_note = tk.Label(body, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w",
+                                justify="left", wraplength=px(W))
+        self.iv_note.pack(fill="x", pady=(px(8), px(18)))
         self.show_interval_note()
 
-        Section(body, L("START", "START"), "SYSTEM // BOOT").pack(fill="x", pady=(0, px(6)))
+        Section(body, L("START", "START"), "SYSTEM // BOOT").pack(fill="x", pady=(0, px(8)))
         self.autorun = app.autorun
         self.auto_card = ToggleCard(body, L("AUTO-RUN", "AUTOSTART"), L("START WORKING WHEN CHRONOLIST OPENS",
                                                                        "BEIM ÖFFNEN SOFORT LOSLEGEN"),
                                     self.autorun, self.toggle_auto, compact=True)
-        self.auto_card.pack(fill="x", pady=(0, px(4)))
+        self.auto_card.pack(fill="x", pady=(0, px(6)))
         Tooltip(self.auto_card, L("Start working automatically when Chronolist opens.",
                                   "Beim Öffnen von Chronolist automatisch starten."))
         self.boot = app.win_on
-        self.boot_card = ToggleCard(body, "BOOT", L("START CHRONOLIST WITH WINDOWS", "CHRONOLIST MIT WINDOWS STARTEN"),
+        self.boot_card = ToggleCard(body, L("START ON BOOT", "MIT WINDOWS STARTEN"),
+                                    L("LAUNCH CHRONOLIST WHEN WINDOWS STARTS", "CHRONOLIST BEIM HOCHFAHREN ÖFFNEN"),
                                     self.boot, self.toggle_boot, available=winreg is not None, compact=True)
-        self.boot_card.pack(fill="x", pady=(0, px(4)))
-        self.minimized = app.win_min
-        self.min_card = ToggleCard(body, L("MINIMIZED", "MINIMIERT"), L("START WITH WINDOWS IN THE TASKBAR", "MIT WINDOWS IN DER TASKLEISTE STARTEN"),
-                                   self.minimized, self.toggle_minimized, available=winreg is not None, compact=True)
-        self.min_card.pack(fill="x", pady=(0, px(14)))
-        Tooltip(self.min_card, L("When Chronolist starts with Windows (BOOT), its window opens minimized. "
-                                 "Together with AUTO-CHECK it keeps your playlists up to date in the background.",
-                                 "Startet Chronolist mit Windows (BOOT), öffnet sich das Fenster minimiert. "
-                                 "Zusammen mit der AUTO-PRÜFUNG hält es deine Playlists im Hintergrund aktuell."))
+        self.boot_card.pack(fill="x", pady=(0, px(6)))
         Tooltip(self.boot_card, L("Start Chronolist automatically with Windows. Together with AUTO-RUN everything "
                                   "runs by itself.",
                                   "Chronolist automatisch mit Windows starten. Zusammen mit AUTOSTART läuft alles "
                                   "von allein."))
+        self.minimized = app.win_min
+        self.min_card = ToggleCard(body, L("START MINIMIZED", "MINIMIERT STARTEN"),
+                                   L("OPEN IN THE TASKBAR, NOT ON SCREEN", "IN DER TASKLEISTE, NICHT AUF DEM BILDSCHIRM"),
+                                   self.minimized, self.toggle_minimized, available=winreg is not None, compact=True,
+                                   locked_sub=L("TURN ON START ON BOOT FIRST", "ZUERST MIT WINDOWS STARTEN EINSCHALTEN"))
+        self.min_card.pack(fill="x", pady=(0, px(18)))
+        self.min_card.set_locked(not self.boot)
+        Tooltip(self.min_card, L("When Chronolist starts with Windows, its window opens minimized. "
+                                 "Together with AUTO-CHECK it keeps your playlists up to date in the background.",
+                                 "Startet Chronolist mit Windows, öffnet sich das Fenster minimiert. "
+                                 "Zusammen mit AUTO-CHECK hält es deine Playlists im Hintergrund aktuell."))
 
-        Section(body, "UPDATES", "GITHUB // RELEASES").pack(fill="x", pady=(0, px(6)))
+        Section(body, "UPDATES", "GITHUB // RELEASES").pack(fill="x", pady=(0, px(8)))
         self.updates = bool(app.settings.get("check_updates", True))
-        self.upd_card = ToggleCard(body, L("UPDATE CHECK", "UPDATE-PRÜFUNG"),
-                                   L("ASK GITHUB ON START", "BEIM START BEI GITHUB FRAGEN"),
+        self.upd_card = ToggleCard(body, L("CHECK FOR UPDATES", "NACH UPDATES SUCHEN"),
+                                   L("ASK GITHUB WHEN CHRONOLIST STARTS", "BEIM START BEI GITHUB FRAGEN"),
                                    self.updates, self.toggle_updates, compact=True)
         self.upd_card.pack(fill="x", pady=(0, px(4)))
         Tooltip(self.upd_card, L("On start, Chronolist asks GitHub once whether a newer version exists. Nothing else "
@@ -4315,7 +4332,7 @@ class AppSettingsDialog(tk.Toplevel):
         CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<Return>", lambda e: self.save())
-        self.geometry(fit(px(560), px(820)))
+        self.geometry(fit(px(560), px(880)))
         style_window(self)
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -4341,6 +4358,8 @@ class AppSettingsDialog(tk.Toplevel):
         self.auto_card.update_value(self.autorun)
 
     def toggle_minimized(self):
+        if not self.boot:
+            return
         self.minimized = not self.minimized
         self.min_card.update_value(self.minimized)
 
@@ -4378,11 +4397,12 @@ class AppSettingsDialog(tk.Toplevel):
                                   f"THE LAST VALID INTERVAL ({interval_label(self.auto_interval)}) APPLIES.",
                                   f"UNGÜLTIG // EIN VIELFACHES VON {AUTO_STEP} ZWISCHEN {AUTO_MIN} UND {AUTO_MAX} "
                                   f"VERWENDEN. ES GILT DAS LETZTE GÜLTIGE INTERVALL ({interval_label(self.auto_interval)})."),
-            fg=FLUFF if ok or not v else RED)
+            fg=TEXT_MUTED if ok or not v else RED)
 
     def toggle_boot(self):
         self.boot = not self.boot
         self.boot_card.update_value(self.boot)
+        self.min_card.set_locked(not self.boot)
 
     def toggle_updates(self):
         self.updates = not self.updates
@@ -4391,7 +4411,7 @@ class AppSettingsDialog(tk.Toplevel):
     def save(self):
         st = self.app.settings
         st["check_updates"] = self.updates
-        self.app.set_windows(self.boot, self.minimized)
+        self.app.set_windows(self.boot, self.minimized and self.boot)
         self.app.autorun = self.autorun
         self.app.auto_interval = self.auto_interval
         self.app.auto_next = time.time() + 60
@@ -4590,9 +4610,9 @@ HELP_TEXT_DE = [
            "Sprache: Englisch oder Deutsch. Das gilt für die ganze Oberfläche, die Tooltips, diese Hilfe und das "
            "Protokoll. Nach dem Speichern startet Chronolist kurz neu.\n"
            "Autostart: legt beim Öffnen von Chronolist sofort los.\n"
-           "Boot: startet Chronolist zusammen mit Windows. Zusammen mit Autostart läuft dann alles von allein.\n"
-           "Minimiert: Chronolist öffnet sich beim Start mit Windows minimiert in der Taskleiste.\n"
-           "Update-Prüfung: ob Chronolist beim Start bei GitHub nach einer neuen Version fragt."),
+           "Mit Windows starten: startet Chronolist zusammen mit Windows. Zusammen mit Autostart läuft dann alles von allein.\n"
+           "Minimiert starten: Chronolist öffnet sich beim Start mit Windows minimiert in der Taskleiste. Nur wählbar, wenn Mit Windows starten an ist.\n"
+           "Nach Updates suchen: ob Chronolist beim Start bei GitHub nach einer neuen Version fragt."),
     ("dt", "AUTO-CHECK"),
     ("dd", "Die Karte AUTO-CHECK im Hauptfenster schaltet die automatische Suche nach neuen Videos ein. Dann zeigt "
            "jede Karte (Jahr oder Liste) einen kleinen AUTO-Schalter. Nur Karten mit eingeschaltetem AUTO werden "
@@ -4822,9 +4842,9 @@ HELP_TEXT_EN = [
            "Language: English or German. This applies to the whole interface, the tooltips, this help and the log. "
            "Chronolist restarts briefly after saving.\n"
            "Auto-run: starts working as soon as Chronolist opens.\n"
-           "Boot: starts Chronolist together with Windows. Together with auto-run everything runs by itself.\n"
-           "Minimized: when Chronolist starts with Windows, its window opens minimized in the taskbar.\n"
-           "Update check: whether Chronolist asks GitHub for a new version on start."),
+           "Start on boot: starts Chronolist together with Windows. Together with auto-run everything runs by itself.\n"
+           "Start minimized: when Chronolist starts with Windows, its window opens minimized in the taskbar. Only available when Start on boot is on.\n"
+           "Check for updates: whether Chronolist asks GitHub for a new version on start."),
     ("dt", "AUTO-CHECK"),
     ("dd", "The AUTO-CHECK card in the main window switches on the automatic search for new videos. Then every card "
            "(year or list) shows a small AUTO switch. Only cards with AUTO switched on are kept up to date. For years "
@@ -6270,7 +6290,7 @@ class App(tk.Tk):
         self.app_card = SettingsCard(opts, self.edit_app_settings, lambda: L("PROGRAM", "PROGRAMM"),
                                      lambda: " // ".join([LANGUAGES[LANG]]
                                                          + ([L("AUTO-RUN", "AUTOSTART")] if self.autorun else [])
-                                                         + (["BOOT"] if self.win_on else [])), icon="gear")
+                                                         + ([L("ON BOOT", "MIT WINDOWS")] if self.win_on else [])), icon="gear")
         self.app_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
         self.settings_card = SettingsCard(opts, self.edit_settings, lambda: "PLAYLISTS",
                                           lambda: f"{privacy_label(PRIVACY)} // "
