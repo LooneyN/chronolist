@@ -8,6 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Added
 - SCAN button: loads all videos and titles of the channel without creating or changing any playlist. This makes SUGGESTIONS and custom lists usable right away, for example with a new channel.
 - Quota reserve: Chronolist counts the API units it uses and stops a little early, so 20 units are always left to add or change a channel. The count is an estimate (other programs in the same Google project are not counted).
+- Enter a channel manually: the channel dialog has optional fields for channel ID, name and first year. With them, a channel can be set without any API call, for example when the quota is used up.
+- Each channel keeps its own view: selected years and lists, their order and HIDE DONE are stored per channel. Switching back to a channel you used before restores everything as it was, without an API call.
 
 ### Changed
 - After an update, the release notes appear once in their own window instead of in the log.

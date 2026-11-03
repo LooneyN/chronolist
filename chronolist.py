@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 130
+BUILD = 131
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -401,6 +401,22 @@ def removed_by_year():
 # Titel gewählt werden. Gespeichert pro Kanal in lists.json; der Schlüssel "k_<id>" steht dort,
 # wo bei Jahren die Jahreszahl steht (videos_k_<id>.json, state_k_<id>.json).
 def lists_file(): return CHAN_DIR / "lists.json"
+def view_file(): return CHAN_DIR / "view.json"     # Kanal-Info und Ansicht (Auswahl, Reihenfolge, HIDE DONE)
+
+
+def known_channel(target):
+    """Schon einmal benutzter Kanal (gleicher @handle oder gleiche ID)? Dann seine gespeicherte Info, sonst None.
+    So lässt sich zu einem bekannten Kanal zurückwechseln, ohne die API zu fragen."""
+    h = (target.get("handle") or "").lower()
+    cid = target.get("id")
+    for f in (DATA_DIR.glob("*/view.json") if DATA_DIR.exists() else []):
+        info = (load(f, {}) or {}).get("channel") or {}
+        if not info.get("first_year"):
+            continue
+        if (h and (info.get("handle") or "").lower() == h) or (cid and info.get("id") == cid):
+            return info
+    return None
+
 def notitle_file(): return CHAN_DIR / "notitle.json"
 
 
@@ -5938,6 +5954,16 @@ class App(tk.Tk):
                              browser_fallback=getattr(self, "fallback", False),
                              )
         save(SETTINGS_FILE, self.settings)
+        self.save_view()
+
+    def save_view(self):
+        """Ansicht des aktuellen Kanals in data/<kanal>/view.json merken (für das Zurückwechseln)."""
+        if not CHANNEL.get("first_year"):
+            return
+        save(view_file(), {"channel": dict(CHANNEL),
+                           "years": list(self.settings.get("years", [])),
+                           "year_order": list(self.settings.get("year_order", [])),
+                           "hide_done": bool(self.settings.get("hide_done"))})
 
     def new_list(self):
         ListDialog(self, None)
@@ -5958,6 +5984,7 @@ class App(tk.Tk):
         self.settings["years"] = [y for y in self.order if y in sel] + [y for y in sel if y not in self.order]
         self.settings["year_order"] = [y for y in self.order if y != removed_key]
         save(SETTINGS_FILE, self.settings)
+        self.save_view()
         self.build_rows()
         for r in self.rows.values():
             r.refresh_blocked()
@@ -6002,6 +6029,7 @@ class App(tk.Tk):
     def toggle_hide_done(self):
         self.settings["hide_done"] = not self.settings.get("hide_done")
         save(SETTINGS_FILE, self.settings)
+        self.save_view()
         self.year_section.set_hidden(bool(self.settings["hide_done"]))
         self.repack()
         self.scroll.canvas.yview_moveto(0)
@@ -6331,24 +6359,60 @@ class App(tk.Tk):
     def edit_channel(self):
         if self.busy():
             return
-        if not all(get_creds()):
-            self.write_log(L("SET API CREDENTIALS FIRST", "ZUERST DIE API-ZUGANGSDATEN EINTRAGEN"), "warn")
-            self.edit_credentials()
-            return
         NCDialog(self, L("Target Channel", "Zielkanal"), [
             ("channel", L("@HANDLE, CHANNEL URL OR CHANNEL ID", "@HANDLE, KANAL-LINK ODER KANAL-ID"),
              CHANNEL.get("handle") or CHANNEL.get("id", ""), False),
-        ], L("EXAMPLES: @CHANNELNAME // YOUTUBE.COM/@CHANNELNAME // UC...",
-             "BEISPIELE: @KANALNAME // YOUTUBE.COM/@KANALNAME // UC..."), self.save_channel)
+            ("m_id", L("CHANNEL ID (OPTIONAL, MANUAL)", "KANAL-ID (OPTIONAL, MANUELL)"), "", False),
+            ("m_title", L("NAME (OPTIONAL, MANUAL)", "NAME (OPTIONAL, MANUELL)"), "", False),
+            ("m_year", L("FIRST YEAR (OPTIONAL, MANUAL)", "STARTJAHR (OPTIONAL, MANUELL)"), "", False),
+        ], L("EXAMPLES: @CHANNELNAME // YOUTUBE.COM/@CHANNELNAME // UC...\n"
+             "A channel you used before is restored without the API. The manual fields are only needed when the "
+             "API quota is used up: enter the channel ID (UC..., on the channel page under More about this "
+             "channel -> Share channel -> Copy channel ID) and the year the channel started; then no API call "
+             "is needed.",
+             "BEISPIELE: @KANALNAME // YOUTUBE.COM/@KANALNAME // UC...\n"
+             "Ein schon benutzter Kanal wird ohne API wiederhergestellt. Die manuellen Felder brauchst du nur, "
+             "wenn das API-Kontingent leer ist: Kanal-ID (UC..., auf der Kanalseite unter More about this "
+             "channel -> Share channel -> Copy channel ID) und das Startjahr des Kanals eintragen, dann ist keine "
+             "API-Abfrage nötig."), self.save_channel)
 
     def save_channel(self, v):
-        target = parse_channel(v["channel"])
+        m_id, m_title, m_year = v.get("m_id", ""), v.get("m_title", ""), v.get("m_year", "")
+        target = parse_channel(v["channel"]) or (parse_channel(m_id) if m_id else None)
         if not target:
             return False
         same_handle = target.get("handle") and target["handle"].lower() == (CHANNEL.get("handle") or "").lower()
         same_id = target.get("id") and target["id"] == CHANNEL.get("id")
-        if CHANNEL.get("first_year") and (same_handle or same_id):
+        if CHANNEL.get("first_year") and (same_handle or same_id) and not (m_id or m_year):
             return None
+        # 1) manuell: Kanal-ID und Startjahr angegeben -> ohne API
+        if m_id or m_year:
+            cid = re.search(r"UC[0-9A-Za-z_-]{22}", m_id or "")
+            this_year = datetime.date.today().year
+            year = int(m_year) if m_year.isdigit() else 0
+            if not cid or not 2005 <= year <= this_year:
+                self.write_log(L("MANUAL CHANNEL // CHANNEL ID (UC...) AND FIRST YEAR (2005 OR LATER) NEEDED",
+                                 "KANAL MANUELL // KANAL-ID (UC...) UND STARTJAHR (AB 2005) NÖTIG"), "err")
+                return False
+            handle = target.get("handle") or ""
+            info = {"id": cid.group(0), "handle": handle, "title": m_title or handle.lstrip("@") or cid.group(0),
+                    "first_year": year}
+            self.write_log(L(f"CHANNEL ENTERED MANUALLY // {info['title']} // SINCE {year}",
+                             f"KANAL MANUELL EINGETRAGEN // {info['title']} // SEIT {year}"), "ok")
+            self.apply_channel(info)
+            return None
+        # 2) schon einmal benutzt -> gespeicherte Info, ohne API
+        info = known_channel(target)
+        if info:
+            self.write_log(L(f"CHANNEL RESTORED // {info.get('title') or info.get('handle')} // NO API NEEDED",
+                             f"KANAL WIEDERHERGESTELLT // {info.get('title') or info.get('handle')} // OHNE API"), "ok")
+            self.apply_channel(info)
+            return None
+        # 3) neu -> über die API auflösen
+        if not all(get_creds()):
+            self.write_log(L("SET API CREDENTIALS FIRST", "ZUERST DIE API-ZUGANGSDATEN EINTRAGEN"), "warn")
+            self.edit_credentials()
+            return False
         self.channel_card.update_state(resolving=True)
         self.worker = Worker([], 0, self.out, resolve=target)
         self.worker.start()
@@ -6356,13 +6420,19 @@ class App(tk.Tk):
         self.set_status("running")
 
     def apply_channel(self, info):
+        if CHANNEL.get("first_year"):
+            self.save_view()                     # Ansicht des bisherigen Kanals merken
         self.settings["channel"] = info
         set_channel(info)
-        # neuer Kanal: alle abgeschlossenen Jahre markiert, chronologisch
-        self.settings["years"] = list(YEARS)
-        self.settings["year_order"] = list(YEARS)
+        # Ansicht des neuen Kanals laden; beim ersten Mal: alle Jahre markiert, chronologisch
+        view = load(view_file(), {}) or {}
+        self.settings["years"] = view.get("years", list(YEARS))
+        self.settings["year_order"] = view.get("year_order", list(YEARS))
+        self.settings["hide_done"] = bool(view.get("hide_done", False))
         save(SETTINGS_FILE, self.settings)
         self.build_rows()
+        self.save_view()
+        self.year_section.set_hidden(bool(self.settings["hide_done"]))
         self.channel_card.update_state(resolving=False)
         self.header.redraw()
         self.footer.redraw()
@@ -6687,6 +6757,7 @@ class App(tk.Tk):
                     if self.settings.get("channel"):
                         self.settings["channel"]["id"] = msg[1]
                         save(SETTINGS_FILE, self.settings)
+                        self.save_view()
                     self.channel_card.update_state()
                 elif kind == "update":
                     self.header.update = (msg[1], msg[2])
