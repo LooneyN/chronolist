@@ -102,7 +102,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.2.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 134
+BUILD = 135
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -228,6 +228,14 @@ def mark_quota(kind, by="api"):
         if kind == "units":
             q["units_by"] = by
         save(QUOTA_FILE, q)
+
+
+AUTO_INTERVALS = (30, 60, 120, 360)     # Minuten zwischen zwei automatischen Prüfungen
+AUTO_INTERVAL_DEFAULT = 60
+
+
+def interval_label(m):
+    return f"{m} MIN" if m < 60 else f"{m // 60} H"
 
 
 QUOTA_DAILY = 10000      # Standard-Tageskontingent eines Google-Projekts
@@ -700,12 +708,13 @@ def status_role(code, running=False):
 
 
 # ------------------------------------------------------------ Windows-Autostart
-def autostart_command():
+def autostart_command(minimized=False):
+    extra = " --minimized" if minimized else ""
     if getattr(sys, "frozen", False):
-        return f'"{sys.executable}"'
+        return f'"{sys.executable}"{extra}'
     exe = Path(sys.executable)
     pyw = exe.with_name("pythonw.exe")
-    return f'"{pyw if pyw.exists() else exe}" "{Path(__file__).resolve()}"'
+    return f'"{pyw if pyw.exists() else exe}" "{Path(__file__).resolve()}"{extra}'
 
 
 def get_windows_autostart():
@@ -719,10 +728,10 @@ def get_windows_autostart():
         return False
 
 
-def set_windows_autostart(on):
+def set_windows_autostart(on, minimized=False):
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
         if on:
-            winreg.SetValueEx(k, APP_NAME, 0, winreg.REG_SZ, autostart_command())
+            winreg.SetValueEx(k, APP_NAME, 0, winreg.REG_SZ, autostart_command(minimized))
         else:
             try:
                 winreg.DeleteValue(k, APP_NAME)
@@ -1481,8 +1490,9 @@ class BrowserUplink:
 
 
 class Worker(threading.Thread):
-    def __init__(self, years, limit, out, fallback=False, resolve=None, check_only=False, scan_only=False):
+    def __init__(self, years, limit, out, fallback=False, resolve=None, check_only=False, scan_only=False, auto=False):
         super().__init__(daemon=True)
+        self.auto = auto             # automatische Prüfung im Hintergrund
         self.resolve_target = resolve
         self.check_only = check_only
         self.scan_only = scan_only
@@ -1564,7 +1574,13 @@ class Worker(threading.Thread):
         try:
             if not all(get_creds()):
                 raise RuntimeError(L("NO API CREDENTIALS // OPEN API SETUP", "KEINE API-ZUGANGSDATEN // API-KNOPF OBEN ÖFFNEN"))
+            if self.auto and not load(TOKEN_FILE, None):
+                self.log(L("AUTO-CHECK SKIPPED // NOT SIGNED IN YET, START ONCE BY HAND", "AUTO-PRÜFUNG ÜBERSPRUNGEN // NOCH NICHT ANGEMELDET, EINMAL VON HAND STARTEN"), "warn")
+                return
             self.tok = load(TOKEN_FILE, None) or self.device_login()
+            if self.auto:
+                self.auto_run()
+                return
             if self.resolve_target is not None:
                 reason = "resolved"
                 self.emit("channel", self.resolve_channel(self.resolve_target))
@@ -1666,6 +1682,28 @@ class Worker(threading.Thread):
             self.emit("current", None)
             self.emit("code_done")
             self.emit("done", reason)
+
+    def auto_run(self):
+        """Automatische Prüfung: laufendes Jahr nach neuen Videos absuchen (nur dort, wo schon ein Stand
+        gespeichert ist), dann das Jahr (wenn gewählt) und die Listen mit Auto-Haken auffüllen."""
+        if quota_blocked("units"):
+            self.log(L(f"AUTO-CHECK SKIPPED // API QUOTA USED UP UNTIL {quota_reset_local()}",
+                       f"AUTO-PRÜFUNG ÜBERSPRUNGEN // KONTINGENT BIS {quota_reset_local()} AUFGEBRAUCHT"), "warn")
+            return
+        keys = [y for y in self.years if is_list_key(y)]
+        for y in YEARS:
+            if not growing(y) or load(videos_file(y), None) is None:
+                continue
+            self.check()
+            self.emit("current", y)
+            try:
+                videos = self.collect(y)
+            except NoVideosFound:
+                continue
+            if y in self.years:
+                self.fill(y, videos)
+        self.run_lists(keys)
+        self.log(L("AUTO-CHECK DONE", "AUTO-PRÜFUNG FERTIG"), "ok")
 
     # --- Login
     def device_login(self):
@@ -4141,6 +4179,38 @@ class AppSettingsDialog(tk.Toplevel):
                  wraplength=px(520)).pack(fill="x", pady=(px(2), px(14)))
         self.set_ui_scale(self.ui_scale)
 
+        Section(body, L("AUTO-CHECK", "AUTO-PRÜFUNG"), "BACKGROUND // NEW VIDEOS").pack(fill="x", pady=(0, px(6)))
+        self.auto_check = app.auto_check
+        self.auto_check_card = ToggleCard(body, L("AUTO-CHECK", "AUTO-PRÜFUNG"),
+                                          L("LOOK FOR NEW VIDEOS BY ITSELF", "VON ALLEIN NACH NEUEN VIDEOS SUCHEN"),
+                                          self.auto_check, self.toggle_auto_check, compact=True)
+        self.auto_check_card.pack(fill="x", pady=(0, px(4)))
+        Tooltip(self.auto_check_card, L("While Chronolist is open, it looks for new videos at the chosen interval and "
+                                        "adds them to the current year and to every list with AUTO-UPDATE switched on.",
+                                        "Solange Chronolist offen ist, sucht es im gewählten Abstand nach neuen Videos "
+                                        "und ergänzt das laufende Jahr und jede Liste mit eingeschaltetem AUTO-AKTUALISIEREN."))
+        iv_row = tk.Frame(body, bg=BG)
+        iv_row.pack(fill="x", pady=(0, px(4)))
+        tk.Label(iv_row, text=L("EVERY", "ALLE"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11)).pack(side="left", padx=(0, px(8)))
+        self.auto_interval = app.auto_interval
+        self.iv_btns = {}
+        for m in AUTO_INTERVALS:
+            b = CutButton(iv_row, interval_label(m), lambda m=m: self.set_interval(m), width=70, size=11, pad=18)
+            b.pack(side="left", padx=(0, px(4)))
+            self.iv_btns[m] = b
+        self.set_interval(self.auto_interval)
+        self.auto_year = app.auto_year
+        self.auto_year_card = ToggleCard(body, L("CURRENT YEAR", "LAUFENDES JAHR"),
+                                         L("ALSO KEEP ITS PLAYLIST UP TO DATE", "AUCH DESSEN PLAYLIST AKTUELL HALTEN"),
+                                         self.auto_year, self.toggle_auto_year, compact=True)
+        self.auto_year_card.pack(fill="x", pady=(0, px(4)))
+        tk.Label(body, text=L("LISTS: SWITCH 'AUTO-UPDATE' ON IN EACH LIST'S EDITOR. EACH CHECK USES A FEW API UNITS "
+                              "AND STOPS BY ITSELF WHEN THE QUOTA IS USED UP.",
+                              "LISTEN: 'AUTO-AKTUALISIEREN' IM EDITOR DER LISTE EINSCHALTEN. JEDE PRÜFUNG KOSTET WENIGE "
+                              "API-EINHEITEN UND ENDET VON ALLEIN, WENN DAS KONTINGENT AUFGEBRAUCHT IST."),
+                 bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w", justify="left",
+                 wraplength=px(520)).pack(fill="x", pady=(px(2), px(14)))
+
         Section(body, L("START", "START"), "SYSTEM // BOOT").pack(fill="x", pady=(0, px(6)))
         self.autorun = app.autorun
         self.auto_card = ToggleCard(body, L("AUTO-RUN", "AUTOSTART"), L("START WORKING WHEN CHRONOLIST OPENS",
@@ -4152,7 +4222,15 @@ class AppSettingsDialog(tk.Toplevel):
         self.boot = app.win_on
         self.boot_card = ToggleCard(body, "BOOT", L("START CHRONOLIST WITH WINDOWS", "CHRONOLIST MIT WINDOWS STARTEN"),
                                     self.boot, self.toggle_boot, available=winreg is not None, compact=True)
-        self.boot_card.pack(fill="x", pady=(0, px(14)))
+        self.boot_card.pack(fill="x", pady=(0, px(4)))
+        self.minimized = app.win_min
+        self.min_card = ToggleCard(body, L("MINIMIZED", "MINIMIERT"), L("START WITH WINDOWS IN THE TASKBAR", "MIT WINDOWS IN DER TASKLEISTE STARTEN"),
+                                   self.minimized, self.toggle_minimized, available=winreg is not None, compact=True)
+        self.min_card.pack(fill="x", pady=(0, px(14)))
+        Tooltip(self.min_card, L("When Chronolist starts with Windows (BOOT), its window opens minimized. "
+                                 "Together with AUTO-CHECK it keeps your playlists up to date in the background.",
+                                 "Startet Chronolist mit Windows (BOOT), öffnet sich das Fenster minimiert. "
+                                 "Zusammen mit der AUTO-PRÜFUNG hält es deine Playlists im Hintergrund aktuell."))
         Tooltip(self.boot_card, L("Start Chronolist automatically with Windows. Together with AUTO-RUN everything "
                                   "runs by itself.",
                                   "Chronolist automatisch mit Windows starten. Zusammen mit AUTOSTART läuft alles "
@@ -4175,7 +4253,7 @@ class AppSettingsDialog(tk.Toplevel):
         CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<Return>", lambda e: self.save())
-        self.geometry(fit(px(560), px(640)))
+        self.geometry(fit(px(560), px(900)))
         style_window(self)
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -4200,6 +4278,24 @@ class AppSettingsDialog(tk.Toplevel):
         self.autorun = not self.autorun
         self.auto_card.update_value(self.autorun)
 
+    def toggle_auto_check(self):
+        self.auto_check = not self.auto_check
+        self.auto_check_card.update_value(self.auto_check)
+
+    def toggle_auto_year(self):
+        self.auto_year = not self.auto_year
+        self.auto_year_card.update_value(self.auto_year)
+
+    def toggle_minimized(self):
+        self.minimized = not self.minimized
+        self.min_card.update_value(self.minimized)
+
+    def set_interval(self, m):
+        self.auto_interval = m
+        for v, b in self.iv_btns.items():
+            b.set_color(GREEN if v == m else YELLOW)
+            b.set_text(("● " if v == m else "") + interval_label(v))
+
     def toggle_boot(self):
         self.boot = not self.boot
         self.boot_card.update_value(self.boot)
@@ -4211,8 +4307,12 @@ class AppSettingsDialog(tk.Toplevel):
     def save(self):
         st = self.app.settings
         st["check_updates"] = self.updates
-        self.app.set_windows(self.boot)
+        self.app.set_windows(self.boot, self.minimized)
         self.app.autorun = self.autorun
+        self.app.auto_check, self.app.auto_interval, self.app.auto_year = self.auto_check, self.auto_interval, self.auto_year
+        self.app.auto_next = time.time() + 60
+        st.update(auto_check=self.auto_check, auto_interval=self.auto_interval, auto_year=self.auto_year,
+                  start_minimized=self.minimized)
         st["autorun"] = self.autorun
         lang_changed = self.language != LANG
         size_changed = self.ui_scale != st.get("ui_scale", UI_SCALE_DEFAULT)
@@ -4406,6 +4506,13 @@ HELP_TEXT_DE = [
            "Protokoll. Nach dem Speichern startet Chronolist kurz neu.\n"
            "Autostart: legt beim Öffnen von Chronolist sofort los.\n"
            "Boot: startet Chronolist zusammen mit Windows. Zusammen mit Autostart läuft dann alles von allein.\n"
+           "Minimiert: Chronolist öffnet sich beim Start mit Windows minimiert in der Taskleiste.\n"
+           "Auto-Prüfung: Solange Chronolist offen ist, sucht es im gewählten Abstand (30 Minuten bis 6 Stunden) von "
+           "allein nach neuen Videos. Es ergänzt das laufende Jahr (wenn eingeschaltet) und jede Liste, bei der im "
+           "Listen-Editor AUTO-AKTUALISIEREN an ist. Jede Prüfung kostet nur wenige API-Einheiten, ist das Kontingent "
+           "aufgebraucht, wird sie übersprungen. Läuft gerade ein anderer Durchlauf, wartet sie. Die Prüfung öffnet nie "
+           "den Browser (kein FALLBACK). Voraussetzung: Chronolist ist schon einmal angemeldet und die Videos des "
+           "Jahres sind schon gesucht.\n"
            "Update-Prüfung: ob Chronolist beim Start bei GitHub nach einer neuen Version fragt."),
     ("dt", "PLAYLISTS"),
     ("dd", "Titel und Beschreibung: Du kannst Platzhalter verwenden, die beim Anlegen ersetzt werden. {channel} wird "
@@ -4626,6 +4733,12 @@ HELP_TEXT_EN = [
            "Chronolist restarts briefly after saving.\n"
            "Auto-run: starts working as soon as Chronolist opens.\n"
            "Boot: starts Chronolist together with Windows. Together with auto-run everything runs by itself.\n"
+           "Minimized: when Chronolist starts with Windows, its window opens minimized in the taskbar.\n"
+           "Auto-check: while Chronolist is open it looks for new videos by itself at the chosen interval (30 minutes "
+           "to 6 hours). It adds them to the current year (if switched on) and to every list with AUTO-UPDATE switched "
+           "on in the list editor. A check costs only a few API units and is skipped when the quota is used up. If "
+           "another run is active it waits. The check never opens the browser (no FALLBACK). It needs a finished "
+           "sign-in and a year whose videos were already scanned.\n"
            "Update check: whether Chronolist asks GitHub for a new version on start."),
     ("dt", "PLAYLISTS"),
     ("dd", "Title and description: you can use placeholders that are filled in when the playlist is created. "
@@ -5116,6 +5229,16 @@ class ListDialog(tk.Toplevel):
                                  "Leer = die Vorlage im Reiter EIGENE LISTEN unter PLAYLISTS."))
         self.desc_box.pack(fill="x", pady=(px(3), px(12)))
 
+        self.auto = bool(lst.get("auto", False))
+        self.auto_card = ToggleCard(left, L("AUTO-UPDATE", "AUTO-AKTUALISIEREN"),
+                                    L("ADD NEW VIDEOS BY ITSELF", "NEUE VIDEOS VON ALLEIN ERGÄNZEN"),
+                                    self.auto, self.toggle_list_auto, compact=True)
+        self.auto_card.pack(fill="x", pady=(0, px(12)))
+        Tooltip(self.auto_card, L("The AUTO-CHECK in the PROGRAM settings adds new matching videos to this list "
+                                  "in the background. Switch AUTO-CHECK on there as well.",
+                                  "Die AUTO-PRÜFUNG in den PROGRAMM-Einstellungen ergänzt diese Liste im Hintergrund "
+                                  "um neue passende Videos. Dort muss die AUTO-PRÜFUNG ebenfalls an sein."))
+
         Section(left, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
         tk.Label(left, text=L("A VIDEO IS INCLUDED IF ITS TITLE CONTAINS ...", "EIN VIDEO KOMMT IN DIE LISTE, WENN SEIN TITEL ... ENTHÄLT"),
                  bg=BG, fg=CYAN, font=F("mono", 11), anchor="w").pack(fill="x", pady=(0, px(6)))
@@ -5447,6 +5570,10 @@ class ListDialog(tk.Toplevel):
         self.add_var.set("")
         self.refresh()
 
+    def toggle_list_auto(self):
+        self.auto = not self.auto
+        self.auto_card.update_value(self.auto)
+
     def save(self):
         name = self.name_var.get().strip()
         cur = self.current()
@@ -5464,7 +5591,7 @@ class ListDialog(tk.Toplevel):
         if lst is None:
             lst = {"id": self.lst_id or new_list_id()}
             lists.append(lst)
-        lst.update(name=name, desc=self.desc_box.get("1.0", "end").strip(), **cur)
+        lst.update(name=name, desc=self.desc_box.get("1.0", "end").strip(), auto=self.auto, **cur)
         save_lists(lists)
         key = list_key(lst)
         self.app.lists_changed(select_key=key if not self.lst_id else None)
@@ -6041,9 +6168,17 @@ class App(tk.Tk):
         self.skip_ahead = True                       # immer: nächstes bereites markiertes Jahr vorziehen
         self.autorun = bool(self.settings.get("autorun", False))
         self.win_on = get_windows_autostart()
+        self.win_min = bool(self.settings.get("start_minimized", False))
+        self.auto_check = bool(self.settings.get("auto_check", False))
+        self.auto_interval = self.settings.get("auto_interval", AUTO_INTERVAL_DEFAULT)
+        if self.auto_interval not in AUTO_INTERVALS:
+            self.auto_interval = AUTO_INTERVAL_DEFAULT
+        self.auto_year = bool(self.settings.get("auto_year", True))
+        self.auto_next = time.time() + 60
         self.app_card = SettingsCard(opts, self.edit_app_settings, lambda: L("PROGRAM", "PROGRAMM"),
                                      lambda: " // ".join([LANGUAGES[LANG]]
                                                          + ([L("AUTO-RUN", "AUTOSTART")] if self.autorun else [])
+                                                         + ([f"AUTO {interval_label(self.auto_interval)}"] if self.auto_check else [])
                                                          + (["BOOT"] if self.win_on else [])), icon="gear")
         self.app_card.grid(row=1, column=0, sticky="ew", padx=(0, px(3)))
         self.settings_card = SettingsCard(opts, self.edit_settings, lambda: "PLAYLISTS",
@@ -6130,6 +6265,9 @@ class App(tk.Tk):
         self.after(2000, self.cleanup_tick)
         if self.autorun:
             self.after(1500, self.start)
+        if "--minimized" in sys.argv:
+            self.after(400, self.iconify)
+        self.after(30000, self.auto_tick)
 
     # --- Einstellungen
     def selected_years(self):
@@ -6252,15 +6390,47 @@ class App(tk.Tk):
         if self.worker and self.worker.is_alive():
             self.worker.fallback = self.fallback
 
-    def set_windows(self, on):
-        if bool(on) == self.win_on:
+    def set_windows(self, on, minimized=False):
+        if bool(on) == self.win_on and (not on or bool(minimized) == self.win_min):
+            self.win_min = bool(minimized)
             return
         try:
-            set_windows_autostart(bool(on))
+            set_windows_autostart(bool(on), bool(minimized))
         except OSError as e:
             self.write_log(L(f"BOOT SEQUENCE UPDATE FAILED // {e}", f"START MIT WINDOWS KONNTE NICHT GEÄNDERT WERDEN // {e}"), "err")
             return
         self.win_on = bool(on)
+        self.win_min = bool(minimized)
+
+    # --- Automatische Prüfung
+    def auto_tick(self):
+        self.after(30000, self.auto_tick)
+        if not self.auto_check or time.time() < self.auto_next:
+            return
+        if self.worker and self.worker.is_alive():
+            return
+        if not all(get_creds()) or not CHANNEL or not load(TOKEN_FILE, None):
+            return
+        self.run_auto()
+
+    def run_auto(self):
+        keys = ([datetime.date.today().year] if self.auto_year else []) + \
+               [list_key(x) for x in load_lists() if x.get("auto")]
+        keys = [k for k in keys if k in self.rows]
+        self.auto_next = time.time() + self.auto_interval * 60
+        if not keys:
+            return
+        self.write_log(L(f"AUTO-CHECK // {datetime.datetime.now():%H:%M} // NEXT IN {interval_label(self.auto_interval)}",
+                         f"AUTO-PRÜFUNG // {datetime.datetime.now():%H:%M} // NÄCHSTE IN {interval_label(self.auto_interval)}"), "sep")
+        self.worker = Worker(keys, 0, self.out, fallback=False, auto=True)
+        self.run_mode = "running"
+        self.pause_info = None
+        self.worker.start()
+        self.start_btn.set_enabled(False)
+        self.check_btn.set_enabled(False)
+        self.scan_btn.set_enabled(False)
+        self.stop_btn.set_enabled(True)
+        self.set_status("running")
 
     # --- Status
     def set_status(self, key):
@@ -6989,6 +7159,7 @@ class App(tk.Tk):
                 elif kind == "code_done":
                     self.login.grid_remove()
                 elif kind == "done":
+                    self.auto_next = time.time() + self.auto_interval * 60
                     self.start_btn.set_enabled(True)
                     self.check_btn.set_enabled(True)
                     self.scan_btn.set_enabled(True)

@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+- AUTO-CHECK in the PROGRAM settings: while Chronolist is open it looks for new videos by itself every 30 minutes, 1, 2 or 6 hours and adds them to the current year (optional) and to every list with AUTO-UPDATE switched on in its editor. It uses only a few API units, is skipped when the quota is used up and never opens the browser.
+- MINIMIZED in the PROGRAM settings: when Chronolist starts with Windows, the window opens minimized in the taskbar.
+
 ## [3.1.0] - 2026-11-03
 
 ### Added
