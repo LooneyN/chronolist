@@ -91,7 +91,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 129
+BUILD = 130
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -209,10 +209,48 @@ def quota_blocked(kind):
     return None
 
 
-def mark_quota(kind):
+def mark_quota(kind, by="api"):
+    """Limit für heute merken. by = 'api' (YouTube hat abgelehnt) oder 'reserve' (Chronolist hält die Reserve frei)."""
+    with _quota_lock:
+        q = load(QUOTA_FILE, {})
+        q[kind] = next_quota_reset().timestamp()
+        if kind == "units":
+            q["units_by"] = by
+        save(QUOTA_FILE, q)
+
+
+QUOTA_DAILY = 10000      # Standard-Tageskontingent eines Google-Projekts
+QUOTA_RESERVE = 20       # bleibt immer übrig, damit ein Kanal hinzugefügt oder getauscht werden kann
+_quota_lock = threading.Lock()
+
+
+def api_cost(method, path):
+    """Geschätzte Kosten eines API-Aufrufs in Einheiten (Lesen 1, Schreiben 50, Suche 100)."""
+    if path == "search":
+        return 100
+    return 1 if method == "GET" else 50
+
+
+def quota_used():
+    """Heute (seit dem letzten Reset) von Chronolist verbrauchte Einheiten. Nur eine Schätzung:
+    andere Programme im selben Google-Projekt zählen nicht mit."""
     q = load(QUOTA_FILE, {})
-    q[kind] = next_quota_reset().timestamp()
-    save(QUOTA_FILE, q)
+    return q.get("used", 0) if q.get("day") == next_quota_reset().timestamp() else 0
+
+
+def add_quota_used(units):
+    with _quota_lock:
+        q = load(QUOTA_FILE, {})
+        day = next_quota_reset().timestamp()
+        if q.get("day") != day:
+            q["day"], q["used"] = day, 0
+        q["used"] = q.get("used", 0) + units
+        save(QUOTA_FILE, q)
+
+
+def reserve_only():
+    """Nur die Reserve ist gesperrt (YouTube selbst hat noch nicht abgelehnt)?"""
+    return bool(quota_blocked("units")) and load(QUOTA_FILE, {}).get("units_by") == "reserve"
 
 
 def quota_reset_local():
@@ -1646,7 +1684,14 @@ class Worker(threading.Thread):
         # Heute schon festgestellt? Dann gar nicht erst fragen.
         if path == "search" and quota_blocked("search"):
             raise SearchLimit()
-        if quota_blocked("units"):
+        cost = api_cost(method, path)
+        exempt = method == "GET" and path == "channels"   # Kanalabfrage darf in die Reserve
+        if quota_blocked("units") and not (exempt and reserve_only()):
+            raise QuotaExceeded()
+        if not exempt and quota_used() + cost > QUOTA_DAILY - QUOTA_RESERVE:
+            mark_quota("units", "reserve")
+            self.log(L(f"API QUOTA ALMOST USED UP // {QUOTA_RESERVE} UNITS KEPT FOR CHANNEL CHANGES",
+                       f"API-KONTINGENT FAST AUFGEBRAUCHT // {QUOTA_RESERVE} EINHEITEN BLEIBEN FÜR KANALWECHSEL"), "warn")
             raise QuotaExceeded()
         tries = 8
         retries = tries - 1                       # so oft wird höchstens neu versucht
@@ -1665,6 +1710,7 @@ class Worker(threading.Thread):
                 self.log(L("NO SIGNAL // RETRY IN 15 S", "KEINE VERBINDUNG // NEUER VERSUCH IN 15 S"), "warn")
                 self.sleep(15, "NO SIGNAL")
                 continue
+            add_quota_used(cost)
             if r.ok:
                 if not getattr(self, "_api_reported", False):
                     self._api_reported = True
@@ -3758,6 +3804,66 @@ class SettingsCard(Panel):
         self.create_text((tx + x1) / 2, (y0 + y1 - c / 2) / 2, text="›", font=F("mono", 18), fill=YELLOW)
 
 
+def notes_lines(notes):
+    """Release-Text (Markdown) in Zeilen für das Neuigkeiten-Fenster: [(art, text)], art = h, li, p.
+    Bilder (z. B. das Roadmap-Banner) und Links werden weggelassen bzw. auf ihren Text gekürzt."""
+    out = []
+    for raw in (notes or "").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("!["):
+            continue
+        line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line).replace("**", "").replace("`", "")
+        if line.startswith("#"):
+            out.append(("h", line.lstrip("#").strip()))
+        elif line[:2] in ("- ", "* "):
+            out.append(("li", line[2:].strip()))
+        else:
+            out.append(("p", line))
+    return out
+
+
+class WhatsNewDialog(tk.Toplevel):
+    """Einmalig nach einem Update: was in der neuen Version neu ist."""
+
+    def __init__(self, app, version, notes):
+        super().__init__(app, bg=BG)
+        self.title(L("What's new", "Was ist neu"))
+        self.transient(app)
+        self.geometry(fit(px(640), px(560)))
+        self.minsize(*fit_min(px(420), px(320)))
+        pad = px(18)
+        Section(self, L("WHAT'S NEW", "NEU IN") + f" // v{version}", "CHANGELOG // UPDATE").pack(
+            fill="x", padx=pad, pady=(pad, px(10)))
+        foot = tk.Frame(self, bg=BG)
+        foot.pack(side="bottom", fill="x", padx=pad, pady=(px(10), pad))
+        CutButton(foot, "OK", self.destroy, width=100).pack(side="right")
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True, padx=pad)
+        txt = tk.Text(body, wrap="word", bg=BG2, fg=TEXT, bd=0, relief="flat", highlightthickness=1,
+                      highlightbackground=mix(CYAN, BG, 0.3), padx=px(16), pady=px(12), cursor="arrow",
+                      font=F("ui", 15, False), spacing1=px(2), spacing3=px(4), selectbackground=mix(CYAN, BG, 0.3))
+        sb = ttk.Scrollbar(body, orient="vertical", command=txt.yview, style="NC.Vertical.TScrollbar")
+        txt.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        txt.pack(side="left", fill="both", expand=True)
+        txt.tag_configure("h", font=F("ui", 15), foreground=CYAN, spacing1=px(12), spacing3=px(4))
+        txt.tag_configure("li", lmargin1=px(4), lmargin2=px(22))
+        txt.tag_configure("p", foreground=TEXT_DIM)
+        lines = notes_lines(notes) or [("p", L("No release notes available.", "Keine Release-Notizen vorhanden."))]
+        for kind, text in lines:
+            txt.insert("end", ("•  " + text if kind == "li" else text.upper() if kind == "h" else text) + "\n", kind)
+        txt.configure(state="disabled")
+        txt.bind("<MouseWheel>", lambda e: txt.yview_scroll(int(-e.delta / 120), "units"))
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Return>", lambda e: self.destroy())
+        style_window(self)
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - self.winfo_height()) // 3)
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.focus_force()
+
+
 class UpdateDialog(tk.Toplevel):
     """Rückfrage vor dem Update."""
 
@@ -3986,7 +4092,10 @@ HELP_TEXT_DE = [
             "Edge-Fenster auch anlegen. Videos finden (Schritt 2) kann es aber nicht.\n"
             "Chronolist merkt sich, wenn das Kontingent oder das Suchlimit an einem Tag aufgebraucht ist. Bis zum "
             "Reset fragt es nach einem Neustart nicht noch einmal nach, sondern nimmt gleich den Fallback. In dieser "
-            "Zeit ist der API-Knopf gelb und zeigt LIMIT."),
+            "Zeit ist der API-Knopf gelb und zeigt LIMIT.\n"
+            "Chronolist zählt die verbrauchten Einheiten mit und hört schon kurz vor dem Ende auf: 20 Einheiten bleiben "
+            "immer übrig, damit du auch dann noch einen Kanal hinzufügen oder tauschen kannst. Das Mitzählen ist nur "
+            "eine Schätzung, weil andere Programme im selben Google-Projekt nicht mitgezählt werden."),
     ("num", "6.  Prüfen. Doppelte Videos können nur entstehen, wenn ein Lauf mitten im Senden eines Pakets abbricht. "
             "Chronolist merkt sich deshalb das Paket, das gerade unterwegs ist, und prüft nach STOPP oder beim "
             "nächsten Start nur dieses. Das geht in Sekunden. Die ganze Playlist liest es nur am Ende eines Jahres "
@@ -4203,7 +4312,10 @@ HELP_TEXT_EN = [
             "find videos (step 2), though.\n"
             "Chronolist remembers when the quota or the search limit was used up on a given day. Until the reset it "
             "won't ask again after a restart and goes straight to the fallback. During that time the API button is "
-            "yellow and shows LIMIT."),
+            "yellow and shows LIMIT.\n"
+            "Chronolist counts the units it uses and stops a little early: 20 units are always kept so you can still "
+            "add or change a channel. The count is only an estimate, because other programs in the same Google "
+            "project are not counted."),
     ("num", "6.  Check. Duplicates can only appear if a run stops while a batch is being sent. So Chronolist "
             "remembers the batch in flight and after STOP or on the next start checks only that one, which takes "
             "seconds. It reads the whole playlist only at the end of a year and with the CHECK button: duplicates "
@@ -6349,21 +6461,14 @@ class App(tk.Tk):
             self.set_status("stopping")
 
     def show_post_update(self):
-        """Nach einem Update einmalig die Neuerungen ins Protokoll schreiben."""
+        """Nach einem Update einmalig die Neuerungen in einem eigenen Fenster zeigen."""
         pu = self.settings.pop("post_update", None)
         if not pu:
             return
         save(SETTINGS_FILE, self.settings)
-        self.write_log(L(f"UPDATED TO v{pu.get('version', VERSION)} // WHAT'S NEW",
-                         f"AKTUALISIERT AUF v{pu.get('version', VERSION)} // DAS IST NEU"), "ok")
-        for line in (pu.get("notes") or "").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith("#"):
-                self.write_log("// " + line.lstrip("#").strip().upper(), "sep")
-            else:
-                self.write_log("• " + line.lstrip("-* ").strip(), "info")
+        version = pu.get("version", VERSION)
+        self.write_log(L(f"UPDATED TO v{version}", f"AKTUALISIERT AUF v{version}"), "ok")
+        self.after(400, lambda: self.winfo_exists() and WhatsNewDialog(self, version, pu.get("notes") or ""))
 
     def cleanup_tick(self):
         # alte exe nach einem Update löschen; sie ist ggf. noch ein paar Sekunden gesperrt
@@ -6399,7 +6504,7 @@ class App(tk.Tk):
             self.write_log(L(f"UPDATE FAILED // {err} // THE CURRENT VERSION STAYS",
                              f"UPDATE FEHLGESCHLAGEN // {err} // DIE AKTUELLE VERSION BLEIBT"), "err")
             return
-        # Changelog einmalig nach dem Neustart im Protokoll zeigen
+        # Changelog einmalig nach dem Neustart in einem Fenster zeigen
         self.settings["post_update"] = {"version": self.header.update[0],
                                         "notes": getattr(self, "update_notes", "")}
         save(SETTINGS_FILE, self.settings)

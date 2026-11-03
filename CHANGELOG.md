@@ -7,6 +7,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 - SCAN button: loads all videos and titles of the channel without creating or changing any playlist. This makes SUGGESTIONS and custom lists usable right away, for example with a new channel.
+- Quota reserve: Chronolist counts the API units it uses and stops a little early, so 20 units are always left to add or change a channel. The count is an estimate (other programs in the same Google project are not counted).
+
+### Changed
+- After an update, the release notes appear once in their own window instead of in the log.
+- Years without any videos (for example before a channel's first upload) are skipped and deselected instead of stopping the run.
 
 ## [3.0.1] - 2026-11-01
 
