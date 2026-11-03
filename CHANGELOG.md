@@ -5,10 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-11-03
+
 ### Added
 - AUTO-CHECK card in the main window: while Chronolist is open it looks for new videos by itself. When it is on, every card (year or custom list) shows an AUTO switch; only cards with AUTO on are kept up to date. It uses only a few API units, is skipped when the quota is used up and never opens the browser.
 - Schedule for the AUTO-CHECK in the PROGRAM settings: either an interval (30 minutes, 1, 2 or 6 hours, or your own value in multiples of 5, at least 15 minutes) or up to four fixed times per day.
-- MINIMIZED in the PROGRAM settings: when Chronolist starts with Windows, the window opens minimized in the taskbar.
+- START MINIMIZED in the PROGRAM settings: when Chronolist starts with Windows, the window opens minimized in the taskbar.
 
 ### Changed
 - The main window's option cards are now AUTO-CHECK, FALLBACK, PLAYLISTS and PROGRAM.
@@ -162,7 +164,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/LooneyN/chronolist/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/LooneyN/chronolist/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/LooneyN/chronolist/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/LooneyN/chronolist/compare/v2.11.0...v3.0.0
