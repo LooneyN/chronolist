@@ -102,7 +102,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.3.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 141
+BUILD = 142
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -4659,7 +4659,7 @@ class NCDialog(tk.Toplevel):
             e.pack(fill="x", padx=pad, pady=(px(4), px(12)), ipady=px(6))
             self.vars[key] = v
         if hint:
-            tk.Label(self, text=hint, bg=BG, fg=FLUFF, font=F("mono", 10, False), justify="left",
+            tk.Label(self, text=hint, bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), justify="left",
                      anchor="w", wraplength=px(520)).pack(fill="x", padx=pad, pady=(0, px(10)))
         row = tk.Frame(self, bg=BG)
         row.pack(fill="x", padx=pad, pady=(0, pad))
@@ -4699,7 +4699,7 @@ class ChannelDialog(tk.Toplevel):
                               "A channel you used before is restored without the API.",
                               "BEISPIELE: @KANALNAME // YOUTUBE.COM/@KANALNAME // UC...\n"
                               "Ein schon benutzter Kanal wird ohne API wiederhergestellt."),
-                 bg=BG, fg=FLUFF, font=F("mono", 10, False), justify="left", anchor="w",
+                 bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), justify="left", anchor="w",
                  wraplength=px(520)).pack(fill="x", padx=pad, pady=(0, px(12)))
         blocked = bool(quota_blocked("units")) and not reserve_only()
         self.toggle = tk.Label(self, bg=BG, fg=YELLOW if blocked else CYAN, font=F("mono", 11), anchor="w",
@@ -4719,7 +4719,7 @@ class ChannelDialog(tk.Toplevel):
         self.field(self.manual, "m_id", L("CHANNEL ID (UC...)", "KANAL-ID (UC...)"), "", pad)
         tk.Label(self.manual, text=L("On the channel page: More about this channel -> Share channel -> Copy channel ID",
                                      "Auf der Kanalseite: More about this channel -> Share channel -> Copy channel ID"),
-                 bg=BG, fg=FLUFF, font=F("mono", 10, False), justify="left", anchor="w",
+                 bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), justify="left", anchor="w",
                  wraplength=px(520)).pack(fill="x", padx=pad, pady=(0, px(12)))
         self.field(self.manual, "m_title", L("NAME (OPTIONAL)", "NAME (OPTIONAL)"), "", pad)
         self.field(self.manual, "m_year", L("FIRST YEAR OF THE CHANNEL", "STARTJAHR DES KANALS"), "", pad, width=8,
@@ -6386,7 +6386,7 @@ class ListDialog(tk.Toplevel):
             e.pack(side="left", ipady=px(4))
         tk.Label(left, text=L("UPPER/LOWER CASE IS IGNORED. A TERM MATCHES ANYWHERE IN THE TITLE.",
                               "GROSS-/KLEINSCHREIBUNG ZÄHLT NICHT. EIN BEGRIFF PASST ÜBERALL IM TITEL."),
-                 bg=BG, fg=FLUFF, font=F("mono", 10, False), anchor="w", justify="left", wraplength=px(420)).pack(fill="x", pady=(0, px(8)))
+                 bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w", justify="left", wraplength=px(420)).pack(fill="x", pady=(0, px(8)))
 
         self.rule_sum = tk.Label(left, text="", bg=BG, fg=TEXT_DIM, font=F("mono", 11, False), anchor="w", justify="left",
                                  wraplength=px(420))
@@ -6762,7 +6762,7 @@ class LoginPanel(Panel):
         code = self.create_text(x + px(110), y0 + px(80), text=self.code, anchor="w", font=F("mono", 24),
                                 fill=YELLOW)
         hint = self.create_text(self.bbox(code)[2] + px(14), y0 + px(82), text=L("CLICK TO COPY", "KLICKEN ZUM KOPIEREN"), anchor="w",
-                                font=F("mono", 10, False), fill=FLUFF)
+                                font=F("mono", 11, False), fill=TEXT_MUTED)
         for item in (code, hint):
             self.tag_bind(item, "<Button-1>", lambda e: self.copied(hint))
             self.tag_bind(item, "<Enter>", lambda e: (self.configure(cursor="hand2"),
@@ -6773,7 +6773,7 @@ class LoginPanel(Panel):
     def copied(self, hint):
         self.on_copy()
         self.itemconfigure(hint, text=L("COPIED ✓", "KOPIERT ✓"), fill=GREEN)
-        self.after(1500, lambda: self.itemconfigure(hint, text=L("CLICK TO COPY", "KLICKEN ZUM KOPIEREN"), fill=FLUFF))
+        self.after(1500, lambda: self.itemconfigure(hint, text=L("CLICK TO COPY", "KLICKEN ZUM KOPIEREN"), fill=TEXT_MUTED))
 
 
 class CutButton(tk.Canvas):

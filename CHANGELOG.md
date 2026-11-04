@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+- Hint texts in the channel dialog, the API setup and the list editor now use the same readable color as the settings.
+
 ## [3.2.0] - 2026-11-03
 
 ### Added
