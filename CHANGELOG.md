@@ -6,8 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
-- Quota display in the header: API units Chronolist used today out of 10,000, as a number and a thin bar (yellow above 80 %, red with the reset time when the quota is used up).
-- Cards with AUTO show when the AUTO-CHECK last ran and how many videos it added (e.g. "LAST CHECK 14:02 // +2 NEW").
+- API QUOTA display in the header: API units Chronolist used today out of 10,000, as a number and a thin bar (yellow above 80 %, red with the reset time when the quota is used up).
+- Cards with AUTO show next to the AUTO switch when the AUTO-CHECK last ran and how many videos it added (e.g. "LAST CHECK 14:02 // +2 NEW").
 - NEW VIDEO ALERT in the PROGRAM settings: when the AUTO-CHECK added videos, the taskbar icon flashes, and Windows shows a notification if Chronolist is minimized or in the background. Can be switched off.
 
 ### Changed

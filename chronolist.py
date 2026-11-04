@@ -103,7 +103,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.3.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 143
+BUILD = 144
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -4355,6 +4355,13 @@ class YearRow(Panel):
         self.auto_geo = None
         if AUTO_SHOW:
             name_w -= self.draw_auto(tx - px(14), y0 + h * 0.32, on, faded) + px(10)
+            rec = AUTO_LAST.get(str(self.year)) if auto_on(self.year) else None
+            if rec and not self.running:
+                # neben dem AUTO-Schalter, nur wenn der Name daneben noch ganz Platz hat
+                need = tkfont.Font(font=F("ui", 16)).measure(year_label(self.year)) + px(16)
+                used = self.draw_last_check(rec, nx + name_w, y0 + h * 0.32, nx + need, faded)
+                if used:
+                    name_w -= used + px(12)
         self.create_text(nx, y0 + h * 0.32, text=fit_text(year_label(self.year), F("ui", 16), name_w), anchor="w",
                          font=F("ui", 16),
                          fill=TEXT if on else mix(TEXT_DIM, BG, 0.5) if faded else mix(TEXT_DIM, BG, 0.75))
@@ -4364,9 +4371,6 @@ class YearRow(Panel):
                 else mix(role, BG, 0.55) if faded else mix(TEXT_MUTED, BG, 0.65))
         item = self.create_text(nx, y0 + h * 0.62, text=text, anchor="w", font=F("mono", 11), fill=scol,
                                 tags="stat")
-        rec = AUTO_LAST.get(str(self.year)) if AUTO_SHOW and auto_on(self.year) else None
-        if rec and not self.running and not self.activity:
-            self.draw_last_check(rec, tx - px(14), y0 + h * 0.62, self.bbox(item)[2] + px(14), faded)
         self.last_label = text
         if blinking:
             self.blink = (item, scol)
@@ -4408,19 +4412,21 @@ class YearRow(Panel):
         t = datetime.datetime.fromtimestamp(rec.get("t", 0))
         when = t.strftime("%H:%M") if t.date() == datetime.date.today() else t.strftime("%d.%m. %H:%M")
         new = int(rec.get("new", 0))
-        fnt = F("mono", 10, False)
+        fnt = F("mono", 10)
         f = tkfont.Font(font=fnt)
         main = L("LAST CHECK ", "ZULETZT ") + when
         extra = f"  //  +{new} NEW" if new else ""
         if LANG == "de" and new:
             extra = f"  //  +{new} NEU"
-        if xr - f.measure(main + extra) < min_x:
-            return                          # kein Platz neben dem Status
-        dim = mix(TEXT_MUTED, BG, 0.75 if not faded else 0.55)
+        width = f.measure(main + extra)
+        if xr - width < min_x:
+            return 0                        # kein Platz neben dem Namen
+        dim = TEXT_MUTED if not faded else mix(TEXT_MUTED, BG, 0.7)
         if extra:
             e = self.create_text(xr, cy, text=extra, anchor="e", font=fnt, fill=GREEN if not faded else mix(GREEN, BG, 0.6))
             xr = self.bbox(e)[0]
         self.create_text(xr, cy, text=main, anchor="e", font=fnt, fill=dim)
+        return width
 
     def draw_auto(self, xr, cy, on, faded):
         """AUTO-Schalter: kleines Feld mit LED und Text, rechts in der Namenszeile. An = cyan wie die Karte
@@ -5661,7 +5667,7 @@ HELP_TEXT_DE = [
            "Gelb LIMIT: Das Tageskontingent ist aufgebraucht.\n"
            "Grün ONLINE: Alles funktioniert."),
     ("dt", "Kontingent"),
-    ("dd", "Links neben HILFE: wie viele API-Einheiten Chronolist heute verbraucht hat, von 10000. Cyan bis 80 %, "
+    ("dd", "API-KONTINGENT links neben HILFE: wie viele API-Einheiten Chronolist heute verbraucht hat, von 10000. Cyan bis 80 %, "
            "gelb darüber, rot, wenn das Kontingent aufgebraucht oder nur noch die Reserve übrig ist; dann steht dort, "
            "wann es zurückgesetzt wird. Das ist eine Schätzung: andere Programme im selben Google-Projekt zählen "
            "nicht mit."),
@@ -5755,7 +5761,7 @@ HELP_TEXT_DE = [
            "Jede Prüfung kostet nur wenige API-Einheiten und entfällt, wenn das Kontingent aufgebraucht ist. Läuft "
            "gerade ein anderer Durchlauf, wartet sie. Sie öffnet nie den Browser (kein FALLBACK). Voraussetzung: "
            "Chronolist ist schon einmal angemeldet und die Videos des Jahres sind schon gesucht.\n"
-           "Auf jeder Karte mit AUTO steht rechts, wann zuletzt geprüft wurde, und wie viele Videos dabei dazukamen "
+           "Auf jeder Karte mit AUTO steht neben dem AUTO-Schalter, wann zuletzt geprüft wurde, und wie viele Videos dabei dazukamen "
            "(z. B. ZULETZT 14:02 // +2 NEU).\n"
            "Hinweis bei neuen Videos (unter PROGRAMM ein- und ausschaltbar): Hat die Prüfung etwas ergänzt, blinkt "
            "das Taskleisten-Symbol. Ist Chronolist minimiert oder im Hintergrund, zeigt Windows zusätzlich eine "
@@ -5908,7 +5914,7 @@ HELP_TEXT_EN = [
            "Yellow LIMIT: the daily quota is used up.\n"
            "Green ONLINE: everything works."),
     ("dt", "Quota"),
-    ("dd", "Left of HELP: how many API units Chronolist used today, out of 10000. Cyan up to 80 %, yellow above, red "
+    ("dd", "API QUOTA left of HELP: how many API units Chronolist used today, out of 10000. Cyan up to 80 %, yellow above, red "
            "when the quota is used up or only the reserve is left; then it shows when it resets. This is an estimate: "
            "other programs in the same Google project are not counted."),
     ("dt", "Status display"),
@@ -5996,7 +6002,7 @@ HELP_TEXT_EN = [
            "A check costs only a few API units and is skipped when the quota is used up. If another run is active it "
            "waits. It never opens the browser (no FALLBACK). It needs a finished sign-in and a year whose videos were "
            "already scanned.\n"
-           "Every card with AUTO shows on the right when it was last checked and how many videos were added (e.g. "
+           "Every card with AUTO shows next to the AUTO switch when it was last checked and how many videos were added (e.g. "
            "LAST CHECK 14:02 // +2 NEW).\n"
            "New video alert (can be switched off under PROGRAM): when a check added videos, the taskbar icon flashes. "
            "If Chronolist is minimized or in the background, Windows also shows a notification."),
@@ -7049,7 +7055,7 @@ class YearSection(Section):
 
 class QuotaMeter(tk.Canvas):
     """Kopfzeile: heute verbrauchtes API-Kontingent (Schätzung von Chronolist) als Zahl und dünner Balken."""
-    W = 178
+    W = 220
 
     def __init__(self, master):
         super().__init__(master, width=px(self.W), height=px(36), bg=BG, highlightthickness=0, bd=0)
@@ -7070,7 +7076,7 @@ class QuotaMeter(tk.Canvas):
         ratio = min(1.0, used / QUOTA_DAILY)
         col = RED if b else YELLOW if ratio >= 0.8 else CYAN
         y = px(11)
-        self.create_text(0, y, text=L("QUOTA //", "KONTINGENT //"), anchor="w", font=F("mono", 10, False), fill=TEXT_MUTED)
+        self.create_text(0, y, text=L("API QUOTA //", "API-KONTINGENT //"), anchor="w", font=F("mono", 10, False), fill=TEXT_MUTED)
         right = (L("RESET ", "RESET ") + b.astimezone().strftime("%H:%M")) if b else f"{used} / {QUOTA_DAILY}"
         self.create_text(w, y, text=right, anchor="e", font=F("mono", 11), fill=col)
         by = px(25)
