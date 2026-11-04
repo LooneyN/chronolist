@@ -27,6 +27,7 @@ import queue
 import random
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -102,7 +103,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.3.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 142
+BUILD = 143
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -285,6 +286,61 @@ def next_time_at(times, now=None):
         if best is None or cand < best:
             best = cand
     return best.timestamp() if best else now + 3600
+
+
+AUTO_LAST = {}           # letzte Auto-Prüfung pro Karte (Schlüssel als Text): {"t": Unix-Zeit, "new": neue Videos}
+
+
+def load_auto_last():
+    AUTO_LAST.clear()
+    d = load(autocheck_file(), {})
+    if isinstance(d, dict):
+        AUTO_LAST.update(d)
+
+
+def flash_taskbar(win):
+    """Taskleisten-Symbol blinken lassen, bis das Fenster wieder vorne ist (nur Windows)."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class FLASHWINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("hwnd", wintypes.HWND), ("dwFlags", wintypes.DWORD),
+                        ("uCount", wintypes.UINT), ("dwTimeout", wintypes.DWORD)]
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        fi = FLASHWINFO(ctypes.sizeof(FLASHWINFO), hwnd, 0x2 | 0xC, 0, 0)    # FLASHW_TRAY | FLASHW_TIMERNOFG
+        ctypes.windll.user32.FlashWindowEx(ctypes.byref(fi))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def windows_toast(title, text):
+    """Windows-Benachrichtigung ohne Zusatzbibliothek (über die Windows-PowerShell). Fehler werden ignoriert."""
+    if os.name != "nt":
+        return
+
+    def q(v):
+        return str(v).replace("'", "''")
+    ps = ("$null=[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];"
+          "$x=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
+          "[Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
+          "$t=$x.GetElementsByTagName('text');"
+          f"$null=$t.Item(0).AppendChild($x.CreateTextNode('{q(title)}'));"
+          f"$null=$t.Item(1).AppendChild($x.CreateTextNode('{q(text)}'));"
+          "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("
+          "'{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe')"
+          ".Show([Windows.UI.Notifications.ToastNotification]::new($x))")
+
+    def run():
+        try:
+            subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                            "-Command", ps], creationflags=0x08000000, timeout=30,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:  # noqa: BLE001
+            pass
+    threading.Thread(target=run, daemon=True).start()
 
 
 AUTO_SHOW = False        # AUTO-CHECK eingeschaltet: Karten zeigen den AUTO-Schalter
@@ -492,6 +548,7 @@ def removed_by_year():
 # Titel gewählt werden. Gespeichert pro Kanal in lists.json; der Schlüssel "k_<id>" steht dort,
 # wo bei Jahren die Jahreszahl steht (videos_k_<id>.json, state_k_<id>.json).
 def lists_file(): return CHAN_DIR / "lists.json"
+def autocheck_file(): return CHAN_DIR / "autocheck.json"   # letzte Auto-Prüfung pro Karte: {key: {t, new}}
 def view_file(): return CHAN_DIR / "view.json"     # Kanal-Info und Ansicht (Auswahl, Reihenfolge, HIDE DONE)
 
 
@@ -1763,6 +1820,10 @@ class Worker(threading.Thread):
                        f"AUTO-PRÜFUNG ÜBERSPRUNGEN // KONTINGENT BIS {quota_reset_local()} AUFGEBRAUCHT"), "warn")
             return
         keys = [y for y in self.years if is_list_key(y)]
+        before = {}
+        for k in self.years:
+            v = load(videos_file(k), None)
+            before[k] = None if v is None else len(v)      # nie abgeglichene Liste: nichts als "neu" zählen
         for y in YEARS:
             if not growing(y) or load(videos_file(y), None) is None:
                 continue
@@ -1775,7 +1836,15 @@ class Worker(threading.Thread):
             if y in self.years:
                 self.fill(y, videos)
         self.run_lists(keys)
-        self.log(L("AUTO-CHECK DONE", "AUTO-PRÜFUNG FERTIG"), "ok")
+        result = {}
+        for k in self.years:
+            after = len(load(videos_file(k), None) or [])
+            result[k] = 0 if before[k] is None else max(0, after - before[k])
+        self.emit("auto_result", result)
+        total = sum(result.values())
+        self.log(L(f"AUTO-CHECK DONE // {total} NEW VIDEO{'S' if total != 1 else ''}",
+                   f"AUTO-PRÜFUNG FERTIG // {total} NEUE{'S' if total == 1 else ''} VIDEO{'S' if total != 1 else ''}"),
+                 "ok")
 
     # --- Login
     def device_login(self):
@@ -4295,6 +4364,9 @@ class YearRow(Panel):
                 else mix(role, BG, 0.55) if faded else mix(TEXT_MUTED, BG, 0.65))
         item = self.create_text(nx, y0 + h * 0.62, text=text, anchor="w", font=F("mono", 11), fill=scol,
                                 tags="stat")
+        rec = AUTO_LAST.get(str(self.year)) if AUTO_SHOW and auto_on(self.year) else None
+        if rec and not self.running and not self.activity:
+            self.draw_last_check(rec, tx - px(14), y0 + h * 0.62, self.bbox(item)[2] + px(14), faded)
         self.last_label = text
         if blinking:
             self.blink = (item, scol)
@@ -4330,6 +4402,25 @@ class YearRow(Panel):
             self.create_rectangle(0, 0, 0, 0, fill=mix("#ffffff", role, 0.6), outline="", tags="pkt")
         if self.running:
             self.tick(time.time())
+
+    def draw_last_check(self, rec, xr, cy, min_x, faded):
+        """Rechts in der Statuszeile: wann die Auto-Prüfung zuletzt lief und wie viele Videos dazukamen."""
+        t = datetime.datetime.fromtimestamp(rec.get("t", 0))
+        when = t.strftime("%H:%M") if t.date() == datetime.date.today() else t.strftime("%d.%m. %H:%M")
+        new = int(rec.get("new", 0))
+        fnt = F("mono", 10, False)
+        f = tkfont.Font(font=fnt)
+        main = L("LAST CHECK ", "ZULETZT ") + when
+        extra = f"  //  +{new} NEW" if new else ""
+        if LANG == "de" and new:
+            extra = f"  //  +{new} NEU"
+        if xr - f.measure(main + extra) < min_x:
+            return                          # kein Platz neben dem Status
+        dim = mix(TEXT_MUTED, BG, 0.75 if not faded else 0.55)
+        if extra:
+            e = self.create_text(xr, cy, text=extra, anchor="e", font=fnt, fill=GREEN if not faded else mix(GREEN, BG, 0.6))
+            xr = self.bbox(e)[0]
+        self.create_text(xr, cy, text=main, anchor="e", font=fnt, fill=dim)
 
     def draw_auto(self, xr, cy, on, faded):
         """AUTO-Schalter: kleines Feld mit LED und Text, rechts in der Namenszeile. An = cyan wie die Karte
@@ -5137,8 +5228,10 @@ class AppSettingsDialog(tk.Toplevel):
         self.transient(app)
         self.resizable(False, False)
         pad = px(18)
-        body = tk.Frame(self, bg=BG)
-        body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
+        # scrollt, falls der Bildschirm zu niedrig ist (z. B. 1080p bei großer Textgröße)
+        self.area = ScrollArea(self, autohide=True)
+        self.area.pack(fill="both", expand=True, padx=(pad, pad - px(12)), pady=(pad, 0))
+        body = self.area.inner
 
         W = 524                                   # Inhaltsbreite: alle Knopfreihen und Karten enden bündig
 
@@ -5228,8 +5321,19 @@ class AppSettingsDialog(tk.Toplevel):
         self.set_interval(self.auto_interval)
         self.iv_note = tk.Label(body, text="", bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w",
                                 justify="left", wraplength=px(W))
-        self.iv_note.pack(fill="x", pady=(px(8), px(18)))
+        self.iv_note.pack(fill="x", pady=(px(8), px(10)))
         self.set_mode(self.auto_mode)
+        self.alerts = app.alerts
+        self.alert_card = ToggleCard(body, L("NEW VIDEO ALERT", "HINWEIS BEI NEUEN VIDEOS"),
+                                     L("FLASH THE TASKBAR AND SHOW A WINDOWS NOTIFICATION",
+                                       "TASKLEISTE BLINKT, WINDOWS-BENACHRICHTIGUNG"),
+                                     self.alerts, self.toggle_alerts, compact=True)
+        self.alert_card.pack(fill="x", pady=(0, px(18)))
+        Tooltip(self.alert_card, L("When the AUTO-CHECK has added new videos, the taskbar icon flashes. If Chronolist "
+                                   "is minimized or in the background, Windows also shows a notification.",
+                                   "Hat die AUTO-PRÜFUNG neue Videos ergänzt, blinkt das Taskleisten-Symbol. Ist "
+                                   "Chronolist minimiert oder im Hintergrund, zeigt Windows zusätzlich eine "
+                                   "Benachrichtigung."))
 
         Section(body, L("START", "START"), "SYSTEM // BOOT").pack(fill="x", pady=(0, px(8)))
         self.autorun = app.autorun
@@ -5272,12 +5376,14 @@ class AppSettingsDialog(tk.Toplevel):
                                  "Sonst wird nichts übertragen."))
 
         row = tk.Frame(self, bg=BG)
-        row.pack(fill="x", padx=pad, pady=pad)
+        row.pack(side="bottom", fill="x", padx=pad, pady=pad, before=self.area)
         CutButton(row, L("SAVE", "SPEICHERN"), self.save, width=120).pack(side="left")
         CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<Return>", lambda e: self.save())
-        self.geometry(fit(px(560), px(880)))
+        self.update_idletasks()
+        need = body.winfo_reqheight() + row.winfo_reqheight() + 3 * pad
+        self.geometry(fit(px(560), need))
         style_window(self)
         self.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
@@ -5403,6 +5509,10 @@ class AppSettingsDialog(tk.Toplevel):
                                   f"VERWENDEN. ES GILT DAS LETZTE GÜLTIGE INTERVALL ({interval_label(self.auto_interval)})."),
             fg=TEXT_MUTED if ok or not v else RED)
 
+    def toggle_alerts(self):
+        self.alerts = not self.alerts
+        self.alert_card.update_value(self.alerts)
+
     def toggle_boot(self):
         self.boot = not self.boot
         self.boot_card.update_value(self.boot)
@@ -5429,8 +5539,9 @@ class AppSettingsDialog(tk.Toplevel):
         self.app.auto_next = self.app.plan_auto(first=True)
         self.app.auto_card.sub = self.app.auto_sub()
         self.app.auto_card.redraw()
+        self.app.alerts = self.alerts
         st.update(auto_interval=self.auto_interval, auto_mode=self.auto_mode, auto_times=times,
-                  start_minimized=self.minimized)
+                  start_minimized=self.minimized, alerts=self.alerts)
         st["autorun"] = self.autorun
         lang_changed = self.language != LANG
         size_changed = self.ui_scale != st.get("ui_scale", UI_SCALE_DEFAULT)
@@ -5549,6 +5660,11 @@ HELP_TEXT_DE = [
            "Blau ANMELDEN: Zugangsdaten sind da, angemeldet bist du aber noch nicht.\n"
            "Gelb LIMIT: Das Tageskontingent ist aufgebraucht.\n"
            "Grün ONLINE: Alles funktioniert."),
+    ("dt", "Kontingent"),
+    ("dd", "Links neben HILFE: wie viele API-Einheiten Chronolist heute verbraucht hat, von 10000. Cyan bis 80 %, "
+           "gelb darüber, rot, wenn das Kontingent aufgebraucht oder nur noch die Reserve übrig ist; dann steht dort, "
+           "wann es zurückgesetzt wird. Das ist eine Schätzung: andere Programme im selben Google-Projekt zählen "
+           "nicht mit."),
     ("dt", "Statusanzeige"),
     ("dd", "Zeigt, was das Programm gerade macht, zum Beispiel BEREIT, LÄUFT, BROWSER-MODUS (läuft über das "
            "Edge-Fenster), PAUSIERT oder eine Wartezeit mit Countdown."),
@@ -5638,7 +5754,12 @@ HELP_TEXT_DE = [
            "Lauf, wird die Prüfung direkt danach nachgeholt.\n"
            "Jede Prüfung kostet nur wenige API-Einheiten und entfällt, wenn das Kontingent aufgebraucht ist. Läuft "
            "gerade ein anderer Durchlauf, wartet sie. Sie öffnet nie den Browser (kein FALLBACK). Voraussetzung: "
-           "Chronolist ist schon einmal angemeldet und die Videos des Jahres sind schon gesucht."),
+           "Chronolist ist schon einmal angemeldet und die Videos des Jahres sind schon gesucht.\n"
+           "Auf jeder Karte mit AUTO steht rechts, wann zuletzt geprüft wurde, und wie viele Videos dabei dazukamen "
+           "(z. B. ZULETZT 14:02 // +2 NEU).\n"
+           "Hinweis bei neuen Videos (unter PROGRAMM ein- und ausschaltbar): Hat die Prüfung etwas ergänzt, blinkt "
+           "das Taskleisten-Symbol. Ist Chronolist minimiert oder im Hintergrund, zeigt Windows zusätzlich eine "
+           "Benachrichtigung."),
     ("dt", "PLAYLISTS"),
     ("dd", "Titel und Beschreibung: Du kannst Platzhalter verwenden, die beim Anlegen ersetzt werden. {channel} wird "
            "zum Kanalnamen, {handle} zum @Handle, {year} zum Jahr und {count} zur Anzahl der Videos in diesem Jahr. "
@@ -5786,6 +5907,10 @@ HELP_TEXT_EN = [
            "Blue SIGN IN: credentials are set, but you're not signed in yet.\n"
            "Yellow LIMIT: the daily quota is used up.\n"
            "Green ONLINE: everything works."),
+    ("dt", "Quota"),
+    ("dd", "Left of HELP: how many API units Chronolist used today, out of 10000. Cyan up to 80 %, yellow above, red "
+           "when the quota is used up or only the reserve is left; then it shows when it resets. This is an estimate: "
+           "other programs in the same Google project are not counted."),
     ("dt", "Status display"),
     ("dd", "Shows what the program is doing, for example STANDBY, RUNNING, BROWSER UPLINK (running through the Edge "
            "window), PAUSED or a waiting time with a countdown."),
@@ -5870,7 +5995,11 @@ HELP_TEXT_EN = [
            "time falls into another run, the check follows right after it.\n"
            "A check costs only a few API units and is skipped when the quota is used up. If another run is active it "
            "waits. It never opens the browser (no FALLBACK). It needs a finished sign-in and a year whose videos were "
-           "already scanned."),
+           "already scanned.\n"
+           "Every card with AUTO shows on the right when it was last checked and how many videos were added (e.g. "
+           "LAST CHECK 14:02 // +2 NEW).\n"
+           "New video alert (can be switched off under PROGRAM): when a check added videos, the taskbar icon flashes. "
+           "If Chronolist is minimized or in the background, Windows also shows a notification."),
     ("dt", "PLAYLISTS"),
     ("dd", "Title and description: you can use placeholders that are filled in when the playlist is created. "
            "{channel} becomes the channel name, {handle} the @handle, {year} the year and {count} the number of "
@@ -6918,10 +7047,56 @@ class YearSection(Section):
             self.create_line(x, y, right, y, fill=RED_MILD)
 
 
+class QuotaMeter(tk.Canvas):
+    """Kopfzeile: heute verbrauchtes API-Kontingent (Schätzung von Chronolist) als Zahl und dünner Balken."""
+    W = 178
+
+    def __init__(self, master):
+        super().__init__(master, width=px(self.W), height=px(36), bg=BG, highlightthickness=0, bd=0)
+        self.last = None
+        Tooltip(self, self.tip)
+        self.bind("<Configure>", lambda e: self.redraw(force=True))
+
+    def redraw(self, force=False):
+        used, b = quota_used(), quota_blocked("units")
+        key = (used, b.timestamp() if b else None, LANG)
+        if key == self.last and not force:
+            return
+        self.last = key
+        self.delete("all")
+        w = self.winfo_width()
+        if w <= 1:
+            w = px(self.W)
+        ratio = min(1.0, used / QUOTA_DAILY)
+        col = RED if b else YELLOW if ratio >= 0.8 else CYAN
+        y = px(11)
+        self.create_text(0, y, text=L("QUOTA //", "KONTINGENT //"), anchor="w", font=F("mono", 10, False), fill=TEXT_MUTED)
+        right = (L("RESET ", "RESET ") + b.astimezone().strftime("%H:%M")) if b else f"{used} / {QUOTA_DAILY}"
+        self.create_text(w, y, text=right, anchor="e", font=F("mono", 11), fill=col)
+        by = px(25)
+        self.create_rectangle(0, by, w, by + px(3), fill=mix(col, BG, 0.22), outline="")
+        fx = w if b else w * ratio
+        if fx > 0:
+            self.create_rectangle(0, by, fx, by + px(3), fill=col, outline="")
+
+    def tip(self):
+        reset = quota_reset_local()
+        if quota_blocked("units"):
+            return L(f"The daily API quota is used up (or only Chronolist's reserve of {QUOTA_RESERVE} units is left). "
+                     f"It resets {reset}.",
+                     f"Das tägliche API-Kontingent ist aufgebraucht (oder nur noch die Reserve von {QUOTA_RESERVE} "
+                     f"Einheiten übrig). Es wird {reset} zurückgesetzt.")
+        return L(f"API units Chronolist used today: about {quota_used()} of {QUOTA_DAILY}. This is an estimate: other "
+                 f"programs in the same Google project are not counted. Resets {reset}.",
+                 f"Heute von Chronolist verbrauchte API-Einheiten: etwa {quota_used()} von {QUOTA_DAILY}. Das ist "
+                 f"eine Schätzung: andere Programme im selben Google-Projekt zählen nicht mit. Reset {reset}.")
+
+
 class Header(tk.Canvas):
     def __init__(self, master):
         super().__init__(master, height=px(88), bg=BG, highlightthickness=0, bd=0)
         self.chip = StatusChip(self)
+        self.quota = QuotaMeter(self)
         self.api_btn = None      # wird von der App gesetzt
         self.help_btn = None
         self.upd_btn = None      # grüner UPDATE-Knopf, von der App gesetzt
@@ -7007,13 +7182,11 @@ class Header(tk.Canvas):
         bb = self.bbox("buildtxt")
         if bb and bb[2] > bx + px(8):
             self.delete("buildtxt")
-        # Deko nur, wenn neben dem Titel Platz ist
-        if bx - px(110) > self.title_end:
-            for bw in (1, 3, 1, 2, 1, 1, 3, 1, 2, 1):
-                self.create_rectangle(bx - px(bw), px(30), bx, px(60), fill=RED_MILD, outline="")
-                bx -= px(bw) + px(2)
-            self.create_text(bx - px(10), px(45), text="01101001\n01010000", anchor="e", justify="right",
-                             font=F("mono", 10, False), fill=FLUFF)
+        # Kontingent-Anzeige (statt der früheren Deko), nur wenn neben dem Titel Platz ist
+        qw = px(QuotaMeter.W)
+        if bx - qw - px(10) > self.title_end:
+            self.create_window(bx, px(46), window=self.quota, anchor="e", width=qw, height=px(36))
+            self.quota.redraw(force=True)
 
         yb = h - px(4)
         self.create_line(px(18), yb, w - px(18), yb, fill=RED_MILD)
@@ -7041,8 +7214,9 @@ class Footer(tk.Canvas):
 
 
 class ScrollArea(tk.Frame):
-    def __init__(self, master):
+    def __init__(self, master, autohide=False):
         super().__init__(master, bg=BG)
+        self.autohide = autohide
         self.canvas = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0, yscrollincrement=px(20))
         self.sb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview,
                                 style="NC.Vertical.TScrollbar")
@@ -7053,8 +7227,13 @@ class ScrollArea(tk.Frame):
         self.sb.grid(row=0, column=1, sticky="ns", padx=(px(6), 0))
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
-        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self.win, width=e.width))
+        self.inner.bind("<Configure>", lambda e: (self.canvas.configure(scrollregion=self.canvas.bbox("all")),
+                                                  self._autohide()))
+        self.canvas.bind("<Configure>", lambda e: (self.canvas.itemconfigure(self.win, width=e.width),
+                                                   self._autohide()))
+        if autohide:
+            # Platz für die Scrollbar bleibt immer frei, damit sich die Breite des Inhalts nie ändert
+            self.columnconfigure(1, minsize=px(12))
         self._is_scrollarea = True
         root = self.winfo_toplevel()._root()
         if not getattr(root, "_wheel_dispatch", False):
@@ -7064,6 +7243,15 @@ class ScrollArea(tk.Frame):
             root.bind_all("<MouseWheel>", lambda e: ScrollArea._dispatch(e, int(-e.delta / 120)), add="+")
             root.bind_all("<Button-4>", lambda e: ScrollArea._dispatch(e, -1), add="+")
             root.bind_all("<Button-5>", lambda e: ScrollArea._dispatch(e, 1), add="+")
+
+    def _autohide(self):
+        if not self.autohide:
+            return
+        if self.inner.winfo_reqheight() > self.canvas.winfo_height() + 1:
+            self.sb.grid()
+        else:
+            self.sb.grid_remove()
+            self.canvas.yview_moveto(0)
 
     @staticmethod
     def _dispatch(e, steps):
@@ -7300,6 +7488,8 @@ class App(tk.Tk):
         AUTO_SHOW = self.auto_check
         AUTO_YEARS.clear()
         AUTO_YEARS.update(y for y in self.settings.get("auto_years", []) if isinstance(y, int))
+        load_auto_last()
+        self.alerts = bool(self.settings.get("alerts", True))
         self.auto_card = ToggleCard(opts, "AUTO-CHECK", self.auto_sub(), self.auto_check,
                                     self.toggle_auto_check, compact=True)
         self.auto_card.grid(row=0, column=0, sticky="ew", padx=(0, px(3)), pady=(0, px(4)))
@@ -7401,6 +7591,7 @@ class App(tk.Tk):
         if "--minimized" in sys.argv:
             self.after(400, self.iconify)
         self.after(30000, self.auto_tick)
+        self.after(2000, self.quota_tick)
 
     # --- Einstellungen
     def selected_years(self):
@@ -7574,6 +7765,36 @@ class App(tk.Tk):
         if key in self.rows:
             self.rows[key].redraw()
         self.save_settings()
+
+    def auto_result(self, result):
+        """Ergebnis einer Auto-Prüfung: pro Karte merken (LAST CHECK) und bei neuen Videos Bescheid geben."""
+        now = time.time()
+        for k, n in result.items():
+            AUTO_LAST[str(k)] = {"t": now, "new": int(n)}
+        save(autocheck_file(), AUTO_LAST)
+        for k in result:
+            if k in self.rows:
+                self.rows[k].redraw()
+        total = sum(result.values())
+        if total and self.alerts:
+            names = [year_label(k) for k, n in result.items() if n]
+            text = L(f"{total} new video{'s' if total != 1 else ''} added: {', '.join(names)}",
+                     f"{total} neue{'s' if total == 1 else ''} Video{'s' if total != 1 else ''} ergänzt: {', '.join(names)}")
+            flash_taskbar(self)
+            try:
+                hidden = self.state() == "iconic" or self.focus_displayof() is None
+            except Exception:  # noqa: BLE001
+                hidden = True
+            if hidden:
+                windows_toast("Chronolist", text)
+
+    def quota_tick(self):
+        self.after(2000, self.quota_tick)
+        try:
+            if self.header.quota.winfo_ismapped():
+                self.header.quota.redraw()
+        except tk.TclError:
+            pass
 
     def auto_tick(self):
         self.after(30000, self.auto_tick)
@@ -7946,6 +8167,7 @@ class App(tk.Tk):
         AUTO_YEARS.clear()
         AUTO_YEARS.update(y for y in view.get("auto_years", []) if isinstance(y, int))
         self.settings["auto_years"] = sorted(AUTO_YEARS)
+        load_auto_last()
         save(SETTINGS_FILE, self.settings)
         self.build_rows()
         self.save_view()
@@ -8311,6 +8533,8 @@ class App(tk.Tk):
                     self.chip_label = None
                 elif kind == "browser_login":
                     self.set_status("browser_login")
+                elif kind == "auto_result":
+                    self.auto_result(msg[1])
                 elif kind == "select":
                     if msg[1] in self.rows:
                         self.rows[msg[1]].refresh(selected=True)
