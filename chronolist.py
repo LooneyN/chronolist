@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.4.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 149
+BUILD = 150
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1124,6 +1124,43 @@ def install_update():
     except OSError:
         pass
     return str(err)
+
+
+def start_swap_helper():
+    """Austausch nach dem Beenden: ein kleines Skript wartet, bis Chronolist zu ist, ersetzt dann die exe
+    (mehrere Versuche, z. B. falls der Virenscanner sie noch prüft) und startet das Programm wieder.
+    Klappt der Austausch nicht, startet die bisherige Version. Gibt bei Fehler den Text zurück, sonst None."""
+    exe, new, old, _ = update_paths()
+    pid = os.getpid()
+    script = Path(os.environ.get("TEMP") or HERE) / f"chronolist_update_{pid}.cmd"
+    wait = "ping -n 2 127.0.0.1 >nul"          # 1 s warten (timeout geht ohne Konsole nicht)
+    lines = [
+        "@echo off", "chcp 65001 >nul", "setlocal",
+        f'set "EXE={exe}"', f'set "NEW={new}"', f'set "OLD={old}"',
+        ":wait",
+        f'tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul && ({wait} & goto wait)',
+        "set /a n=0",
+        ":swap",
+        'del /f /q "%OLD%" >nul 2>&1',
+        'move /y "%EXE%" "%OLD%" >nul 2>&1',
+        'move /y "%NEW%" "%EXE%" >nul 2>&1 && goto start',
+        'if not exist "%EXE%" move /y "%OLD%" "%EXE%" >nul 2>&1',
+        "set /a n+=1",
+        f"if %n% lss 30 ({wait} & goto swap)",
+        ":start",
+        'start "" "%EXE%"',
+        '(goto) 2>nul & del "%~f0"',
+    ]
+    try:
+        script.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
+        env = dict(os.environ)
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"      # neue, eigenständige Instanz (entpackt sich neu)
+        subprocess.Popen(["cmd", "/c", str(script)], cwd=str(exe.parent), env=env,
+                         creationflags=0x08000000 | 0x00000200,     # kein Fenster, eigene Prozessgruppe
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        return str(e)
+    return None
 
 
 def cleanup_update(tries=10):
@@ -8462,6 +8499,13 @@ class App(tk.Tk):
             return
         save_settings_file(self.settings)
         version = pu.get("version", VERSION)
+        if version_tuple(version) > version_tuple(VERSION):
+            # Austausch hat nicht geklappt, es läuft noch die alte Version
+            self.write_log(L(f"UPDATE TO v{version} COULD NOT BE INSTALLED // CLICK UPDATE AGAIN OR DOWNLOAD "
+                             f"CHRONOLIST.EXE FROM GITHUB",
+                             f"UPDATE AUF v{version} KONNTE NICHT INSTALLIERT WERDEN // NOCHMAL AUF UPDATE KLICKEN "
+                             f"ODER CHRONOLIST.EXE VON GITHUB LADEN"), "err")
+            return
         self.write_log(L(f"UPDATED TO v{version}", f"AKTUALISIERT AUF v{version}"), "ok")
         self.after(400, lambda: self.winfo_exists() and WhatsNewDialog(self, version, pu.get("notes") or ""))
 
@@ -8493,18 +8537,26 @@ class App(tk.Tk):
             self.write_log(L("UPDATE PAUSED // STOP THE RUN AND CLICK UPDATE AGAIN",
                              "UPDATE ANGEHALTEN // DURCHLAUF STOPPEN UND NOCHMAL AUF UPDATE KLICKEN"), "err")
             return
+        # Changelog einmalig nach dem Neustart in einem Fenster zeigen (nur, wenn die neue Version dann läuft)
+        self.settings["post_update"] = {"version": self.header.update[0],
+                                        "notes": getattr(self, "update_notes", "")}
+        save_settings_file(self.settings)
+        # Bevorzugt: Austausch nach dem Beenden (die laufende exe und ein frisch geladener Download sind unter
+        # Windows oft gesperrt). Nur wenn das Hilfsskript nicht startet: direkt austauschen.
+        if start_swap_helper() is None:
+            self.write_log(L("UPDATE READY // CHRONOLIST RESTARTS TO INSTALL IT", "UPDATE BEREIT // CHRONOLIST STARTET ZUM INSTALLIEREN NEU"), "ok")
+            self.after(600, self.on_close)
+            return
         self.write_log(L("INSTALLING UPDATE ...", "UPDATE WIRD INSTALLIERT ..."), "info")
         self.update_idletasks()
         err = install_update()
         if err:
+            self.settings.pop("post_update", None)
+            save_settings_file(self.settings)
             self.updating = False
             self.write_log(L(f"UPDATE FAILED // {err} // THE CURRENT VERSION STAYS",
                              f"UPDATE FEHLGESCHLAGEN // {err} // DIE AKTUELLE VERSION BLEIBT"), "err")
             return
-        # Changelog einmalig nach dem Neustart in einem Fenster zeigen
-        self.settings["post_update"] = {"version": self.header.update[0],
-                                        "notes": getattr(self, "update_notes", "")}
-        save_settings_file(self.settings)
         self.write_log(L("UPDATE INSTALLED // RESTARTING", "UPDATE INSTALLIERT // NEUSTART"), "ok")
         self.after(600, self.restart)
 

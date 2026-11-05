@@ -6,13 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Note
-- Updating from 3.3.0 or older inside Chronolist can stop with "The process cannot access the file because it is being used by another process". The new version is already downloaded then. Close Chronolist, delete (or rename) Chronolist.exe in its folder, rename Chronolist.new.exe to Chronolist.exe and start it. From this version on, Chronolist retries by itself.
+- Updating from 3.3.0 or older inside Chronolist can stop with "The process cannot access the file because it is being used by another process". The new version is already downloaded then. Close Chronolist, delete (or rename) Chronolist.exe in its folder, rename Chronolist.new.exe to Chronolist.exe and start it. From this version on, Chronolist finishes the update by itself after closing.
 
 ### Changed
 - Playlist templates, visibility and the AUTO-CHECK (on/off and schedule) are now stored per channel. Switching the channel switches them too; a new channel starts with the values of the channel that was active before. Your current values are kept.
 
 ### Fixed
-- Updating from within Chronolist could fail with "The process cannot access the file because it is being used by another process" (for example while the antivirus checks the download). Chronolist now waits a few seconds and tries again.
+- Updating from within Chronolist could fail with "The process cannot access the file because it is being used by another process". Chronolist now closes first and replaces the file afterwards (with several tries, e.g. while the antivirus still checks the download), then starts the new version. If that still fails, the current version starts again and the log says so.
 - An own AUTO-CHECK interval (e.g. 75 minutes) was reset to 1 hour when Chronolist restarted.
 
 ## [3.3.0] - 2026-11-05
