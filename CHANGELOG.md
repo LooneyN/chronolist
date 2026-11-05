@@ -9,6 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Playlist templates, visibility and the AUTO-CHECK (on/off and schedule) are now stored per channel. Switching the channel switches them too; a new channel starts with the values of the channel that was active before. Your current values are kept.
 
 ### Fixed
+- Updating from within Chronolist could fail with "The process cannot access the file because it is being used by another process" (for example while the antivirus checks the download). Chronolist now waits a few seconds and tries again.
 - An own AUTO-CHECK interval (e.g. 75 minutes) was reset to 1 hour when Chronolist restarted.
 
 ## [3.3.0] - 2026-11-05

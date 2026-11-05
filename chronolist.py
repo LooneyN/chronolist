@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.4.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 148
+BUILD = 149
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1085,19 +1085,45 @@ def install_update():
             old.unlink()
     except OSError:
         pass
-    try:
-        exe.rename(old)
-    except OSError as e:
-        return str(e)
-    try:
-        new.rename(exe)
-    except OSError as e:
+    # Direkt nach dem Download hält oft der Virenscanner die neue exe kurz fest (WinError 32).
+    # Deshalb einige Sekunden lang mehrmals versuchen, zuletzt kopieren statt umbenennen.
+    err = None
+    for attempt in range(3):
         try:
-            old.rename(exe)
+            exe.rename(old)
+            err = None
+            break
+        except OSError as e:
+            err = e
+            time.sleep(0.5)
+    if err:
+        return str(err)
+    for attempt in range(24):                 # bis ca. 12 Sekunden
+        try:
+            new.rename(exe)
+            return None
+        except OSError as e:
+            err = e
+            time.sleep(0.5)
+    try:
+        shutil.copy2(new, exe)
+        try:
+            new.unlink()
         except OSError:
-            pass
-        return str(e)
-    return None
+            pass                              # Rest räumt cleanup_update beim nächsten Start weg
+        return None
+    except OSError as e:
+        err = e
+    try:
+        if exe.exists():
+            exe.unlink()
+    except OSError:
+        pass
+    try:
+        old.rename(exe)
+    except OSError:
+        pass
+    return str(err)
 
 
 def cleanup_update(tries=10):
@@ -8467,6 +8493,8 @@ class App(tk.Tk):
             self.write_log(L("UPDATE PAUSED // STOP THE RUN AND CLICK UPDATE AGAIN",
                              "UPDATE ANGEHALTEN // DURCHLAUF STOPPEN UND NOCHMAL AUF UPDATE KLICKEN"), "err")
             return
+        self.write_log(L("INSTALLING UPDATE ...", "UPDATE WIRD INSTALLIERT ..."), "info")
+        self.update_idletasks()
         err = install_update()
         if err:
             self.updating = False
