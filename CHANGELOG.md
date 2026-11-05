@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-11-05
+
 ### Added
 - API QUOTA display in the header: API units Chronolist used today out of 10,000, as a number and a thin bar (yellow above 80 %, red with the reset time when the quota is used up).
 - Cards with AUTO show next to the AUTO switch when the AUTO-CHECK last ran and how many videos it added (e.g. "LAST CHECK 14:02 // +2 NEW").
@@ -173,7 +175,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.3.0...HEAD
+[3.3.0]: https://github.com/LooneyN/chronolist/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/LooneyN/chronolist/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/LooneyN/chronolist/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/LooneyN/chronolist/compare/v3.0.0...v3.0.1
