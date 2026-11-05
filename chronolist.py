@@ -94,16 +94,11 @@ def default_list_description_template():
              "{name}: {count} Videos von {channel} in Upload-Reihenfolge.")
 
 
-PLAYLIST_TEMPLATE = "{channel} {year} in upload order"
-DESCRIPTION_TEMPLATE = "All videos by {channel} from {year} in upload order."
-LIST_TITLE_TEMPLATE = "{name}"   # eigene Listen: Titel- und Beschreibungs-Vorlage (eigener Reiter LISTS)
-LIST_DESCRIPTION_TEMPLATE = "{name}: {count} videos by {channel} in upload order."
-PRIVACY = "public"              # public / unlisted / private
 PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.4.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 147
+BUILD = 148
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -133,10 +128,49 @@ DECK_H = 72                     # Höhe der Kanalkarte und der Steuerkacheln (gl
 PART_MAX = 5000                 # YouTube: höchstens 5.000 Videos pro Playlist -> danach Teil 2, 3, ...
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
-# --- aktiver Kanal (wird von der App gesetzt)
-CHANNEL = {}
-CHAN_DIR = DATA_DIR / "_none"
-YEARS = []
+# --- Kanal-Kontext
+# Alles, was zu einem Kanal gehört (Kanal-Info, Datenordner, Jahre, Vorlagen, Sichtbarkeit), steckt in einem
+# ChannelContext. Die Oberfläche benutzt den Kontext des angezeigten Kanals; ein Lauf (Worker) bringt seinen
+# eigenen mit und kann so auch für einen Kanal laufen, der gerade nicht angezeigt wird (Grundlage für 4.0).
+class ChannelContext:
+    def __init__(self):
+        self.channel = {}
+        self.chan_dir = DATA_DIR / "_none"
+        self.years = []
+        self.playlist_template = "{channel} {year} in upload order"
+        self.description_template = "All videos by {channel} from {year} in upload order."
+        self.list_title_template = "{name}"      # eigene Listen: Titel- und Beschreibungs-Vorlage (Reiter LISTS)
+        self.list_description_template = "{name}: {count} videos by {channel} in upload order."
+        self.privacy = "public"                 # public / unlisted / private
+
+
+_UI_CTX = ChannelContext()      # angezeigter Kanal (Oberfläche und alle Threads ohne eigenen Kontext)
+_TLS = threading.local()
+
+
+def ctx():
+    """Kanal-Kontext des laufenden Threads (ein Worker hat seinen eigenen, sonst der angezeigte Kanal)."""
+    return getattr(_TLS, "ctx", None) or _UI_CTX
+
+
+def use_context(c):
+    """Kanal-Kontext für den laufenden Thread festlegen (None = wieder der angezeigte Kanal)."""
+    _TLS.ctx = c
+
+
+def context_for(info):
+    """Eigener Kontext für einen Kanal, ohne den angezeigten zu ändern: Ordner, Jahre sowie Vorlagen und
+    Sichtbarkeit aus dessen data/<kanal>/settings.json (fehlt sie: aus settings.json)."""
+    c = ChannelContext()
+    prev = getattr(_TLS, "ctx", None)
+    _TLS.ctx = c
+    try:
+        set_channel(info)
+        own = load(chan_settings_file(), None)
+        apply_templates(own if isinstance(own, dict) else load(SETTINGS_FILE, {}))
+    finally:
+        _TLS.ctx = prev
+    return c
 
 
 def channel_slug(ch):
@@ -145,15 +179,15 @@ def channel_slug(ch):
 
 
 def set_channel(ch):
-    global CHANNEL, CHAN_DIR, YEARS
-    CHANNEL = dict(ch or {})
-    CHAN_DIR = DATA_DIR / channel_slug(CHANNEL) if CHANNEL else DATA_DIR / "_none"
-    fy = CHANNEL.get("first_year")
-    YEARS = list(range(int(fy), datetime.date.today().year + 1)) if fy else []
+    c = ctx()
+    c.channel = dict(ch or {})
+    c.chan_dir = DATA_DIR / channel_slug(c.channel) if c.channel else DATA_DIR / "_none"
+    fy = c.channel.get("first_year")
+    c.years = list(range(int(fy), datetime.date.today().year + 1)) if fy else []
 
 
 def channel_name():
-    return CHANNEL.get("title") or CHANNEL.get("handle") or "CHANNEL"
+    return ctx().channel.get("title") or ctx().channel.get("handle") or "CHANNEL"
 
 
 def parse_channel(text):
@@ -412,7 +446,7 @@ def quota_reset_local():
     return f"{day} {reset_local.strftime('%H:%M')}"
 
 
-def archive_file(): return CHAN_DIR / "archive_scan.json"
+def archive_file(): return ctx().chan_dir / "archive_scan.json"
 
 
 def archive_cutoff():
@@ -442,14 +476,14 @@ def shorts_list(uploads_id):
     return "UUSH" + up[2:] if up and up.startswith("UU") else None
 
 
-def lf_file(): return CHAN_DIR / "videos_only.json"
-def shorts_file(): return CHAN_DIR / "shorts.json"
+def lf_file(): return ctx().chan_dir / "videos_only.json"
+def shorts_file(): return ctx().chan_dir / "shorts.json"
 
 
 def known_shorts():
     d = load(shorts_file(), {})
     return set(d.get("ids") or []) if d.get("done") else None
-def titles_file(): return CHAN_DIR / "titles.json"
+def titles_file(): return ctx().chan_dir / "titles.json"
 
 
 _titles_lock = threading.Lock()
@@ -503,7 +537,7 @@ def known_dates():
     """Veröffentlichungsdaten aus allen gespeicherten API-Daten (Archiv, Suche, Nur-Videos-Liste)."""
     d = {}
     d.update(load(archive_file(), {}).get("found") or {})
-    for f in (sorted(CHAN_DIR.glob("collect_*.json")) if CHAN_DIR.exists() else []):
+    for f in (sorted(ctx().chan_dir.glob("collect_*.json")) if ctx().chan_dir.exists() else []):
         d.update(load(f, {}).get("found") or {})
     return d
 
@@ -528,7 +562,7 @@ def removed_by_year():
     cand = {}
     for vid, pub in (load(archive_file(), {}).get("found") or {}).items():
         cand.setdefault(int(pub[:4]), {})[vid] = pub
-    for f in (sorted(CHAN_DIR.glob("collect_*.json")) if CHAN_DIR.exists() else []):
+    for f in (sorted(ctx().chan_dir.glob("collect_*.json")) if ctx().chan_dir.exists() else []):
         for vid, pub in (load(f, {}).get("found") or {}).items():
             cand.setdefault(int(pub[:4]), {})[vid] = pub
     out = {}
@@ -547,9 +581,9 @@ def removed_by_year():
 # Eine Liste ist wie ein Jahr eine Playlist in Upload-Reihenfolge, nur dass die Videos nach ihrem
 # Titel gewählt werden. Gespeichert pro Kanal in lists.json; der Schlüssel "k_<id>" steht dort,
 # wo bei Jahren die Jahreszahl steht (videos_k_<id>.json, state_k_<id>.json).
-def lists_file(): return CHAN_DIR / "lists.json"
-def autocheck_file(): return CHAN_DIR / "autocheck.json"   # letzte Auto-Prüfung pro Karte: {key: {t, new}}
-def view_file(): return CHAN_DIR / "view.json"     # Kanal-Info und Ansicht (Auswahl, Reihenfolge, HIDE DONE)
+def lists_file(): return ctx().chan_dir / "lists.json"
+def autocheck_file(): return ctx().chan_dir / "autocheck.json"   # letzte Auto-Prüfung pro Karte: {key: {t, new}}
+def view_file(): return ctx().chan_dir / "view.json"     # Kanal-Info und Ansicht (Auswahl, Reihenfolge, HIDE DONE)
 
 
 # ------------------------------------------------------------------ Kanalverzeichnis
@@ -568,7 +602,7 @@ CHANNEL_SETTING_KEYS = ("playlist_template", "description_template", "list_title
                         "auto_check", "auto_mode", "auto_interval", "auto_times")
 
 
-def chan_settings_file(): return CHAN_DIR / "settings.json"
+def chan_settings_file(): return ctx().chan_dir / "settings.json"
 
 
 def channel_settings_snapshot(settings):
@@ -578,7 +612,7 @@ def channel_settings_snapshot(settings):
 def save_settings_file(settings):
     """settings.json speichern und die kanalbezogenen Werte zusätzlich im Ordner des aktiven Kanals."""
     save(SETTINGS_FILE, settings)
-    if CHANNEL.get("first_year"):
+    if ctx().channel.get("first_year"):
         save(chan_settings_file(), channel_settings_snapshot(settings))
 
 
@@ -637,7 +671,7 @@ def known_channel(target):
             return {k: c[k] for k in CHANNEL_FIELDS if k in c}
     return None
 
-def notitle_file(): return CHAN_DIR / "notitle.json"
+def notitle_file(): return ctx().chan_dir / "notitle.json"
 
 
 def load_lists():
@@ -710,7 +744,7 @@ def title_matches(lst, title):
 def year_files():
     """[(Jahr, Pfad)] aller Jahreslisten, älteste zuerst."""
     out = []
-    for f in (CHAN_DIR.glob("videos_*.json") if CHAN_DIR.exists() else []):
+    for f in (ctx().chan_dir.glob("videos_*.json") if ctx().chan_dir.exists() else []):
         m_ = re.fullmatch(r"videos_(\d{4})\.json", f.name)
         if m_:
             out.append((int(m_.group(1)), f))
@@ -802,9 +836,9 @@ def video_title(vid):
     except (requests.RequestException, ValueError):
         pass
     return None
-def videos_file(y): return CHAN_DIR / f"videos_{y}.json"
-def collect_file(y): return CHAN_DIR / f"collect_{y}.json"
-def state_file(y): return CHAN_DIR / f"state_{y}.json"
+def videos_file(y): return ctx().chan_dir / f"videos_{y}.json"
+def collect_file(y): return ctx().chan_dir / f"collect_{y}.json"
+def state_file(y): return ctx().chan_dir / f"state_{y}.json"
 def template_values(y, count=None):
     if is_list_key(y):
         if count is None:
@@ -813,12 +847,12 @@ def template_values(y, count=None):
                 vids = list_videos(find_list(y))       # noch nicht abgeglichen: Treffer jetzt zählen
             count = len(vids) if vids is not None else "?"
         name = list_name(y)
-        return {"channel": channel_name(), "handle": CHANNEL.get("handle", ""), "name": name, "year": name,
+        return {"channel": channel_name(), "handle": ctx().channel.get("handle", ""), "name": name, "year": name,
                 "count": count}
     if count is None:
         vids = load(videos_file(y), None)
         count = len(vids) if vids is not None else "?"
-    return {"channel": channel_name(), "handle": CHANNEL.get("handle", ""), "year": y, "name": y, "count": count}
+    return {"channel": channel_name(), "handle": ctx().channel.get("handle", ""), "year": y, "name": y, "count": count}
 
 
 def fill_template(t, y, count=None):
@@ -831,8 +865,8 @@ def fill_template(t, y, count=None):
 def playlist_title(y):
     """Jahre: Jahres-Vorlage. Eigene Listen: Listen-Vorlage (Standard: nur der Listenname)."""
     if is_list_key(y):
-        return fill_template(LIST_TITLE_TEMPLATE, y).strip() or list_name(y)
-    return fill_template(PLAYLIST_TEMPLATE, y)
+        return fill_template(ctx().list_title_template, y).strip() or list_name(y)
+    return fill_template(ctx().playlist_template, y)
 
 
 def part_title(y, n, total_parts):
@@ -858,8 +892,8 @@ def playlist_description(y):
     """Jahre: Jahres-Vorlage. Eigene Listen: eigene Beschreibung (Platzhalter erlaubt), sonst die Listen-Vorlage."""
     if is_list_key(y):
         own = ((find_list(y) or {}).get("desc") or "").strip()
-        return fill_template(own or LIST_DESCRIPTION_TEMPLATE, y)
-    return fill_template(DESCRIPTION_TEMPLATE, y)
+        return fill_template(own or ctx().list_description_template, y)
+    return fill_template(ctx().description_template, y)
 
 
 def load(path, default):
@@ -950,17 +984,17 @@ def _template_ok(t):
 
 def apply_templates(settings):
     """Playlist-Titel und -Beschreibung aus settings.json übernehmen (Platzhalter: {channel}, {year})."""
-    global PLAYLIST_TEMPLATE, DESCRIPTION_TEMPLATE, LIST_TITLE_TEMPLATE, LIST_DESCRIPTION_TEMPLATE, PRIVACY
+    c = ctx()
     pt = settings.get("playlist_template") or default_playlist_template()
     dt = settings.get("description_template", default_description_template())   # "" = keine Beschreibung
-    PLAYLIST_TEMPLATE = pt if isinstance(pt, str) and _template_ok(pt) else default_playlist_template()
-    DESCRIPTION_TEMPLATE = dt if isinstance(dt, str) and _template_ok(dt) else default_description_template()
+    c.playlist_template = pt if isinstance(pt, str) and _template_ok(pt) else default_playlist_template()
+    c.description_template = dt if isinstance(dt, str) and _template_ok(dt) else default_description_template()
     lt = settings.get("list_title_template") or default_list_title_template()
     ld = settings.get("list_description_template", default_list_description_template())
-    LIST_TITLE_TEMPLATE = lt if isinstance(lt, str) and _template_ok(lt) else default_list_title_template()
-    LIST_DESCRIPTION_TEMPLATE = ld if isinstance(ld, str) and _template_ok(ld) else default_list_description_template()
+    c.list_title_template = lt if isinstance(lt, str) and _template_ok(lt) else default_list_title_template()
+    c.list_description_template = ld if isinstance(ld, str) and _template_ok(ld) else default_list_description_template()
     pv = settings.get("privacy", "public")
-    PRIVACY = pv if pv in PRIVACY_OPTIONS else "public"
+    c.privacy = pv if pv in PRIVACY_OPTIONS else "public"
 
 
 def version_tuple(v):
@@ -1272,7 +1306,7 @@ def find_channel_videos(node, ids, tokens, titles=None):
 OLDEST_WORDS = ("oldest", "älteste", "ältest", "plus anciennes", "más antiguos", "più vecchi", "oudste")
 
 
-def web_index_file(): return CHAN_DIR / "web_index.json"
+def web_index_file(): return ctx().chan_dir / "web_index.json"
 
 
 def fmt_day(iso):
@@ -1287,12 +1321,12 @@ def fmt_day(iso):
 
 def known_channel_id():
     """Kanal-ID aus den Einstellungen oder aus schon gespeicherten Scan-Daten (ohne Netz)."""
-    if CHANNEL.get("id"):
-        return CHANNEL["id"]
+    if ctx().channel.get("id"):
+        return ctx().channel["id"]
     up = load(archive_file(), {}).get("uploads", "")
     if up.startswith("UU"):
         return "UC" + up[2:]
-    for f in sorted(CHAN_DIR.glob("collect_*.json")) if CHAN_DIR.exists() else []:
+    for f in sorted(ctx().chan_dir.glob("collect_*.json")) if ctx().chan_dir.exists() else []:
         cid = load(f, {}).get("channel_id")
         if cid:
             return cid
@@ -1524,7 +1558,7 @@ class BrowserUplink:
         raise BrowserFailed(L("BROWSER UPLINK // GAVE UP", "BROWSER-MODUS // AUFGEGEBEN"))
 
     def create_playlist(self, title, description):
-        j = self.yt_call("playlist/create", {"title": title, "privacyStatus": PRIVACY.upper()})
+        j = self.yt_call("playlist/create", {"title": title, "privacyStatus": ctx().privacy.upper()})
         pid = j.get("playlistId")
         if not pid:
             raise BrowserFailed(L("PLAYLIST CREATE FAILED", "PLAYLIST KONNTE NICHT ANGELEGT WERDEN"))
@@ -1691,8 +1725,12 @@ class BrowserUplink:
 
 
 class Worker(threading.Thread):
-    def __init__(self, years, limit, out, fallback=False, resolve=None, check_only=False, scan_only=False, auto=False):
+    def __init__(self, years, limit, out, fallback=False, resolve=None, check_only=False, scan_only=False, auto=False,
+                 context=None):
         super().__init__(daemon=True)
+        # Kanal-Kontext des Laufs: ohne Angabe der angezeigte Kanal (dasselbe Objekt, damit z. B. geänderte
+        # Vorlagen auch während des Laufs gelten); context_for(...) für einen anderen Kanal
+        self.ctx = context or ctx()
         self.auto = auto             # automatische Prüfung im Hintergrund
         self.resolve_target = resolve
         self.check_only = check_only
@@ -1771,6 +1809,7 @@ class Worker(threading.Thread):
 
     # --- Ablauf
     def run(self):
+        use_context(self.ctx)
         reason = "fertig"
         try:
             if not all(get_creds()):
@@ -1793,7 +1832,7 @@ class Worker(threading.Thread):
                 self.scan_archive()
                 if self.fallback:
                     # Archiv-Scan braucht API; was fehlt, kommt (nur mit FALLBACK) über die Kanalseite, ohne Kontingent
-                    for y in YEARS:
+                    for y in ctx().years:
                         if load(videos_file(y), None) is None:
                             self.check()
                             self.emit("current", y)
@@ -1803,7 +1842,7 @@ class Worker(threading.Thread):
                                 self.empty_year(y)
                 self.fetch_missing_titles()
                 this_year = datetime.date.today().year
-                if any(load(videos_file(y), None) is None for y in YEARS if y < this_year):
+                if any(load(videos_file(y), None) is None for y in ctx().years if y < this_year):
                     self.log(L(f"SCAN INCOMPLETE // CLICK SCAN AGAIN AFTER THE RESET {quota_reset_local()}",
                                f"SCAN UNVOLLSTÄNDIG // NACH DEM RESET {quota_reset_local()} NOCHMAL SCAN KLICKEN"), "warn")
                 else:
@@ -1896,7 +1935,7 @@ class Worker(threading.Thread):
         for k in self.years:
             v = load(videos_file(k), None)
             before[k] = None if v is None else len(v)      # nie abgeglichene Liste: nichts als "neu" zählen
-        for y in YEARS:
+        for y in ctx().years:
             if not growing(y) or load(videos_file(y), None) is None:
                 continue
             self.check()
@@ -2077,13 +2116,13 @@ class Worker(threading.Thread):
         """Einmaliger Scan ALLER Jahre in einem Durchgang über die Upload-Liste des Kanals.
         Kostet ca. 1 API-Einheit pro 50 Videos. Danach kann der Browser-Fallback jedes Jahr ohne API füllen."""
         this_year = datetime.date.today().year
-        missing = [y for y in YEARS if y < this_year and load(videos_file(y), None) is None]
+        missing = [y for y in ctx().years if y < this_year and load(videos_file(y), None) is None]
         prog = load(archive_file(), {})
         if not missing or prog.get("done"):
             return
         try:
             if "uploads" not in prog:
-                q = {"id": CHANNEL["id"]} if CHANNEL.get("id") else {"forHandle": CHANNEL.get("handle", "")}
+                q = {"id": ctx().channel["id"]} if ctx().channel.get("id") else {"forHandle": ctx().channel.get("handle", "")}
                 items = self.call("GET", "channels", {"part": "contentDetails,statistics", **q}).get("items", [])
                 if not items:
                     return
@@ -2159,11 +2198,11 @@ class Worker(threading.Thread):
         cid = known_channel_id()
         if not cid:
             self.ensure_browser()
-            cid = self.browser.resolve_channel(CHANNEL.get("handle") or "")
+            cid = self.browser.resolve_channel(ctx().channel.get("handle") or "")
         if not cid:
             raise BrowserFailed(L("CHANNEL ID NOT FOUND // EDIT THE CHANNEL ONCE", "KANAL-ID NICHT GEFUNDEN // KANAL EINMAL NEU EINTRAGEN"))
-        if CHANNEL.get("id") != cid:
-            CHANNEL["id"] = cid
+        if ctx().channel.get("id") != cid:
+            ctx().channel["id"] = cid
             self.emit("channel_id", cid)
         return cid
 
@@ -2249,12 +2288,12 @@ class Worker(threading.Thread):
     def uploads_id(self):
         up = load(archive_file(), {}).get("uploads")
         if not up:
-            for f in sorted(CHAN_DIR.glob("collect_*.json")):
+            for f in sorted(ctx().chan_dir.glob("collect_*.json")):
                 up = load(f, {}).get("uploads")
                 if up:
                     break
         if not up:
-            q = {"id": CHANNEL["id"]} if CHANNEL.get("id") else {"forHandle": CHANNEL.get("handle", "")}
+            q = {"id": ctx().channel["id"]} if ctx().channel.get("id") else {"forHandle": ctx().channel.get("handle", "")}
             items = self.call("GET", "channels", {"part": "contentDetails", **q}).get("items", [])
             up = items[0]["contentDetails"]["relatedPlaylists"]["uploads"] if items else None
         return full_uploads(up)
@@ -2385,7 +2424,7 @@ class Worker(threading.Thread):
             if not quota_blocked("units"):
                 up = full_uploads(load(archive_file(), {}).get("uploads") or load(collect_file(year), {}).get("uploads"))
                 if not up:
-                    q = {"id": CHANNEL["id"]} if CHANNEL.get("id") else {"forHandle": CHANNEL.get("handle", "")}
+                    q = {"id": ctx().channel["id"]} if ctx().channel.get("id") else {"forHandle": ctx().channel.get("handle", "")}
                     items = self.call("GET", "channels", {"part": "contentDetails", **q}).get("items", [])
                     up = full_uploads(items[0]["contentDetails"]["relatedPlaylists"]["uploads"]) if items else None
                 token, done = None, False
@@ -2467,10 +2506,10 @@ class Worker(threading.Thread):
         cf = collect_file(year)
         prog = load(cf, {})
         if "channel_id" not in prog:
-            q = {"id": CHANNEL["id"]} if CHANNEL.get("id") else {"forHandle": CHANNEL.get("handle", "")}
+            q = {"id": ctx().channel["id"]} if ctx().channel.get("id") else {"forHandle": ctx().channel.get("handle", "")}
             items = self.call("GET", "channels", {"part": "contentDetails,statistics", **q}).get("items", [])
             if not items:
-                raise RuntimeError(L(f"CHANNEL {CHANNEL.get('handle') or CHANNEL.get('id')} NOT FOUND", f"KANAL {CHANNEL.get('handle') or CHANNEL.get('id')} NICHT GEFUNDEN"))
+                raise RuntimeError(L(f"CHANNEL {ctx().channel.get('handle') or ctx().channel.get('id')} NOT FOUND", f"KANAL {ctx().channel.get('handle') or ctx().channel.get('id')} NICHT GEFUNDEN"))
             ch = items[0]
             prog = {
                 "channel_id": ch["id"],
@@ -2707,7 +2746,7 @@ class Worker(threading.Thread):
             try:
                 pid = self.call("POST", "playlists", {"part": "snippet,status"}, {
                     "snippet": {"title": title, "description": description},
-                    "status": {"privacyStatus": PRIVACY},
+                    "status": {"privacyStatus": ctx().privacy},
                 })["id"]
             except QuotaExceeded:
                 if not self.fallback:
@@ -4734,7 +4773,7 @@ class ChannelCard(Panel):
         self.edit_hover = False
 
     def draw_content(self, x0, y0, x1, y1, c, role):
-        has = bool(CHANNEL)
+        has = bool(ctx().channel)
         h = y1 - y0
         cy = (y0 + y1) / 2
         # Eckklammern (Zielerfassung)
@@ -4768,7 +4807,7 @@ class ChannelCard(Panel):
         self.create_text(nx, y0 + h * 0.22, text=L("TARGET LOCKED", "ZIEL ERFASST") if has else L("NO TARGET", "KEIN ZIEL"), anchor="w",
                          font=F("mono", 10), fill=RED)
         if tx - nx > px(260):
-            self.create_text(tx - px(12), y0 + h * 0.22, text="CH.ID " + (CHANNEL.get("id", "")[-6:] or "------"),
+            self.create_text(tx - px(12), y0 + h * 0.22, text="CH.ID " + (ctx().channel.get("id", "")[-6:] or "------"),
                              anchor="e", font=F("mono", 10, False), fill=FLUFF)
         maxw = tx - nx - px(12)
         name = channel_name().upper() if has else L("SET A YOUTUBE CHANNEL", "YOUTUBE-KANAL WÄHLEN")
@@ -4777,11 +4816,11 @@ class ChannelCard(Panel):
         if self.resolving:
             sub = L("RESOLVING...", "WIRD GESUCHT...")
         elif has:
-            handle = (CHANNEL.get("handle") or CHANNEL.get("id", "")).upper()
+            handle = (ctx().channel.get("handle") or ctx().channel.get("id", "")).upper()
             options = [handle]
-            if YEARS:
-                options = [f"{handle} // {L('ARCHIVE', 'ARCHIV')} {YEARS[0]}-{YEARS[-1]} // {len(YEARS)} {L('YEARS', 'JAHRE')}",
-                           f"{handle} // {YEARS[0]}-{YEARS[-1]}", handle]
+            if ctx().years:
+                options = [f"{handle} // {L('ARCHIVE', 'ARCHIV')} {ctx().years[0]}-{ctx().years[-1]} // {len(ctx().years)} {L('YEARS', 'JAHRE')}",
+                           f"{handle} // {ctx().years[0]}-{ctx().years[-1]}", handle]
             f11 = tkfont.Font(font=F("mono", 11))
             sub = next((o for o in options if f11.measure(o) <= maxw), options[-1])
         else:
@@ -4953,7 +4992,7 @@ class SettingsDialog(tk.Toplevel):
         self.geometry(fit(px(720), px(660)))
         pad = px(18)
         st = app.settings
-        self.sample_year = (app.selected_years() and [y for y in app.selected_years() if not is_list_key(y)] or YEARS
+        self.sample_year = (app.selected_years() and [y for y in app.selected_years() if not is_list_key(y)] or ctx().years
                             or [datetime.date.today().year - 1])[0]
         lists = load_lists()
         self.sample_list = list_key(lists[0]) if lists else None
@@ -4969,7 +5008,7 @@ class SettingsDialog(tk.Toplevel):
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
 
         Section(body, L("PLAYLIST SETTINGS", "PLAYLIST-EINSTELLUNGEN"),
-                "CHANNEL // " + (CHANNEL.get("handle") or CHANNEL.get("title") or "--").upper()).pack(fill="x", pady=(0, px(10)))
+                "CHANNEL // " + (ctx().channel.get("handle") or ctx().channel.get("title") or "--").upper()).pack(fill="x", pady=(0, px(10)))
         tabs = tk.Frame(body, bg=BG)
         tabs.pack(fill="x", pady=(0, px(10)))
         self.tab_btns = {}
@@ -5102,7 +5141,7 @@ class SettingsDialog(tk.Toplevel):
         if self.sample_list:
             return list_name(self.sample_list), template_values(self.sample_list)
         name = L("My list", "Meine Liste")
-        return name, {"channel": channel_name(), "handle": CHANNEL.get("handle", ""), "name": name, "year": name,
+        return name, {"channel": channel_name(), "handle": ctx().channel.get("handle", ""), "name": name, "year": name,
                       "count": 25}
 
     def check(self, k):
@@ -7211,7 +7250,7 @@ class Header(tk.Canvas):
                               font=F("mono", 10, False), fill=FLUFF, tags="buildtxt")
         self.title_end = self.bbox(bt)[2] + px(20)
         tag_end = vx1 + px(16)       # weiter links dürfen die Knöpfe nie
-        sub_t = self.create_text(x, px(64), text=f"{L('PLAYLIST UPLINK', 'PLAYLIST-UPLINK')} // {(CHANNEL.get('handle') or L('NO TARGET', 'KEIN ZIEL')).upper()} // {L('UPLOAD ORDER', 'UPLOAD-REIHENFOLGE')}", anchor="w",
+        sub_t = self.create_text(x, px(64), text=f"{L('PLAYLIST UPLINK', 'PLAYLIST-UPLINK')} // {(ctx().channel.get('handle') or L('NO TARGET', 'KEIN ZIEL')).upper()} // {L('UPLOAD ORDER', 'UPLOAD-REIHENFOLGE')}", anchor="w",
                          font=F("mono", 11), fill=TEXT_MUTED)
         self.title_end = max(self.title_end, self.bbox(sub_t)[2] + px(20))
 
@@ -7293,7 +7332,7 @@ class Footer(tk.Canvas):
         self.create_text(px(18), y, text="OPEN SOURCE // MIT  ·  LINK STABLE", anchor="w",
                          font=F("mono", 10, False), fill=FLUFF)
         self.create_text(w - px(18), y, text="ARCHIVE %s // FW %s.%04d // 01001110" % (
-                             f"{YEARS[0]}-{YEARS[-1]}" if YEARS else "--", VERSION, BUILD),
+                             f"{ctx().years[0]}-{ctx().years[-1]}" if ctx().years else "--", VERSION, BUILD),
                          anchor="e", font=F("mono", 10, False), fill=FLUFF)
 
 
@@ -7453,12 +7492,12 @@ class App(tk.Tk):
         apply_templates(self.settings)
         set_channel(self.settings.get("channel"))
         self.load_channel_settings()
-        if CHANNEL and not CHANNEL.get("id") and known_channel_id():
+        if ctx().channel and not ctx().channel.get("id") and known_channel_id():
             # ältere Installationen: Kanal-ID aus vorhandenen Scan-Daten nachtragen
-            CHANNEL["id"] = known_channel_id()
-            self.settings["channel"]["id"] = CHANNEL["id"]
+            ctx().channel["id"] = known_channel_id()
+            self.settings["channel"]["id"] = ctx().channel["id"]
             save_settings_file(self.settings)
-        register_channel(CHANNEL)            # Kanalverzeichnis anlegen/aktualisieren (beim ersten Start aus data/*/view.json)
+        register_channel(ctx().channel)            # Kanalverzeichnis anlegen/aktualisieren (beim ersten Start aus data/*/view.json)
         self.out = queue.Queue()
         self.worker = None
         self.code = ""
@@ -7591,8 +7630,8 @@ class App(tk.Tk):
                                                          + ([L("ON BOOT", "MIT WINDOWS")] if self.win_on else [])), icon="gear")
         self.app_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
         self.settings_card = SettingsCard(opts, self.edit_settings, lambda: "PLAYLISTS",
-                                          lambda: f"{privacy_label(PRIVACY)} // "
-                                                  + fill_template(PLAYLIST_TEMPLATE, YEARS[0] if YEARS
+                                          lambda: f"{privacy_label(ctx().privacy)} // "
+                                                  + fill_template(ctx().playlist_template, ctx().years[0] if ctx().years
                                                                   else datetime.date.today().year - 1))
         self.settings_card.grid(row=1, column=0, sticky="ew", padx=(0, px(3)))
 
@@ -7695,7 +7734,7 @@ class App(tk.Tk):
     def load_channel_settings(self):
         """Vorlagen, Sichtbarkeit und AUTO-CHECK des aktiven Kanals übernehmen. Hat der Kanal noch keine eigene
         Datei (erster Start nach dem Update oder neuer Kanal), bekommt er die bisher gültigen Werte."""
-        if not CHANNEL.get("first_year"):
+        if not ctx().channel.get("first_year"):
             return
         d = load(chan_settings_file(), None)
         if isinstance(d, dict):
@@ -7726,9 +7765,9 @@ class App(tk.Tk):
 
     def save_view(self):
         """Ansicht des aktuellen Kanals in data/<kanal>/view.json merken (für das Zurückwechseln)."""
-        if not CHANNEL.get("first_year"):
+        if not ctx().channel.get("first_year"):
             return
-        save(view_file(), {"channel": dict(CHANNEL),
+        save(view_file(), {"channel": dict(ctx().channel),
                            "years": list(self.settings.get("years", [])),
                            "year_order": list(self.settings.get("year_order", [])),
                            "hide_done": bool(self.settings.get("hide_done")),
@@ -7920,12 +7959,12 @@ class App(tk.Tk):
             return
         if self.worker and self.worker.is_alive():
             return
-        if not all(get_creds()) or not CHANNEL or not load(TOKEN_FILE, None):
+        if not all(get_creds()) or not ctx().channel or not load(TOKEN_FILE, None):
             return
         self.run_auto()
 
     def run_auto(self):
-        keys = [y for y in YEARS if y in AUTO_YEARS and growing(y)] + \
+        keys = [y for y in ctx().years if y in AUTO_YEARS and growing(y)] + \
                [list_key(x) for x in load_lists() if x.get("auto")]
         keys = [k for k in keys if k in self.rows]
         self.auto_next = self.plan_auto()
@@ -7984,7 +8023,7 @@ class App(tk.Tk):
             r.destroy()
         self.rows = {}
         selected = set(self.settings.get("years", []))
-        allowed = list(YEARS) + [list_key(lst) for lst in load_lists()]
+        allowed = list(ctx().years) + [list_key(lst) for lst in load_lists()]
         saved = [y for y in self.settings.get("year_order", []) if y in allowed]
         self.order = saved + [y for y in allowed if y not in saved]
         for y in self.order:
@@ -8227,16 +8266,16 @@ class App(tk.Tk):
     def edit_channel(self):
         if self.busy():
             return
-        ChannelDialog(self, CHANNEL.get("handle") or CHANNEL.get("id", ""), self.save_channel)
+        ChannelDialog(self, ctx().channel.get("handle") or ctx().channel.get("id", ""), self.save_channel)
 
     def save_channel(self, v):
         m_id, m_title, m_year = v.get("m_id", ""), v.get("m_title", ""), v.get("m_year", "")
         target = parse_channel(v["channel"]) or (parse_channel(m_id) if m_id else None)
         if not target:
             return False
-        same_handle = target.get("handle") and target["handle"].lower() == (CHANNEL.get("handle") or "").lower()
-        same_id = target.get("id") and target["id"] == CHANNEL.get("id")
-        if CHANNEL.get("first_year") and (same_handle or same_id) and not (m_id or m_year):
+        same_handle = target.get("handle") and target["handle"].lower() == (ctx().channel.get("handle") or "").lower()
+        same_id = target.get("id") and target["id"] == ctx().channel.get("id")
+        if ctx().channel.get("first_year") and (same_handle or same_id) and not (m_id or m_year):
             return None
         # 1) manuell: Kanal-ID und Startjahr angegeben -> ohne API
         if m_id or m_year:
@@ -8273,7 +8312,7 @@ class App(tk.Tk):
         self.set_status("running")
 
     def apply_channel(self, info):
-        if CHANNEL.get("first_year"):
+        if ctx().channel.get("first_year"):
             self.save_view()                     # Ansicht des bisherigen Kanals merken
         self.settings["channel"] = info
         set_channel(info)
@@ -8281,8 +8320,8 @@ class App(tk.Tk):
         register_channel(info)
         # Ansicht des neuen Kanals laden; beim ersten Mal: alle Jahre markiert, chronologisch
         view = load(view_file(), {}) or {}
-        self.settings["years"] = view.get("years", list(YEARS))
-        self.settings["year_order"] = view.get("year_order", list(YEARS))
+        self.settings["years"] = view.get("years", list(ctx().years))
+        self.settings["year_order"] = view.get("year_order", list(ctx().years))
         self.settings["hide_done"] = bool(view.get("hide_done", False))
         AUTO_YEARS.clear()
         AUTO_YEARS.update(y for y in view.get("auto_years", []) if isinstance(y, int))
@@ -8306,7 +8345,7 @@ class App(tk.Tk):
             self.write_log(L("NO API CREDENTIALS // OPEN API SETUP", "KEINE API-ZUGANGSDATEN // API-KNOPF OBEN ÖFFNEN"), "err")
             self.edit_credentials()
             return
-        if not CHANNEL:
+        if not ctx().channel:
             self.write_log(L("NO TARGET CHANNEL // CLICK THE CHANNEL CARD", "KEIN ZIELKANAL // OBEN LINKS AUF ÄNDERN KLICKEN"), "err")
             self.edit_channel()
             return
@@ -8359,7 +8398,7 @@ class App(tk.Tk):
         if not all(get_creds()):
             self.edit_credentials()
             return
-        if not CHANNEL:
+        if not ctx().channel:
             self.edit_channel()
             return
         self.write_log(L("SCAN ONLY // ARCHIVE AND TITLES, NO PLAYLISTS", "NUR SCANNEN // ARCHIV UND TITEL, KEINE PLAYLISTS"), "sep")
