@@ -103,7 +103,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.4.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 145
+BUILD = 146
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -552,17 +552,68 @@ def autocheck_file(): return CHAN_DIR / "autocheck.json"   # letzte Auto-Prüfun
 def view_file(): return CHAN_DIR / "view.json"     # Kanal-Info und Ansicht (Auswahl, Reihenfolge, HIDE DONE)
 
 
+# ------------------------------------------------------------------ Kanalverzeichnis
+# data/channels.json: alle schon benutzten Kanäle in fester Reihenfolge (Grundlage für den Kanal-Umschalter in 4.0).
+# Pro Eintrag: id, handle, title, first_year, folder, keep_updated ("aktuell halten", später), last_used.
+CHANNEL_FIELDS = ("id", "handle", "title", "first_year")
+
+
+def channels_file(): return DATA_DIR / "channels.json"
+
+
+def same_channel(a, b):
+    ha, hb = (a.get("handle") or "").lower(), (b.get("handle") or "").lower()
+    return bool((a.get("id") and a.get("id") == b.get("id")) or (ha and ha == hb))
+
+
+def load_channels():
+    """Kanalverzeichnis laden. Fehlt es, wird es einmalig aus den vorhandenen data/*/view.json angelegt."""
+    d = load(channels_file(), None)
+    if isinstance(d, dict) and isinstance(d.get("channels"), list):
+        return d["channels"]
+    found = []
+    for f in (sorted(DATA_DIR.glob("*/view.json")) if DATA_DIR.exists() else []):
+        info = (load(f, {}) or {}).get("channel") or {}
+        if not info.get("first_year") or any(same_channel(info, c) for c in found):
+            continue
+        entry = {k: info.get(k) for k in CHANNEL_FIELDS if info.get(k) is not None}
+        try:
+            entry["last_used"] = f.stat().st_mtime
+        except OSError:
+            entry["last_used"] = 0
+        entry.update(folder=f.parent.name, keep_updated=False)
+        found.append(entry)
+    found.sort(key=lambda c: c.get("last_used", 0))          # Reihenfolge: zuerst benutzt zuerst
+    if found:
+        save_channels(found)
+    return found
+
+
+def save_channels(channels):
+    save(channels_file(), {"channels": channels})
+
+
+def register_channel(info):
+    """Kanal ins Verzeichnis eintragen oder aktualisieren (Name, Startjahr ...) und als zuletzt benutzt merken."""
+    if not info or not info.get("first_year"):
+        return
+    channels = load_channels()
+    entry = next((c for c in channels if same_channel(c, info)), None)
+    if entry is None:
+        entry = {"keep_updated": False}
+        channels.append(entry)
+    entry.update({k: info[k] for k in CHANNEL_FIELDS if info.get(k) is not None})
+    entry["folder"] = channel_slug(info)
+    entry["last_used"] = time.time()
+    save_channels(channels)
+
+
 def known_channel(target):
     """Schon einmal benutzter Kanal (gleicher @handle oder gleiche ID)? Dann seine gespeicherte Info, sonst None.
     So lässt sich zu einem bekannten Kanal zurückwechseln, ohne die API zu fragen."""
-    h = (target.get("handle") or "").lower()
-    cid = target.get("id")
-    for f in (DATA_DIR.glob("*/view.json") if DATA_DIR.exists() else []):
-        info = (load(f, {}) or {}).get("channel") or {}
-        if not info.get("first_year"):
-            continue
-        if (h and (info.get("handle") or "").lower() == h) or (cid and info.get("id") == cid):
-            return info
+    for c in load_channels():
+        if same_channel(c, target) and c.get("first_year"):
+            return {k: c[k] for k in CHANNEL_FIELDS if k in c}
     return None
 
 def notitle_file(): return CHAN_DIR / "notitle.json"
@@ -7379,6 +7430,7 @@ class App(tk.Tk):
             CHANNEL["id"] = known_channel_id()
             self.settings["channel"]["id"] = CHANNEL["id"]
             save(SETTINGS_FILE, self.settings)
+        register_channel(CHANNEL)            # Kanalverzeichnis anlegen/aktualisieren (beim ersten Start aus data/*/view.json)
         self.out = queue.Queue()
         self.worker = None
         self.code = ""
@@ -8165,6 +8217,7 @@ class App(tk.Tk):
             self.save_view()                     # Ansicht des bisherigen Kanals merken
         self.settings["channel"] = info
         set_channel(info)
+        register_channel(info)
         # Ansicht des neuen Kanals laden; beim ersten Mal: alle Jahre markiert, chronologisch
         view = load(view_file(), {}) or {}
         self.settings["years"] = view.get("years", list(YEARS))
