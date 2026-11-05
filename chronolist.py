@@ -103,7 +103,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.4.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 146
+BUILD = 147
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -559,6 +559,27 @@ CHANNEL_FIELDS = ("id", "handle", "title", "first_year")
 
 
 def channels_file(): return DATA_DIR / "channels.json"
+
+
+# Einstellungen, die pro Kanal gelten (data/<kanal>/settings.json); alles andere bleibt global in settings.json.
+# Ein Kanal ohne eigene Datei übernimmt beim ersten Laden die Werte des bisher aktiven Kanals.
+CHANNEL_SETTING_KEYS = ("playlist_template", "description_template", "list_title_template",
+                        "list_description_template", "privacy",
+                        "auto_check", "auto_mode", "auto_interval", "auto_times")
+
+
+def chan_settings_file(): return CHAN_DIR / "settings.json"
+
+
+def channel_settings_snapshot(settings):
+    return {k: settings[k] for k in CHANNEL_SETTING_KEYS if k in settings}
+
+
+def save_settings_file(settings):
+    """settings.json speichern und die kanalbezogenen Werte zusätzlich im Ordner des aktiven Kanals."""
+    save(SETTINGS_FILE, settings)
+    if CHANNEL.get("first_year"):
+        save(chan_settings_file(), channel_settings_snapshot(settings))
 
 
 def same_channel(a, b):
@@ -4947,7 +4968,8 @@ class SettingsDialog(tk.Toplevel):
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
 
-        Section(body, L("PLAYLIST SETTINGS", "PLAYLIST-EINSTELLUNGEN"), "TEMPLATE // VISIBILITY").pack(fill="x", pady=(0, px(10)))
+        Section(body, L("PLAYLIST SETTINGS", "PLAYLIST-EINSTELLUNGEN"),
+                "CHANNEL // " + (CHANNEL.get("handle") or CHANNEL.get("title") or "--").upper()).pack(fill="x", pady=(0, px(10)))
         tabs = tk.Frame(body, bg=BG)
         tabs.pack(fill="x", pady=(0, px(10)))
         self.tab_btns = {}
@@ -5127,7 +5149,7 @@ class SettingsDialog(tk.Toplevel):
             st[tkey] = self.title_vars[k].get().strip() or dflt
             st[dkey] = self.descs[k].get("1.0", "end").strip()
         st["privacy"] = self.privacy
-        save(SETTINGS_FILE, st)
+        save_settings_file(st)
         apply_templates(st)
         self.app.write_log(L("PLAYLIST SETTINGS SAVED", "PLAYLIST-EINSTELLUNGEN GESPEICHERT"), "ok")
         self.app.settings_card.redraw()
@@ -5327,7 +5349,7 @@ class AppSettingsDialog(tk.Toplevel):
                "GRÖSSE VON TEXT UND BEDIENELEMENTEN. CHRONOLIST STARTET BEI EINER ÄNDERUNG NEU."))
         self.set_ui_scale(self.ui_scale)
 
-        Section(body, L("AUTO-CHECK", "AUTO-PRÜFUNG"), "BACKGROUND // SCHEDULE").pack(fill="x", pady=(0, px(8)))
+        Section(body, L("AUTO-CHECK", "AUTO-PRÜFUNG"), "THIS CHANNEL // SCHEDULE").pack(fill="x", pady=(0, px(8)))
         mode_row, bw = btn_row(2)
         self.auto_mode = app.auto_mode
         self.mode_btns = {}
@@ -5610,7 +5632,7 @@ class AppSettingsDialog(tk.Toplevel):
                 if st.get(key) == fn():
                     st.pop(key, None)
             st["language"] = self.language
-        save(SETTINGS_FILE, st)
+        save_settings_file(st)
         self.app.write_log(L("SETTINGS SAVED", "EINSTELLUNGEN GESPEICHERT"), "ok")
         self.app.app_card.redraw()
         self.destroy()
@@ -5811,14 +5833,17 @@ HELP_TEXT_DE = [
            "Lauf, wird die Prüfung direkt danach nachgeholt.\n"
            "Jede Prüfung kostet nur wenige API-Einheiten und entfällt, wenn das Kontingent aufgebraucht ist. Läuft "
            "gerade ein anderer Durchlauf, wartet sie. Sie öffnet nie den Browser (kein FALLBACK). Voraussetzung: "
-           "Chronolist ist schon einmal angemeldet und die Videos des Jahres sind schon gesucht.\n"
+           "Chronolist ist schon einmal angemeldet und die Videos des Jahres sind schon gesucht. AUTO-CHECK und "
+           "Zeitplan gelten für den aktuellen Kanal.\n"
            "Auf jeder Karte mit AUTO steht neben dem AUTO-Schalter, wann zuletzt geprüft wurde, und wie viele Videos dabei dazukamen "
            "(z. B. ZULETZT 14:02 // +2 NEU).\n"
            "Hinweis bei neuen Videos (unter PROGRAMM ein- und ausschaltbar): Hat die Prüfung etwas ergänzt, blinkt "
            "das Taskleisten-Symbol. Ist Chronolist minimiert oder im Hintergrund, zeigt Windows zusätzlich eine "
            "Benachrichtigung."),
     ("dt", "PLAYLISTS"),
-    ("dd", "Titel und Beschreibung: Du kannst Platzhalter verwenden, die beim Anlegen ersetzt werden. {channel} wird "
+    ("dd", "Vorlagen und Sichtbarkeit gelten für den aktuellen Kanal; jeder Kanal hat seine eigenen. Ein neuer "
+           "Kanal übernimmt zuerst die Werte des bisher aktiven Kanals.\n"
+           "Titel und Beschreibung: Du kannst Platzhalter verwenden, die beim Anlegen ersetzt werden. {channel} wird "
            "zum Kanalnamen, {handle} zum @Handle, {year} zum Jahr und {count} zur Anzahl der Videos in diesem Jahr. "
            "Die Knöpfe unter dem Titelfeld fügen sie an der Stelle ein, an der der Cursor steht. Darunter siehst du "
            "eine Vorschau. Lässt du die Beschreibung leer, bekommt die Playlist keine.\n"
@@ -6052,13 +6077,15 @@ HELP_TEXT_EN = [
            "time falls into another run, the check follows right after it.\n"
            "A check costs only a few API units and is skipped when the quota is used up. If another run is active it "
            "waits. It never opens the browser (no FALLBACK). It needs a finished sign-in and a year whose videos were "
-           "already scanned.\n"
+           "already scanned. AUTO-CHECK and its schedule apply to the current channel.\n"
            "Every card with AUTO shows next to the AUTO switch when it was last checked and how many videos were added (e.g. "
            "LAST CHECK 14:02 // +2 NEW).\n"
            "New video alert (can be switched off under PROGRAM): when a check added videos, the taskbar icon flashes. "
            "If Chronolist is minimized or in the background, Windows also shows a notification."),
     ("dt", "PLAYLISTS"),
-    ("dd", "Title and description: you can use placeholders that are filled in when the playlist is created. "
+    ("dd", "Templates and visibility apply to the current channel; every channel has its own. A new channel first "
+           "takes over the values of the channel that was active before.\n"
+           "Title and description: you can use placeholders that are filled in when the playlist is created. "
            "{channel} becomes the channel name, {handle} the @handle, {year} the year and {count} the number of "
            "videos in that year. The buttons below the title field insert them at the cursor. Below you see a "
            "preview. Leave the description empty for no description.\n"
@@ -7422,14 +7449,15 @@ class App(tk.Tk):
             self.settings.setdefault("playlist_template", "{channel} {year} in Upload-Reihenfolge")
             self.settings.setdefault("description_template", "Alle Videos von {channel} aus {year} in Upload-Reihenfolge.")
             self.settings["language"] = LANG
-            save(SETTINGS_FILE, self.settings)
+            save_settings_file(self.settings)
         apply_templates(self.settings)
         set_channel(self.settings.get("channel"))
+        self.load_channel_settings()
         if CHANNEL and not CHANNEL.get("id") and known_channel_id():
             # ältere Installationen: Kanal-ID aus vorhandenen Scan-Daten nachtragen
             CHANNEL["id"] = known_channel_id()
             self.settings["channel"]["id"] = CHANNEL["id"]
-            save(SETTINGS_FILE, self.settings)
+            save_settings_file(self.settings)
         register_channel(CHANNEL)            # Kanalverzeichnis anlegen/aktualisieren (beim ersten Start aus data/*/view.json)
         self.out = queue.Queue()
         self.worker = None
@@ -7535,8 +7563,8 @@ class App(tk.Tk):
         self.win_min = bool(self.settings.get("start_minimized", False))
         self.auto_check = bool(self.settings.get("auto_check", False))
         self.auto_interval = self.settings.get("auto_interval", AUTO_INTERVAL_DEFAULT)
-        if self.auto_interval not in AUTO_INTERVALS:
-            self.auto_interval = AUTO_INTERVAL_DEFAULT
+        if not isinstance(self.auto_interval, int) or clean_interval(self.auto_interval) != self.auto_interval:
+            self.auto_interval = AUTO_INTERVAL_DEFAULT          # eigene Werte (z. B. 75) bleiben erhalten
         self.auto_mode = "times" if self.settings.get("auto_mode") == "times" else "interval"
         self.auto_times = sorted({t for t in (parse_time(x) for x in self.settings.get("auto_times", [])) if t})
         if not self.auto_times:
@@ -7661,8 +7689,40 @@ class App(tk.Tk):
                              auto_years=sorted(AUTO_YEARS),
                              browser_fallback=getattr(self, "fallback", False),
                              )
-        save(SETTINGS_FILE, self.settings)
+        save_settings_file(self.settings)
         self.save_view()
+
+    def load_channel_settings(self):
+        """Vorlagen, Sichtbarkeit und AUTO-CHECK des aktiven Kanals übernehmen. Hat der Kanal noch keine eigene
+        Datei (erster Start nach dem Update oder neuer Kanal), bekommt er die bisher gültigen Werte."""
+        if not CHANNEL.get("first_year"):
+            return
+        d = load(chan_settings_file(), None)
+        if isinstance(d, dict):
+            for k in CHANNEL_SETTING_KEYS:
+                if k in d:
+                    self.settings[k] = d[k]
+                else:
+                    self.settings.pop(k, None)
+        else:
+            save(chan_settings_file(), channel_settings_snapshot(self.settings))
+        apply_templates(self.settings)
+
+    def refresh_auto_settings(self):
+        """AUTO-CHECK-Zustand nach einem Kanalwechsel neu aus den (Kanal-)Einstellungen lesen."""
+        global AUTO_SHOW
+        self.auto_check = bool(self.settings.get("auto_check", False))
+        self.auto_interval = self.settings.get("auto_interval", AUTO_INTERVAL_DEFAULT)
+        if not isinstance(self.auto_interval, int) or clean_interval(self.auto_interval) != self.auto_interval:
+            self.auto_interval = AUTO_INTERVAL_DEFAULT
+        self.auto_mode = "times" if self.settings.get("auto_mode") == "times" else "interval"
+        self.auto_times = sorted({t for t in (parse_time(x) for x in self.settings.get("auto_times", [])) if t})
+        if not self.auto_times:
+            self.auto_mode = "interval"
+        AUTO_SHOW = self.auto_check
+        self.auto_next = self.plan_auto(first=True)
+        self.auto_card.sub = self.auto_sub()
+        self.auto_card.update_value(self.auto_check)
 
     def save_view(self):
         """Ansicht des aktuellen Kanals in data/<kanal>/view.json merken (für das Zurückwechseln)."""
@@ -7692,7 +7752,7 @@ class App(tk.Tk):
         sel.discard(removed_key)
         self.settings["years"] = [y for y in self.order if y in sel] + [y for y in sel if y not in self.order]
         self.settings["year_order"] = [y for y in self.order if y != removed_key]
-        save(SETTINGS_FILE, self.settings)
+        save_settings_file(self.settings)
         self.save_view()
         self.build_rows()
         for r in self.rows.values():
@@ -7737,7 +7797,7 @@ class App(tk.Tk):
 
     def toggle_hide_done(self):
         self.settings["hide_done"] = not self.settings.get("hide_done")
-        save(SETTINGS_FILE, self.settings)
+        save_settings_file(self.settings)
         self.save_view()
         self.year_section.set_hidden(bool(self.settings["hide_done"]))
         self.repack()
@@ -8217,6 +8277,7 @@ class App(tk.Tk):
             self.save_view()                     # Ansicht des bisherigen Kanals merken
         self.settings["channel"] = info
         set_channel(info)
+        self.load_channel_settings()
         register_channel(info)
         # Ansicht des neuen Kanals laden; beim ersten Mal: alle Jahre markiert, chronologisch
         view = load(view_file(), {}) or {}
@@ -8227,7 +8288,8 @@ class App(tk.Tk):
         AUTO_YEARS.update(y for y in view.get("auto_years", []) if isinstance(y, int))
         self.settings["auto_years"] = sorted(AUTO_YEARS)
         load_auto_last()
-        save(SETTINGS_FILE, self.settings)
+        self.refresh_auto_settings()
+        save_settings_file(self.settings)
         self.build_rows()
         self.save_view()
         self.year_section.set_hidden(bool(self.settings["hide_done"]))
@@ -8333,7 +8395,7 @@ class App(tk.Tk):
         pu = self.settings.pop("post_update", None)
         if not pu:
             return
-        save(SETTINGS_FILE, self.settings)
+        save_settings_file(self.settings)
         version = pu.get("version", VERSION)
         self.write_log(L(f"UPDATED TO v{version}", f"AKTUALISIERT AUF v{version}"), "ok")
         self.after(400, lambda: self.winfo_exists() and WhatsNewDialog(self, version, pu.get("notes") or ""))
@@ -8375,7 +8437,7 @@ class App(tk.Tk):
         # Changelog einmalig nach dem Neustart in einem Fenster zeigen
         self.settings["post_update"] = {"version": self.header.update[0],
                                         "notes": getattr(self, "update_notes", "")}
-        save(SETTINGS_FILE, self.settings)
+        save_settings_file(self.settings)
         self.write_log(L("UPDATE INSTALLED // RESTARTING", "UPDATE INSTALLIERT // NEUSTART"), "ok")
         self.after(600, self.restart)
 
@@ -8445,14 +8507,14 @@ class App(tk.Tk):
         if pl:
             rect, zoomed = pl
             self.settings["window"] = {"placement": rect, "zoomed": zoomed}
-            save(SETTINGS_FILE, self.settings)
+            save_settings_file(self.settings)
             return
         try:
             zoomed = self.state() == "zoomed" or bool(self.attributes("-zoomed") if os.name != "nt" else False)
         except tk.TclError:
             zoomed = False
         self.settings["window"] = {"geometry": self._normal_geom or self.geometry(), "zoomed": zoomed}
-        save(SETTINGS_FILE, self.settings)
+        save_settings_file(self.settings)
 
     def on_close(self):
         try:
@@ -8554,7 +8616,7 @@ class App(tk.Tk):
                 elif kind == "channel_id":
                     if self.settings.get("channel"):
                         self.settings["channel"]["id"] = msg[1]
-                        save(SETTINGS_FILE, self.settings)
+                        save_settings_file(self.settings)
                         self.save_view()
                     self.channel_card.update_state()
                 elif kind == "update":
