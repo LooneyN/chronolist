@@ -5,22 +5,40 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
-### Changed
-- Deleting a custom list adds an OPEN PLAYLIST link to the log so you can delete its playlist on YouTube right away. If the list never had a playlist, the log says so.
-- API for reading, Edge for writing: Chronolist now reads through the YouTube API (finding videos, checking playlists, which costs almost no quota) and does everything that changes a playlist in a separate Edge window: creating playlists and adding, removing and sorting videos. The FALLBACK option is gone because Edge is now the normal way. If the quota is used up, reading continues on the channel page in Edge.
-- Edge runs invisibly in the background, for runs started by hand and for AUTO-CHECK. A window only opens when you need to sign in to YouTube; after that the run continues in the background.
-- AUTO-CHECK adds new videos through Edge too. If Edge is not signed in to YouTube yet, the check says so in the log and in a notification.
+## [4.0.0] - 2026-11-07
+
+### Highlights
+- Watch several channels at once: every channel with AUTO-CHECK is checked in the background on its own schedule.
+- Reading through the YouTube API, writing through Edge: filling playlists no longer uses up the daily quota.
+- Edge works invisibly in the background; a window only opens when you need to sign in to YouTube.
+- Switch channels at any time, even while a run is active. The channel list shows where something is happening.
+- AUTO-CHECK is easier to set up: switching it on watches the current year and all your lists.
+- Custom lists can be public, unlisted or private.
 
 ### Added
-- PROGRAM > YOUTUBE SIGN-IN opens Edge so you can sign in to YouTube once.
+- Several channels at once: every channel in the channel list with AUTO-CHECK on is checked in the background on its own schedule, even while another channel is shown. Checks that are due at the same time run one after another.
+- The log names the channel of each background check, the channel list shows its last check, the new video alert names the channel, and the channel card shows "AUTO // 2 CHANNELS" when more than one channel is active.
+- AUTO switch per channel right in the channel list: one click turns that channel's AUTO-CHECK on or off.
+- You can switch channels while a run or check is active; it keeps working for its own channel in the background. The channel list marks that channel with a blinking status (e.g. EDGE UPLINK), and switching back shows its progress again.
+- PROGRAM > YOUTUBE SIGN-IN opens Edge so you can sign in to YouTube once. The sign-in is kept.
 - PROGRAM > USE API FOR EVERYTHING (off by default): adds videos through the API as before. 1,000 units of the daily quota stay free for AUTO-CHECK; after that Chronolist continues in Edge.
-- A one-time notice on start explains the API/Edge split and the risk of automating the YouTube website.
+- A one-time notice on start explains how Chronolist works with YouTube and the risk of automating the YouTube website.
 - Custom lists have their own visibility (public, unlisted or private), chosen in the list editor. A change is applied to the existing playlist on the next run.
 - Switching on AUTO-CHECK while no card has AUTO yet turns AUTO on for the current year and all custom lists. New lists start with AUTO on when AUTO-CHECK is on.
-- While videos are being added, the log shows a line with moving dots (also after each cooldown), so you can see that a run in another channel is still working.
-- A playlist that was deleted on YouTube is noticed on the next run or check (costs 1 API unit per playlist) and created and filled again.
-- You can switch channels while a run or check is active; it keeps working for its own channel in the background. The channel list marks the channel that is being worked on with a blinking status (e.g. EDGE UPLINK), and switching back shows its progress again.
-- Several channels at once: every channel in the channel list with AUTO-CHECK on is checked in the background on its own schedule, even while another channel is shown. Checks that are due at the same time run one after another. The log names the channel, the channel list shows its last check, the new video alert names the channel, and the channel card shows "AUTO // 2 CHANNELS" when more than one channel is active. In the channel list, the AUTO field of each row switches that channel's AUTO-CHECK on or off with one click. If a due check finds no year or list with AUTO on, the log says so instead of skipping it silently.
+- A playlist that was deleted on YouTube is noticed on the next run or check (1 API unit per playlist) and created and filled again.
+- While videos are being added, the log shows a line with moving dots (also after each cooldown), so you can see that a run is still working, even in another channel.
+
+### Changed
+- API for reading, Edge for writing: Chronolist reads through the YouTube API (finding videos, checking playlists, which costs almost no quota) and does everything that changes a playlist in Edge: creating playlists and adding, removing and sorting videos. If the quota is used up, reading continues on the channel page in Edge.
+- The FALLBACK option is gone because Edge is now the normal way. The AUTO-CHECK card spans the full width.
+- Edge runs invisibly in the background, for runs started by hand and for AUTO-CHECK. If Edge is not signed in to YouTube yet, a run started by hand opens a window for the sign-in and then continues in the background; AUTO-CHECK says so in the log and in a notification.
+- AUTO-CHECK no longer stops when the API quota is used up; it reads the channel page in Edge instead.
+- The status shows EDGE UPLINK instead of BROWSER UPLINK.
+- Deleting a custom list adds an OPEN PLAYLIST link to the log so you can delete its playlist on YouTube right away. If the list never had a playlist, the log says so.
+
+### Fixed
+- A due check whose channel has no year or list with AUTO on was skipped without a word; the log now says so.
+- An error during a scheduled check could go unnoticed; it is now written to the log.
 
 ## [3.5.0] - 2026-11-07
 
@@ -222,7 +240,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.5.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/LooneyN/chronolist/compare/v3.5.0...v4.0.0
 [3.5.0]: https://github.com/LooneyN/chronolist/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/LooneyN/chronolist/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/LooneyN/chronolist/compare/v3.2.0...v3.3.0
