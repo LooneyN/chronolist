@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.5.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 155
+BUILD = 156
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -5007,13 +5007,14 @@ class SwitchRow(tk.Canvas):
 
     H = 58
 
-    def __init__(self, master, entry, active, on_pick, on_remove):
+    def __init__(self, master, entry, active, on_pick, on_remove, on_edit):
         super().__init__(master, height=px(self.H), bg=BG, highlightthickness=0, bd=0, cursor="hand2")
         self.entry, self.active = entry, active
-        self.on_pick, self.on_remove = on_pick, on_remove
-        self.hover = self.x_hover = self.confirm = False
+        self.on_pick, self.on_remove, self.on_edit = on_pick, on_remove, on_edit
+        self.hover = self.x_hover = self.e_hover = self.confirm = False
         self.auto, self.when, self.new = channel_overview(entry)
         self.bind("<Configure>", lambda e: self.redraw())
+        self.bind("<Map>", lambda e: self.redraw())
         self.bind("<Enter>", lambda e: self.set_hover(True))
         self.bind("<Leave>", lambda e: self.set_hover(False))
         self.bind("<Motion>", self.motion)
@@ -5022,22 +5023,33 @@ class SwitchRow(tk.Canvas):
     def set_hover(self, on):
         self.hover = on
         if not on:
-            self.x_hover = False
+            self.x_hover = self.e_hover = False
         self.redraw()
 
     def x_area(self, w):
         return w - px(40)
 
+    def e_area(self, w):
+        return w - px(80)
+
     def motion(self, e):
-        xh = (not self.active) and e.x >= self.x_area(self.winfo_width())
-        if xh != self.x_hover:
-            self.x_hover = xh
+        w = self.winfo_width()
+        xh = (not self.active) and e.x >= self.x_area(w)
+        eh = self.e_area(w) <= e.x < self.x_area(w)
+        if (xh, eh) != (self.x_hover, self.e_hover):
+            self.x_hover, self.e_hover = xh, eh
             self.redraw()
 
     def click(self, e):
-        if not self.active and e.x >= self.x_area(self.winfo_width()):
+        w = self.winfo_width()
+        # Aktionen erst nach dem Klick ausführen: sie schließen bzw. bauen die Liste neu (diese Zeile verschwindet)
+        top = self.winfo_toplevel()
+        if self.e_area(w) <= e.x < self.x_area(w) and not self.confirm:
+            top.after(20, self.on_edit, self.entry)
+            return
+        if not self.active and e.x >= self.x_area(w):
             if self.confirm:
-                self.on_remove(self.entry)
+                top.after(20, self.on_remove, self.entry)
             else:
                 self.confirm = True
                 self.redraw()
@@ -5046,7 +5058,7 @@ class SwitchRow(tk.Canvas):
         if self.confirm:
             self.reset_confirm()
             return
-        self.on_pick(self.entry)
+        top.after(20, self.on_pick, self.entry)
 
     def reset_confirm(self):
         if self.winfo_exists() and self.confirm:
@@ -5054,6 +5066,8 @@ class SwitchRow(tk.Canvas):
             self.redraw()
 
     def redraw(self):
+        if not self.winfo_exists():
+            return
         self.delete("all")
         w, h = self.winfo_width(), self.winfo_height()
         if w <= 1:
@@ -5062,7 +5076,7 @@ class SwitchRow(tk.Canvas):
         fill = mix(GREEN if self.active else CYAN, BG, 0.14 if (self.active or self.hover) else 0.05)
         self.create_rectangle(0, 0, w - 1, h - 2, fill=fill, outline=mix(col, BG, 0.55))
         self.create_rectangle(0, 0, px(3), h - 2, fill=col, outline="")
-        xr = self.x_area(w) - px(10)
+        xr = self.e_area(w) - px(6)
         if self.confirm:
             handle = self.entry.get("handle") or self.entry.get("title") or ""
             self.create_text(px(16), h / 2, anchor="w", font=F("mono", 11), fill=RED,
@@ -5091,25 +5105,36 @@ class SwitchRow(tk.Canvas):
                 x2 = self.bbox(e)[0] if e else xr
                 self.create_text(x2, h * 0.72, anchor="e", font=F("mono", 10), fill=TEXT_MUTED,
                                  text=L("LAST CHECK ", "ZULETZT ") + self.when)
+        if not self.confirm:
+            self.create_text(self.e_area(w) + px(20), h / 2, text="✎", font=F("mono", 14),
+                             fill=CYAN if self.e_hover else mix(TEXT_MUTED, BG, 0.6))
         if not self.active:
             xc = self.x_area(w) + px(20)
             self.create_text(xc, h / 2, text="✕", font=F("mono", 13),
                              fill=RED if (self.x_hover or self.confirm) else mix(TEXT_MUTED, BG, 0.6))
 
 
-class ChannelSwitcher(tk.Frame):
+class ChannelSwitcher(tk.Toplevel):
     """Aufklappliste unter der Kanalkarte: alle bekannten Kanäle, Wechsel per Klick (ohne API), neue hinzufügen,
-    Einträge entfernen (die Daten im Ordner bleiben)."""
+    Einträge entfernen (die Daten im Ordner bleiben). Eigenes randloses Fenster statt einer Ebene über den Karten:
+    eine Überlagerung der Karten-Canvases bringt Tk zum Absturz."""
 
     def __init__(self, app):
         super().__init__(app, bg=mix(CYAN, BG, 0.5), bd=0, highlightthickness=0)
+        self.withdraw()
+        self.overrideredirect(True)
+        self.transient(app)
         self.app = app
         inner = tk.Frame(self, bg=BG)
         inner.pack(fill="both", expand=True, padx=1, pady=1)
         self.inner = inner
         self.build()
-        self._bind = app.bind_all("<Button-1>", self.outside, add="+")
+        self._click_id = app.bind_all("<Button-1>", self.outside, add="+")
         app.bind("<Escape>", lambda e: self.close(), add="+")
+        self.bind("<Escape>", lambda e: self.close())
+        # Hauptfenster verschoben, verkleinert oder minimiert: Liste schließen
+        self._cfg = app.bind("<Configure>", lambda e: e.widget is app and self.close(), add="+")
+        app.bind("<Unmap>", lambda e: e.widget is app and self.close(), add="+")
 
     def build(self):
         for w in self.inner.winfo_children():
@@ -5124,7 +5149,7 @@ class ChannelSwitcher(tk.Frame):
         if not chans and cur.get("first_year"):
             chans = [dict(cur)]
         for c in chans:
-            r = SwitchRow(self.inner, c, same_channel(c, cur), self.pick, self.remove)
+            r = SwitchRow(self.inner, c, same_channel(c, cur), self.pick, self.remove, self.edit)
             r.pack(fill="x", padx=px(8), pady=(0, px(4)))
         add = CutButton(self.inner, L("+  ADD CHANNEL", "+  KANAL HINZUFÜGEN"), self.add, height=px(32), size=11)
         add.set_color(CYAN)
@@ -5150,7 +5175,8 @@ class ChannelSwitcher(tk.Frame):
         except tk.TclError:
             pass
         self.app.switcher = None
-        self.destroy()
+        self.withdraw()
+        self.app.after(300, self.destroy)
 
     def pick(self, entry):
         if same_channel(entry, ctx().channel):
@@ -5175,6 +5201,13 @@ class ChannelSwitcher(tk.Frame):
     def add(self):
         self.close()
         self.app.edit_channel(new=True)
+
+    def edit(self, entry):
+        if self.app.busy():
+            return
+        self.close()
+        info = {k: entry[k] for k in CHANNEL_FIELDS if k in entry}
+        ChannelDialog(self.app, info.get("handle") or info.get("id", ""), self.app.save_channel, edit=info)
 
 
 class NCDialog(tk.Toplevel):
@@ -5225,15 +5258,18 @@ class ChannelDialog(tk.Toplevel):
     """Zielkanal eingeben. Die manuellen Felder (ohne API) sind zugeklappt und öffnen sich von selbst,
     wenn das API-Kontingent aufgebraucht ist."""
 
-    def __init__(self, app, initial, on_save):
+    def __init__(self, app, initial, on_save, edit=None):
         super().__init__(app, bg=BG)
-        self.title(L("Target Channel", "Zielkanal"))
+        self.edit = edit                         # Eintrag aus dem Kanalverzeichnis = Kanal bearbeiten
+        self.title(L("Edit channel", "Kanal bearbeiten") if edit else L("Target Channel", "Zielkanal"))
         self.resizable(False, False)
         self.transient(app)
         self.on_save = on_save
         self.vars = {}
         pad = px(18)
-        Section(self, L("TARGET CHANNEL", "ZIELKANAL"), "INPUT // SECURE").pack(fill="x", padx=pad, pady=(pad, px(10)))
+        Section(self, L("EDIT CHANNEL", "KANAL BEARBEITEN") if edit else L("TARGET CHANNEL", "ZIELKANAL"),
+                ("EDIT // " + (edit.get("handle") or edit.get("id") or "").upper()) if edit else "INPUT // SECURE"
+                ).pack(fill="x", padx=pad, pady=(pad, px(10)))
         self.field(self, "channel", L("@HANDLE, CHANNEL URL OR CHANNEL ID", "@HANDLE, KANAL-LINK ODER KANAL-ID"),
                    initial, pad)
         tk.Label(self, text=L("EXAMPLES: @CHANNELNAME // YOUTUBE.COM/@CHANNELNAME // UC...\n"
@@ -5257,20 +5293,28 @@ class ChannelDialog(tk.Toplevel):
                                          "nachgeschlagen werden. Trag ihn manuell ein:"),
                      bg=BG, fg=YELLOW, font=F("ui", 13, False), justify="left", anchor="w",
                      wraplength=px(520)).pack(fill="x", padx=pad, pady=(0, px(10)))
-        self.field(self.manual, "m_id", L("CHANNEL ID (UC...)", "KANAL-ID (UC...)"), "", pad)
+        e = edit or {}
+        self.field(self.manual, "m_id", L("CHANNEL ID (UC...)", "KANAL-ID (UC...)"), e.get("id", ""), pad)
         tk.Label(self.manual, text=L("On the channel page: More about this channel -> Share channel -> Copy channel ID",
                                      "Auf der Kanalseite: More about this channel -> Share channel -> Copy channel ID"),
                  bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), justify="left", anchor="w",
                  wraplength=px(520)).pack(fill="x", padx=pad, pady=(0, px(12)))
-        self.field(self.manual, "m_title", L("NAME (OPTIONAL)", "NAME (OPTIONAL)"), "", pad)
-        self.field(self.manual, "m_year", L("FIRST YEAR OF THE CHANNEL", "STARTJAHR DES KANALS"), "", pad, width=8,
-                   fill=None)
+        self.field(self.manual, "m_title", L("NAME (OPTIONAL)", "NAME (OPTIONAL)"), e.get("title", ""), pad)
+        self.field(self.manual, "m_year", L("FIRST YEAR OF THE CHANNEL", "STARTJAHR DES KANALS"),
+                   str(e.get("first_year") or ""), pad, width=8, fill=None)
         row = tk.Frame(self, bg=BG)
         row.pack(fill="x", padx=pad, pady=(px(4), pad))
         CutButton(row, L("SAVE", "SPEICHERN"), self.save, width=120).pack(side="left")
         CutButton(row, L("CANCEL", "ABBRECHEN"), self.destroy, width=120).pack(side="left", padx=(px(8), 0))
+        if edit:
+            look = CutButton(row, L("LOOK UP AGAIN", "NEU ABFRAGEN"), self.look_up, width=170)
+            look.pack(side="right")
+            Tooltip(look, L("Asks YouTube again for name and first year (uses a few API units). Progress, lists and "
+                            "settings stay.",
+                            "Fragt Name und Startjahr neu bei YouTube ab (kostet wenige API-Einheiten). Fortschritt, "
+                            "Listen und Einstellungen bleiben."))
         self.open = False
-        self.set_open(blocked)
+        self.set_open(blocked or bool(edit))
         self.bind("<Return>", lambda e: self.save())
         self.bind("<Escape>", lambda e: self.destroy())
         style_window(self)
@@ -5292,8 +5336,9 @@ class ChannelDialog(tk.Toplevel):
 
     def set_open(self, open_):
         self.open = open_
-        self.toggle.configure(text=("▾  " if open_ else "▸  ")
-                              + L("NO API QUOTA? ENTER THE CHANNEL MANUALLY", "KEIN API-KONTINGENT? KANAL MANUELL EINTRAGEN"))
+        text = (L("CHANNEL DATA (SAVE WORKS WITHOUT THE API)", "KANALDATEN (SPEICHERN GEHT OHNE API)") if self.edit else
+                L("NO API QUOTA? ENTER THE CHANNEL MANUALLY", "KEIN API-KONTINGENT? KANAL MANUELL EINTRAGEN"))
+        self.toggle.configure(text=("▾  " if open_ else "▸  ") + text)
         if open_:
             self.manual.pack(fill="x")
         else:
@@ -5303,6 +5348,13 @@ class ChannelDialog(tk.Toplevel):
         v = {k: var.get().strip() for k, var in self.vars.items()}
         if not self.open:                        # zugeklappt = manuelle Felder gelten nicht
             v.update(m_id="", m_title="", m_year="")
+        if self.on_save(v) is not False:
+            self.destroy()
+
+    def look_up(self):
+        """Bearbeiten: Kanal über die API neu nachschlagen (Name, Startjahr)."""
+        v = {k: var.get().strip() for k, var in self.vars.items()}
+        v.update(m_id="", m_title="", m_year="", refresh=True)
         if self.on_save(v) is not False:
             self.destroy()
 
@@ -6156,7 +6208,8 @@ HELP_TEXT_DE = [
           "Ein Klick auf einen Kanal wechselt sofort (ohne API). Rechts steht sein AUTO-CHECK und darunter die "
           "letzte Prüfung. Mit + KANAL HINZUFÜGEN gibst du einen neuen Kanal ein, als @Name, als Link zum Kanal oder "
           "als Kanal-ID (die fängt mit UC an); Chronolist holt sich dann den Namen und das Startjahr. Das ✕ (zweimal "
-          "klicken) nimmt einen Kanal aus der Liste, seine Daten bleiben erhalten. Jeder Kanal hat seinen eigenen "
+          "klicken) nimmt einen Kanal aus der Liste, seine Daten bleiben erhalten. Das ✎ bearbeitet einen Kanal: Name "
+          "und Startjahr korrigieren (ohne API) oder mit NEU ABFRAGEN neu bei YouTube nachschlagen. Jeder Kanal hat seinen eigenen "
           "Fortschritt, seine eigenen Listen und Einstellungen."),
 
     ("h2", "Jahre"),
@@ -6408,6 +6461,7 @@ HELP_TEXT_EN = [
           "right away (no API). On the right you see its AUTO-CHECK and below the last check. + ADD CHANNEL enters a "
           "new channel, as @name, as a link to the channel or as the channel ID (starts with UC); Chronolist then "
           "looks up its name and start year. The ✕ (click twice) takes a channel off the list, its data is kept. "
+          "The ✎ edits a channel: fix its name and first year (no API) or LOOK UP AGAIN on YouTube. "
           "Every channel has its own progress, lists and settings."),
 
     ("h2", "Target years"),
@@ -8721,10 +8775,12 @@ class App(tk.Tk):
         sw, card = getattr(self, "switcher", None), self.channel_card
         if not sw:
             return
-        self.update_idletasks()
-        x = card.winfo_rootx() - self.winfo_rootx()
-        y = card.winfo_rooty() - self.winfo_rooty() + card.winfo_height() + px(2)
-        sw.place(x=x, y=y, width=card.winfo_width())
+        sw.update_idletasks()
+        w = card.winfo_width()
+        h = sw.winfo_reqheight()
+        x, y = card.winfo_rootx(), card.winfo_rooty() + card.winfo_height() + px(2)
+        sw.geometry(f"{w}x{h}+{x}+{y}")
+        sw.deiconify()
         sw.lift()
 
     def edit_channel(self, new=False):
@@ -8740,7 +8796,8 @@ class App(tk.Tk):
             return False
         same_handle = target.get("handle") and target["handle"].lower() == (ctx().channel.get("handle") or "").lower()
         same_id = target.get("id") and target["id"] == ctx().channel.get("id")
-        if ctx().channel.get("first_year") and (same_handle or same_id) and not (m_id or m_year):
+        refresh = bool(v.get("refresh"))         # Bearbeiten: NEU ABFRAGEN -> immer über die API
+        if not refresh and ctx().channel.get("first_year") and (same_handle or same_id) and not (m_id or m_year):
             return None
         # 1) manuell: Kanal-ID und Startjahr angegeben -> ohne API
         if m_id or m_year:
@@ -8759,7 +8816,7 @@ class App(tk.Tk):
             self.apply_channel(info)
             return None
         # 2) schon einmal benutzt -> gespeicherte Info, ohne API
-        info = known_channel(target)
+        info = None if refresh else known_channel(target)
         if info:
             self.write_log(L(f"CHANNEL RESTORED // {info.get('title') or info.get('handle')} // NO API NEEDED",
                              f"KANAL WIEDERHERGESTELLT // {info.get('title') or info.get('handle')} // OHNE API"), "ok")
