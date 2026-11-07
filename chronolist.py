@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 167
+BUILD = 168
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -401,6 +401,28 @@ def set_auto(key, on):
         AUTO_YEARS.discard(key)
 
 
+def auto_defaults(folder, first_year):
+    """AUTO-CHECK wird eingeschaltet, aber noch keine Karte hat AUTO: das laufende Jahr (im Januar auch das
+    Vorjahr) und alle eigenen Listen bekommen AUTO. Liefert True, wenn etwas eingeschaltet wurde."""
+    vf, lf = folder / "view.json", folder / "lists.json"
+    view = load(vf, {}) or {}
+    lists = load(lf, [])
+    lists = lists if isinstance(lists, list) else []
+    if view.get("auto_years") or any(x.get("auto") for x in lists):
+        return False
+    t = datetime.date.today()
+    years = [y for y in (t.year - 1, t.year) if growing(y) and (not first_year or y >= int(first_year))]
+    if not years and not lists:
+        return False
+    view["auto_years"] = years
+    save(vf, view)
+    for x in lists:
+        x["auto"] = True
+    if lists:
+        save(lf, lists)
+    return True
+
+
 QUOTA_DAILY = 10000      # Standard-Tageskontingent eines Google-Projekts
 QUOTA_RESERVE = 20       # bleibt immer übrig, damit ein Kanal hinzugefügt oder getauscht werden kann
 _quota_lock = threading.Lock()
@@ -693,6 +715,15 @@ def find_list(key):
         if list_key(lst) == key:
             return lst
     return None
+
+
+def key_privacy(key):
+    """Sichtbarkeit der Playlist zu einem Jahr oder einer Liste (eine Liste kann ihre eigene haben)."""
+    if is_list_key(key):
+        pv = (find_list(key) or {}).get("privacy")
+        if pv in PRIVACY_OPTIONS:
+            return pv
+    return ctx().privacy
 
 
 def list_name(key):
@@ -1710,8 +1741,13 @@ class BrowserUplink:
             self.w.sleep(15)
         raise BrowserFailed(L("BROWSER UPLINK // GAVE UP", "BROWSER-MODUS // AUFGEGEBEN"))
 
-    def create_playlist(self, title, description):
-        j = self.yt_call("playlist/create", {"title": title, "privacyStatus": ctx().privacy.upper()})
+    def set_privacy(self, playlist_id, privacy):
+        j = self.yt_call("browse/edit_playlist", {"playlistId": playlist_id, "actions": [
+            {"action": "ACTION_SET_PLAYLIST_PRIVACY", "playlistPrivacy": privacy.upper()}]})
+        return j.get("status") == "STATUS_SUCCEEDED"
+
+    def create_playlist(self, title, description, privacy=None):
+        j = self.yt_call("playlist/create", {"title": title, "privacyStatus": (privacy or ctx().privacy).upper()})
         pid = j.get("playlistId")
         if not pid:
             raise BrowserFailed(L("PLAYLIST CREATE FAILED", "PLAYLIST KONNTE NICHT ANGELEGT WERDEN"))
@@ -2880,6 +2916,10 @@ class Worker(threading.Thread):
             if not videos and not load(state_file(key), {}).get("playlist_id"):
                 self.log(L("NO MATCHES // NO PLAYLIST CREATED YET", "KEINE TREFFER // NOCH KEINE PLAYLIST ANGELEGT"), "warn")
                 continue
+            try:
+                self.apply_privacy(key)
+            except BrowserFailed as e:
+                self.log(L(f"VISIBILITY NOT CHANGED // {e}", f"SICHTBARKEIT NICHT GEÄNDERT // {e}"), "warn")
             self.fill(key, videos)
 
     # --- Playlist befüllen
@@ -2909,13 +2949,14 @@ class Worker(threading.Thread):
         finally:
             self.act(None, year)
 
-    def create_playlist(self, title, description):
+    def create_playlist(self, title, description, privacy=None):
+        privacy = privacy or ctx().privacy
         pid = None
         if self.mode == "api":
             try:
                 pid = self.call("POST", "playlists", {"part": "snippet,status"}, {
                     "snippet": {"title": title, "description": description},
-                    "status": {"privacyStatus": ctx().privacy},
+                    "status": {"privacyStatus": privacy},
                 })["id"]
             except QuotaExceeded:
                 if not self.fallback:
@@ -2923,8 +2964,34 @@ class Worker(threading.Thread):
                 self.switch_to_browser()
         if pid is None:
             self.ensure_browser()
-            pid = self.browser.create_playlist(title, description)
+            pid = self.browser.create_playlist(title, description, privacy)
         return pid
+
+    def apply_privacy(self, key):
+        """Eigene Liste: geänderte Sichtbarkeit auf die vorhandene(n) Playlist(s) übertragen."""
+        lst = find_list(key) or {}
+        want = lst.get("privacy")
+        state = load(state_file(key), {})
+        if want not in PRIVACY_OPTIONS or not state.get("playlist_id") or state.get("privacy", ctx().privacy) == want:
+            return
+        ok = True
+        for pid in part_ids(state):
+            try:
+                if self.mode == "api" and not quota_blocked("units"):
+                    self.call("PUT", "playlists", {"part": "status"}, {"id": pid, "status": {"privacyStatus": want}})
+                else:
+                    self.ensure_browser()
+                    ok = self.browser.set_privacy(pid, want) and ok
+            except QuotaExceeded:
+                self.ensure_browser()
+                ok = self.browser.set_privacy(pid, want) and ok
+        if ok:
+            state["privacy"] = want
+            save(state_file(key), state)
+            self.log(L(f"PLAYLIST VISIBILITY // {privacy_label(want)}", f"PLAYLIST-SICHTBARKEIT // {privacy_label(want)}"), "ok")
+        else:
+            self.log(L(f"COULD NOT CHANGE THE VISIBILITY // PLEASE SET IT TO {privacy_label(want)} ON YOUTUBE",
+                       f"SICHTBARKEIT NICHT GEÄNDERT // BITTE AUF YOUTUBE AUF {privacy_label(want)} STELLEN"), "warn")
 
     def rename_playlist(self, pid, title, description):
         """Bestmöglich umbenennen (Browser oder API). Fehler sind nicht schlimm, nur ein Hinweis."""
@@ -2951,7 +3018,7 @@ class Worker(threading.Thread):
         while len(parts) <= k:
             n = len(parts) + 1
             title = part_title(year, n, n)
-            pid = self.create_playlist(title, playlist_description(year))
+            pid = self.create_playlist(title, playlist_description(year), key_privacy(year))
             parts.append(pid)
             state["parts"] = parts
             state["playlist_id"] = parts[0]
@@ -2966,8 +3033,9 @@ class Worker(threading.Thread):
         sf = state_file(year)
         state = load(sf, {})
         if not state.get("playlist_id"):
-            pid = self.create_playlist(playlist_title(year), playlist_description(year))
-            state = {"playlist_id": pid, "parts": [pid], "next": 0, "skipped": []}
+            pv = key_privacy(year)
+            pid = self.create_playlist(playlist_title(year), playlist_description(year), pv)
+            state = {"playlist_id": pid, "parts": [pid], "next": 0, "skipped": [], "privacy": pv}
             save(sf, state)
             self.log(L(f"PLAYLIST CREATED // {playlist_title(year)}", f"PLAYLIST ANGELEGT // {playlist_title(year)}"), "ok")
         return state
@@ -5322,6 +5390,8 @@ class ChannelSwitcher(tk.Toplevel):
             st = st if isinstance(st, dict) else {}
             st["auto_check"] = not st.get("auto_check")
             save(f, st)
+            if st["auto_check"]:
+                auto_defaults(channel_folder(entry), entry.get("first_year"))
             if not st["auto_check"]:
                 self.app.auto_next_by.pop(channel_folder(entry).name, None)
             name = entry.get("handle") or entry.get("title") or ""
@@ -6503,7 +6573,8 @@ HELP_TEXT_DE = [
     ("dd", "Die Karte AUTO-CHECK im Hauptfenster schaltet die automatische Suche nach neuen Videos ein. Dann zeigt "
            "jede Karte (Jahr oder Liste) einen kleinen AUTO-Schalter. Nur Karten mit eingeschaltetem AUTO werden "
            "aktuell gehalten. Bei Jahren ist das nur beim laufenden Jahr sinnvoll, bei Listen kommt jedes neue "
-           "passende Video dazu.\n"
+           "passende Video dazu. Hat beim Einschalten noch keine Karte AUTO an, bekommen das laufende Jahr und alle "
+           "Listen AUTO; neue Listen starten dann ebenfalls mit AUTO. Einzelne Karten schaltest du bei Bedarf aus.\n"
            "Wann geprüft wird, stellst du pro Kanal unter KANAL-EINSTELLUNGEN ein, entweder als Intervall oder zu festen Uhrzeiten. "
            "Intervall: 30 Minuten, 1, 2 oder 6 Stunden oder ein eigener Wert (Vielfache von 5, mindestens 15 Minuten). "
            "Der Abstand läuft ab dem Ende des letzten Durchlaufs, auch eines manuellen. Feste Uhrzeiten: bis zu "
@@ -6752,7 +6823,9 @@ HELP_TEXT_EN = [
     ("dt", "AUTO-CHECK"),
     ("dd", "The AUTO-CHECK card in the main window switches on the automatic search for new videos. Then every card "
            "(year or list) shows a small AUTO switch. Only cards with AUTO switched on are kept up to date. For years "
-           "that only makes sense for the current year, for lists every new matching video is added.\n"
+           "that only makes sense for the current year, for lists every new matching video is added. If no card has "
+           "AUTO yet when you switch it on, the current year and all lists get AUTO; new lists then start with AUTO "
+           "too. Switch single cards off if needed.\n"
            "Under CHANNEL SETTINGS you choose per channel when it checks: at an interval or at fixed times. Interval: 30 minutes, 1, 2 or 6 "
            "hours, or your own value (multiples of 5, at least 15 minutes). The wait starts when the last run ends, a "
            "manual one included. Fixed times: up to four times per day (HH:MM). Chronolist must be open then; if a "
@@ -7262,7 +7335,22 @@ class ListDialog(tk.Toplevel):
                                  "Empty = the CUSTOM LISTS template under CHANNEL SETTINGS.",
                                  "Eigene Beschreibung für diese Liste. Platzhalter: {name} {channel} {handle} {count}. "
                                  "Leer = die Vorlage im Reiter EIGENE LISTEN unter KANAL-EINSTELLUNGEN."))
-        self.desc_box.pack(fill="x", pady=(px(3), px(12)))
+        self.desc_box.pack(fill="x", pady=(px(3), px(10)))
+        tk.Label(left, text=L("VISIBILITY ON YOUTUBE", "SICHTBARKEIT AUF YOUTUBE"), bg=BG, fg=TEXT_MUTED,
+                 font=F("mono", 11), anchor="w").pack(fill="x")
+        vis = tk.Frame(left, bg=BG)
+        vis.pack(fill="x", pady=(px(4), px(12)))
+        self.privacy = lst.get("privacy") if lst.get("privacy") in PRIVACY_OPTIONS else ctx().privacy
+        self.vis_btns = {}
+        for k, opt in enumerate(PRIVACY_OPTIONS):
+            b = CutButton(vis, privacy_label(opt), lambda o=opt: self.set_privacy(o), width=136, height=px(30), size=11)
+            b.pack(side="left", padx=(0, px(6)) if k < len(PRIVACY_OPTIONS) - 1 else 0)
+            self.vis_btns[opt] = b
+        self.set_privacy(self.privacy)
+        Tooltip(vis, L("Who can see this list's playlist. Public: everyone. Unlisted: only people with the link. "
+                       "Private: only you. A change is applied to the existing playlist on the next run.",
+                       "Wer die Playlist dieser Liste sehen kann. Öffentlich: alle. Nicht gelistet: nur wer den Link "
+                       "hat. Privat: nur du. Eine Änderung wird beim nächsten Lauf auf die Playlist übertragen."))
 
         Section(left, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
         tk.Label(left, text=L("A VIDEO IS INCLUDED IF ITS TITLE CONTAINS ...", "EIN VIDEO KOMMT IN DIE LISTE, WENN SEIN TITEL ... ENTHÄLT"),
@@ -7422,6 +7510,12 @@ class ListDialog(tk.Toplevel):
         if cur["from"] or cur["to"]:
             txt += L(f"  //  years {cur['from'] or '…'} to {cur['to'] or '…'}", f"  //  Jahre {cur['from'] or '…'} bis {cur['to'] or '…'}")
         return L("Matches: ", "Passt auf: ") + txt.replace(" OR ", L(" OR ", " ODER ")).replace(" AND ", L(" AND ", " UND "))
+
+    def set_privacy(self, opt):
+        self.privacy = opt
+        for o, b in self.vis_btns.items():
+            b.set_color(GREEN if o == opt else YELLOW)
+            b.set_text(("● " if o == opt else "") + privacy_label(o))
 
     def field(self, parent, label, var):
         tk.Label(parent, text=label, bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w").pack(fill="x")
@@ -7627,9 +7721,10 @@ class ListDialog(tk.Toplevel):
         else:
             lst = None
         if lst is None:
-            lst = {"id": self.lst_id or new_list_id()}
+            # neue Liste: mit AUTO, wenn AUTO-CHECK für den Kanal an ist
+            lst = {"id": self.lst_id or new_list_id(), "auto": bool(getattr(self.app, "auto_check", False))}
             lists.append(lst)
-        lst.update(name=name, desc=self.desc_box.get("1.0", "end").strip(), **cur)
+        lst.update(name=name, desc=self.desc_box.get("1.0", "end").strip(), privacy=self.privacy, **cur)
         save_lists(lists)
         key = list_key(lst)
         self.app.lists_changed(select_key=key if not self.lst_id else None)
@@ -7652,9 +7747,16 @@ class ListDialog(tk.Toplevel):
             except OSError:
                 pass
         self.app.lists_changed(removed_key=key)
-        self.app.write_log(L("LIST DELETED // ITS PLAYLIST STAYS ON YOUTUBE UNTIL YOU DELETE IT THERE",
-                             "LISTE GELÖSCHT // IHRE PLAYLIST BLEIBT AUF YOUTUBE, BIS DU SIE DORT LÖSCHST") +
-                           (" // " + " ".join(f"https://www.youtube.com/playlist?list={p}" for p in pids) if pids else ""), "warn")
+        if pids:
+            self.app.write_log(L("LIST DELETED // ITS PLAYLIST STAYS ON YOUTUBE UNTIL YOU DELETE IT THERE",
+                                 "LISTE GELÖSCHT // IHRE PLAYLIST BLEIBT AUF YOUTUBE, BIS DU SIE DORT LÖSCHST"), "warn",
+                               actions=[(L(f"  // OPEN PLAYLIST{' ' + str(i + 1) if len(pids) > 1 else ''} ›",
+                                           f"  // PLAYLIST{' ' + str(i + 1) if len(pids) > 1 else ''} ÖFFNEN ›"),
+                                         lambda p=p: webbrowser.open(f"https://www.youtube.com/playlist?list={p}"))
+                                        for i, p in enumerate(pids)])
+        else:
+            self.app.write_log(L("LIST DELETED // IT HAD NO PLAYLIST ON YOUTUBE YET",
+                                 "LISTE GELÖSCHT // SIE HATTE NOCH KEINE PLAYLIST AUF YOUTUBE"), "info")
         self.destroy()
 
 
@@ -8690,6 +8792,15 @@ class App(tk.Tk):
     def toggle_auto_check(self):
         global AUTO_SHOW
         self.auto_check = not self.auto_check
+        if self.auto_check and ctx().channel.get("first_year"):
+            self.save_view()
+            if auto_defaults(ctx().chan_dir, ctx().channel.get("first_year")):
+                AUTO_YEARS.clear()
+                AUTO_YEARS.update(load(view_file(), {}).get("auto_years", []))
+                self.settings["auto_years"] = sorted(AUTO_YEARS)
+                self.write_log(L("AUTO ON FOR THE CURRENT YEAR AND ALL LISTS // SWITCH SINGLE CARDS OFF IF NEEDED",
+                                 "AUTO AN FÜR DAS LAUFENDE JAHR UND ALLE LISTEN // EINZELNE KARTEN BEI BEDARF AUSSCHALTEN"),
+                               "info")
         AUTO_SHOW = self.auto_check
         self.settings["auto_check"] = self.auto_check
         self.auto_next = self.plan_auto(first=True)
@@ -9513,14 +9624,29 @@ class App(tk.Tk):
         return "break"
 
     # --- Nachrichten vom Worker
-    def write_log(self, text, level="info"):
+    def write_log(self, text, level="info", actions=None):
         stamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.logbox.config(state="normal")
         self.finish_dots()
         self.logbox.insert("end", f"[{stamp}] ", "ts")
-        m = re.match(r"^((?:REPAIR|NACHTRAG) \d+ // )(420)(/\d+ (?:MOVED|VERSCHOBEN))$", text)
-        r = re.match(r"^(\d{4}) // .*SHORTS.*(?:REMOVED|ENTFERNT)", text)
-        if r:
+        if actions:
+            # Zeile mit anklickbaren Aktionen (z. B. Playlist im Browser öffnen)
+            self.logbox.insert("end", text, level)
+            for label, fn in actions:
+                tag = f"act_{self.logbox.index('end')}_{id(fn)}"
+                self.logbox.insert("end", label, ("loglink", tag))
+                self.logbox.tag_bind(tag, "<Button-1>", lambda e, f=fn: f())
+                self.logbox.tag_bind(tag, "<Enter>", lambda e: self.logbox.configure(cursor="hand2"))
+                self.logbox.tag_bind(tag, "<Leave>", lambda e: self.logbox.configure(cursor=""))
+            self.logbox.insert("end", "\n", level)
+            text = None
+        m = r = None
+        if text is not None:
+            m = re.match(r"^((?:REPAIR|NACHTRAG) \d+ // )(420)(/\d+ (?:MOVED|VERSCHOBEN))$", text)
+            r = re.match(r"^(\d{4}) // .*SHORTS.*(?:REMOVED|ENTFERNT)", text)
+        if text is None:
+            pass
+        elif r:
             y = int(r.group(1))
             tag = f"rm{y}_{self.logbox.index('end')}"
             self.logbox.insert("end", text, level)
