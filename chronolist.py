@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 170
+BUILD = 171
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1569,6 +1569,7 @@ class BrowserUplink:
             opts["viewport"] = {"width": 1280, "height": 900}
             if EDGE_UA:
                 opts["user_agent"] = EDGE_UA
+        self.opts = opts
         self.launch(opts)
         if self.headless and not EDGE_UA:
             # unsichtbares Edge meldet sich als "HeadlessEdg": einmal mit der normalen Kennung neu starten
@@ -1596,6 +1597,24 @@ class BrowserUplink:
                 raise BrowserFailed(L(f"BROWSER LAUNCH FAILED // {e}", f"BROWSER-START FEHLGESCHLAGEN // {e}"))
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
 
+    def relaunch(self, headless):
+        """Edge mit demselben Profil sichtbar bzw. unsichtbar neu starten."""
+        try:
+            self.ctx.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self.headless = headless
+        opts = dict(self.opts, headless=headless)
+        if headless:
+            opts["viewport"] = {"width": 1280, "height": 900}
+            if EDGE_UA:
+                opts["user_agent"] = EDGE_UA
+        else:
+            opts["viewport"] = None
+            opts.pop("user_agent", None)
+        self.launch(opts)
+        self.open_youtube()
+
     def open_youtube(self):
         self.page.goto("https://www.youtube.com/", wait_until="domcontentloaded", timeout=60000)
         self.w.sleep(3)
@@ -1610,10 +1629,14 @@ class BrowserUplink:
         if self.logged_in():
             self.w.log(L("EDGE UPLINK // SIGNED IN TO YOUTUBE", "EDGE // BEI YOUTUBE ANGEMELDET"), "ok")
             return
-        if self.headless:
+        if self.headless and self.w.auto:
             self.w.emit("edge_signin")
             raise BrowserFailed(L("NOT SIGNED IN TO YOUTUBE IN EDGE // SIGN IN ONCE: PROGRAM > YOUTUBE SIGN-IN",
                                   "IN EDGE NICHT BEI YOUTUBE ANGEMELDET // EINMAL ANMELDEN: PROGRAMM > YOUTUBE SIGN-IN"))
+        back = self.headless
+        if back:
+            # Lauf von Hand ohne Anmeldung: Edge sichtbar öffnen, danach wieder im Hintergrund weiter
+            self.relaunch(False)
         self.w.log(L("SIGN IN TO YOUTUBE IN THE EDGE WINDOW // WAITING (MAX 15 MIN)", "IM EDGE-FENSTER BEI YOUTUBE ANMELDEN // WARTE (MAX. 15 MIN)"), "warn")
         self.w.emit("browser_login")
         end = time.time() + 15 * 60
@@ -1622,6 +1645,10 @@ class BrowserUplink:
             if "youtube.com" in (self.page.url or "") and self.logged_in():
                 self.w.log(L("EDGE UPLINK // SIGNED IN", "EDGE // ANGEMELDET"), "ok")
                 self.w.emit("mode", "browser")
+                if back:
+                    self.w.sleep(2)               # Anmeldung im Profil ablegen lassen
+                    self.relaunch(True)
+                    self.w.log(L("EDGE UPLINK // CONTINUING IN THE BACKGROUND", "EDGE // WEITER IM HINTERGRUND"), "ok")
                 return
         raise BrowserFailed(L("NO YOUTUBE SIGN-IN WITHIN 15 MIN", "KEINE YOUTUBE-ANMELDUNG INNERHALB VON 15 MIN"))
 
@@ -2393,7 +2420,7 @@ class Worker(threading.Thread):
 
     def ensure_browser(self):
         if not self.browser:
-            self.browser = BrowserUplink(self, headless=self.auto)
+            self.browser = BrowserUplink(self, headless=not self.signin)   # sichtbar nur zum Anmelden
             self.browser.start()
             if self.mode == "browser":
                 self.emit("mode", "browser")
@@ -6128,11 +6155,11 @@ class EdgeNoticeDialog(tk.Toplevel):
                      "Chronolist liest über die offizielle YouTube-API: Videos finden und Playlists prüfen. Das kostet "
                      "kaum etwas vom Tageskontingent.")),
             (TEXT, L("Everything that changes a playlist happens in a separate Edge window in which you are signed in "
-                     "to YouTube: creating playlists and adding, removing or sorting videos. For AUTO-CHECK, Edge runs "
-                     "invisibly in the background.",
+                     "to YouTube: creating playlists and adding, removing or sorting videos. Edge runs invisibly in the "
+                     "background; a window only opens when you need to sign in.",
                      "Alles, was eine Playlist ändert, passiert in einem eigenen Edge-Fenster, in dem du bei YouTube "
-                     "angemeldet bist: Playlists anlegen sowie Videos einfügen, entfernen und sortieren. Bei "
-                     "AUTO-CHECK läuft Edge unsichtbar im Hintergrund.")),
+                     "angemeldet bist: Playlists anlegen sowie Videos einfügen, entfernen und sortieren. Edge läuft "
+                     "unsichtbar im Hintergrund; ein Fenster öffnet sich nur, wenn du dich anmelden musst.")),
             (YELLOW, L("Warning: Chronolist sends the same requests as the YouTube website. Automating the website "
                        "this way breaks YouTube's rules and puts your account at risk. You use it at your own risk.",
                        "Achtung: Chronolist schickt dabei dieselben Anfragen wie die YouTube-Webseite. Die Webseite so "
@@ -6304,9 +6331,9 @@ class AppSettingsDialog(tk.Toplevel):
 
         Section(body, "YOUTUBE", "EDGE // API").pack(fill="x", pady=(0, px(8)))
         CutButton(body, L("YOUTUBE SIGN-IN", "YOUTUBE SIGN-IN"), self.signin, width=W).pack(anchor="w")
-        hint(L("CHRONOLIST CREATES PLAYLISTS AND ADDS VIDEOS THROUGH EDGE, ALSO INVISIBLY DURING AUTO-CHECK. "
+        hint(L("CHRONOLIST CREATES PLAYLISTS AND ADDS VIDEOS THROUGH EDGE, INVISIBLY IN THE BACKGROUND. "
                "OPENS EDGE SO YOU CAN SIGN IN TO YOUTUBE ONCE. THE SIGN-IN IS KEPT.",
-               "CHRONOLIST LEGT PLAYLISTS AN UND FÜGT VIDEOS ÜBER EDGE EIN, BEI AUTO-CHECK AUCH UNSICHTBAR. "
+               "CHRONOLIST LEGT PLAYLISTS AN UND FÜGT VIDEOS ÜBER EDGE EIN, UNSICHTBAR IM HINTERGRUND. "
                "ÖFFNET EDGE, DAMIT DU DICH EINMAL BEI YOUTUBE ANMELDEN KANNST. DIE ANMELDUNG BLEIBT GESPEICHERT."))
         self.api_all = API_ALL
         self.api_card = ToggleCard(body, L("USE API FOR EVERYTHING", "API FÜR ALLES NUTZEN"),
@@ -6468,7 +6495,8 @@ HELP_TEXT_DE = [
             "und ein eigenes Bild stellst du unter KANAL-EINSTELLUNGEN ein."),
     ("num", "4.  Füllen. Die Videos werden der Reihe nach im Edge-Fenster eingefügt, genau so, wie die Webseite es "
             "beim Speichern selbst macht. Dabei werden keine Einheiten verbraucht. Es läuft in Paketen zu 30 Videos "
-            "mit Pausen dazwischen. Das Fenster muss offen bleiben, minimieren geht aber."),
+            "mit Pausen dazwischen. Edge läuft dabei unsichtbar im Hintergrund. Bist du dort noch nicht bei YouTube "
+            "angemeldet, öffnet sich einmal ein Edge-Fenster zum Anmelden, danach geht es im Hintergrund weiter."),
     ("num", "5.  Kontingent. Lesen kostet nur wenige Einheiten. Ist das Tageskontingent trotzdem leer, liest "
             "Chronolist die Kanalseite in Edge. Nur die Datumssuche für alte Jahre (Schritt 2) braucht Kontingent und "
             "wartet dann bis zum Reset um Mitternacht kalifornischer Zeit; Chronolist rechnet das in deine Uhrzeit um. "
@@ -6592,9 +6620,9 @@ HELP_TEXT_DE = [
 
     ("h2", "Optionen"),
     ("dt", "EDGE"),
-    ("dd", "Chronolist legt Playlists in einem eigenen Edge-Fenster an und fügt dort Videos ein, entfernt und sortiert "
+    ("dd", "Chronolist legt Playlists in Edge an und fügt dort Videos ein, entfernt und sortiert "
            "sie. Dafür musst du in diesem Fenster einmal bei YouTube angemeldet sein: PROGRAMM > YOUTUBE SIGN-IN "
-           "öffnet es dafür. Die Anmeldung bleibt gespeichert. Bei AUTO-CHECK läuft Edge unsichtbar im Hintergrund.\n"
+           "öffnet es dafür. Die Anmeldung bleibt gespeichert. Edge läuft unsichtbar im Hintergrund.\n"
            "Wichtig: Das ist eine automatische Nutzung der YouTube-Webseite und laut den Nutzungsbedingungen von "
            "YouTube nicht erlaubt. Im schlimmsten Fall kann dein Konto gesperrt werden. Wer das nicht möchte, "
            "schaltet unter PROGRAMM API FÜR ALLES NUTZEN ein."),
@@ -6723,8 +6751,9 @@ HELP_TEXT_EN = [
             "example, \"MyChannel 2012 in upload order\" and is public. Title, description, visibility and a custom "
             "image are set under CHANNEL SETTINGS."),
     ("num", "4.  Fill it. The videos are added in order in the Edge window, exactly the way the website does it when "
-            "you save a video. This uses no units. It works in batches of 30 videos with pauses in between. The "
-            "window has to stay open, but you can minimize it."),
+            "you save a video. This uses no units. It works in batches of 30 videos with pauses in between. Edge runs "
+            "invisibly in the background. If you are not signed in to YouTube there yet, an Edge window opens once "
+            "for the sign-in, then it continues in the background."),
     ("num", "5.  Quota. Reading costs only a few units. If the daily quota is used up anyway, Chronolist reads the "
             "channel page in Edge. Only the date search for old years (step 2) needs quota and then waits for the "
             "reset at midnight California time; Chronolist converts it to your local time. Until then the API button "
@@ -6843,9 +6872,9 @@ HELP_TEXT_EN = [
 
     ("h2", "Options"),
     ("dt", "EDGE"),
-    ("dd", "Chronolist creates playlists in a separate Edge window and adds, removes and sorts videos there. For "
+    ("dd", "Chronolist creates playlists in Edge and adds, removes and sorts videos there. For "
            "this you need to be signed in to YouTube in that window once: PROGRAM > YOUTUBE SIGN-IN opens it. The "
-           "sign-in is kept. During AUTO-CHECK, Edge runs invisibly in the background.\n"
+           "sign-in is kept. Edge runs invisibly in the background.\n"
            "Important: this is automated use of the YouTube website and is not allowed by YouTube's Terms of "
            "Service. In the worst case your account can be restricted. If you don't want that, switch on USE API "
            "FOR EVERYTHING under PROGRAM."),

@@ -8,7 +8,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Changed
 - Deleting a custom list adds an OPEN PLAYLIST link to the log so you can delete its playlist on YouTube right away. If the list never had a playlist, the log says so.
 - API for reading, Edge for writing: Chronolist now reads through the YouTube API (finding videos, checking playlists, which costs almost no quota) and does everything that changes a playlist in a separate Edge window: creating playlists and adding, removing and sorting videos. The FALLBACK option is gone because Edge is now the normal way. If the quota is used up, reading continues on the channel page in Edge.
-- AUTO-CHECK adds new videos through Edge too, which runs invisibly in the background. If Edge is not signed in to YouTube yet, the check says so in the log and in a notification.
+- Edge runs invisibly in the background, for runs started by hand and for AUTO-CHECK. A window only opens when you need to sign in to YouTube; after that the run continues in the background.
+- AUTO-CHECK adds new videos through Edge too. If Edge is not signed in to YouTube yet, the check says so in the log and in a notification.
 
 ### Added
 - PROGRAM > YOUTUBE SIGN-IN opens Edge so you can sign in to YouTube once.

@@ -87,7 +87,7 @@ The default quota is 10,000 units per day. It resets at midnight Pacific Time. I
 
 ### Edge ⚠️
 
-Everything that changes a playlist (creating playlists, adding, removing and sorting videos) happens in a separate Microsoft Edge window where you are signed in to YouTube, using the same requests the website itself sends when you save a video to a playlist. It works in batches with deliberate pauses. During AUTO-CHECK, Edge runs invisibly in the background. Sign in once via **PROGRAM > YOUTUBE SIGN-IN**; the sign-in is kept.
+Everything that changes a playlist (creating playlists, adding, removing and sorting videos) happens in Microsoft Edge with its own profile in which you are signed in to YouTube, using the same requests the website itself sends when you save a video to a playlist. It works in batches with deliberate pauses. Edge runs invisibly in the background; a window only opens when you need to sign in. Sign in once via **PROGRAM > YOUTUBE SIGN-IN**; the sign-in is kept.
 
 **This is automated use of the YouTube website and is not allowed by YouTube's Terms of Service. In the worst case your account can be restricted. Use it at your own risk.** Chronolist shows this notice once on the first start.
 
