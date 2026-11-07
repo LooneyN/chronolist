@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 169
+BUILD = 170
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -3381,9 +3381,42 @@ class Worker(threading.Thread):
             self.verify(y, videos, state, L("FULL SCAN", "KOMPLETT"))
         self.log(L("PLAYLIST CHECK COMPLETE", "PLAYLIST-PRÜFUNG FERTIG"), "ok")
 
+    def playlist_gone(self, pid):
+        """Wurde die Playlist auf YouTube gelöscht? Kostet 1 Einheit; ohne Kontingent oder bei Fehlern: False."""
+        if quota_blocked("units"):
+            return False
+        try:
+            j = self.call("GET", "playlists", {"part": "id", "id": pid, "maxResults": 1})
+        except Exception:  # noqa: BLE001
+            return False
+        return isinstance(j, dict) and "items" in j and not j["items"]
+
+    def check_deleted(self, year):
+        """Playlist(s) auf YouTube gelöscht? Dann den Stand zurücksetzen, damit sie neu angelegt und gefüllt werden."""
+        sf = state_file(year)
+        state = load(sf, {})
+        parts = part_ids(state)
+        if not parts:
+            return
+        gone = [p for p in parts if self.playlist_gone(p)]
+        if not gone:
+            return
+        if len(gone) == len(parts):
+            keep = {k: state[k] for k in ("privacy",) if k in state}
+            save(sf, keep)
+            self.log(L(f"{year_label(year)} // PLAYLIST WAS DELETED ON YOUTUBE // CREATING A NEW ONE",
+                       f"{year_label(year)} // PLAYLIST WURDE AUF YOUTUBE GELÖSCHT // LEGE EINE NEUE AN"), "warn")
+            self.emit("progress", year)
+        else:
+            self.log(L(f"{year_label(year)} // {len(gone)} OF {len(parts)} PLAYLIST PARTS WERE DELETED ON YOUTUBE // "
+                       f"DELETE THE REST TOO TO REBUILD IT",
+                       f"{year_label(year)} // {len(gone)} VON {len(parts)} PLAYLIST-TEILEN AUF YOUTUBE GELÖSCHT // "
+                       f"ZUM NEUAUFBAU AUCH DEN REST LÖSCHEN"), "warn")
+
     def fill(self, year, videos):
         self.scanning = None
         sf = state_file(year)
+        self.check_deleted(year)
         state = self.ensure_playlist(year)
         self.cur = (year, videos)
         if state.get("repair"):
