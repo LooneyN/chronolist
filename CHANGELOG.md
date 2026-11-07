@@ -8,6 +8,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Added
 - Channel switcher: CHANNELS on the channel card opens a list of all channels you used. One click switches right away (no API). Each row shows the channel's AUTO-CHECK schedule and its last check with new videos. + ADD CHANNEL enters a new channel; the ✕ (click twice) takes a channel off the list, its data is kept. EDIT in a row edits a channel: fix its name or first year without the API, or LOOK UP AGAIN on YouTube.
 
+### Changed
+- Log lines that end in "..." (something is still running) show moving dots while a run is active, so you can see it is still working.
+
 ## [3.4.0] - 2026-11-07
 
 ### Note
@@ -17,7 +20,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Export and import custom lists: EXPORT in the list editor saves one list, EXPORT ALL under the cards saves all lists of the channel in one file. IMPORT reads such a file and adds the lists as new lists (a name that already exists gets "(2)"). Playlist and progress are not part of the file; single videos the channel does not have are left out.
 
 ### Changed
-- Log lines that end in "..." (something is still running) show moving dots while a run is active, so you can see it is still working.
 - PLAYLISTS is now called CHANNEL SETTINGS: everything in it applies to the channel shown (playlist templates, visibility, AUTO-CHECK schedule, left-out videos). The card shows the visibility and, with AUTO-CHECK on, the schedule.
 - The AUTO-CHECK schedule (interval or fixed times) moved from the PROGRAM settings to the CHANNEL SETTINGS, because it belongs to the channel. NEW VIDEO ALERT stays in the PROGRAM settings under NOTIFICATIONS.
 - Playlist templates, visibility and the AUTO-CHECK (on/off and schedule) are now stored per channel. Switching the channel switches them too; a new channel starts with the values of the channel that was active before. Your current values are kept.
