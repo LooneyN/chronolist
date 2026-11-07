@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-11-07
+
 ### Note
 - Updating from 3.3.0 or older inside Chronolist can stop with "The process cannot access the file because it is being used by another process". The new version is already downloaded then. Close Chronolist, delete (or rename) Chronolist.exe in its folder, rename Chronolist.new.exe to Chronolist.exe and start it. From this version on, Chronolist finishes the update by itself after closing.
 
@@ -190,7 +192,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.3.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/LooneyN/chronolist/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/LooneyN/chronolist/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/LooneyN/chronolist/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/LooneyN/chronolist/compare/v3.0.1...v3.1.0
