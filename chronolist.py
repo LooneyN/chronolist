@@ -19,6 +19,7 @@ Zugangsdaten:  credentials.json  (über API SETUP im Programm)
 Einstellungen: settings.json     (u. a. Zielkanal, Playlist-Namensvorlage, Update-Check)
 Fortschritt:   data/<kanal>/videos_<jahr>.json, collect_<jahr>.json, state_<jahr>.json
 """
+import copy
 import datetime
 import json
 import os
@@ -97,8 +98,8 @@ def default_list_description_template():
 PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
-VERSION = "3.5.0"
-BUILD = 161
+VERSION = "4.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
+BUILD = 171
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -400,6 +401,28 @@ def set_auto(key, on):
         AUTO_YEARS.discard(key)
 
 
+def auto_defaults(folder, first_year):
+    """AUTO-CHECK wird eingeschaltet, aber noch keine Karte hat AUTO: das laufende Jahr (im Januar auch das
+    Vorjahr) und alle eigenen Listen bekommen AUTO. Liefert True, wenn etwas eingeschaltet wurde."""
+    vf, lf = folder / "view.json", folder / "lists.json"
+    view = load(vf, {}) or {}
+    lists = load(lf, [])
+    lists = lists if isinstance(lists, list) else []
+    if view.get("auto_years") or any(x.get("auto") for x in lists):
+        return False
+    t = datetime.date.today()
+    years = [y for y in (t.year - 1, t.year) if growing(y) and (not first_year or y >= int(first_year))]
+    if not years and not lists:
+        return False
+    view["auto_years"] = years
+    save(vf, view)
+    for x in lists:
+        x["auto"] = True
+    if lists:
+        save(lf, lists)
+    return True
+
+
 QUOTA_DAILY = 10000      # Standard-Tageskontingent eines Google-Projekts
 QUOTA_RESERVE = 20       # bleibt immer übrig, damit ein Kanal hinzugefügt oder getauscht werden kann
 _quota_lock = threading.Lock()
@@ -694,6 +717,15 @@ def find_list(key):
     return None
 
 
+def key_privacy(key):
+    """Sichtbarkeit der Playlist zu einem Jahr oder einer Liste (eine Liste kann ihre eigene haben)."""
+    if is_list_key(key):
+        pv = (find_list(key) or {}).get("privacy")
+        if pv in PRIVACY_OPTIONS:
+            return pv
+    return ctx().privacy
+
+
 def list_name(key):
     lst = find_list(key) if isinstance(key, str) else None
     return (lst or {}).get("name") or str(key)
@@ -985,20 +1017,14 @@ def year_info(y):
     return {"code": code, "done": done, "total": n}
 
 
-FALLBACK_ON = False   # Spiegel des FALLBACK-Schalters, damit die Jahreskarten wissen, was ohne API geht
+API_ALL = False       # Programm-Option USE API FOR EVERYTHING: auch Schreiben über die API (sonst immer Edge)
+AUTO_RESERVE = 1000   # mit USE API FOR EVERYTHING: so viele Einheiten bleiben für AUTO-CHECK übrig
 
 
 def year_blocked(info):
     """Reset-Zeit, wenn dieses Jahr erst nach dem API-Reset weitergehen kann, sonst None.
-    Suchen geht nur über die API; Einfügen geht mit FALLBACK auch ohne."""
-    code = info["code"]
-    if code == "done":
-        return None
-    if FALLBACK_ON:
-        return None          # mit FALLBACK geht Suchen (Kanalseite) und Füllen ohne API
-    if code in ("none", "scanning"):
-        return quota_blocked("units") or quota_blocked("search")
-    return quota_blocked("units")
+    Ohne Kontingent geht Lesen über die Kanalseite und Schreiben ohnehin über Edge: nie blockiert."""
+    return None
 
 
 def status_role(code, running=False):
@@ -1516,9 +1542,13 @@ class NoVideosFound(BrowserFailed):
     """Die Kanalseite zeigt für dieses Jahr keine Videos (Jahr ist schlicht leer)."""
 
 
+EDGE_UA = None   # Kennung des normalen Edge (für das unsichtbare Fenster ohne "Headless" darin)
+
+
 class BrowserUplink:
-    def __init__(self, worker):
+    def __init__(self, worker, headless=False):
         self.w = worker
+        self.headless = headless     # AUTO-CHECK: Edge läuft unsichtbar im Hintergrund
         self.pw = self.ctx = self.page = None
         self.count = 0
 
@@ -1527,12 +1557,36 @@ class BrowserUplink:
             from playwright.sync_api import sync_playwright
         except ImportError:
             raise BrowserFailed(L("PLAYWRIGHT NOT INSTALLED // RUN: pip install playwright", "PLAYWRIGHT FEHLT // AUSFÜHREN: pip install playwright"))
-        self.w.log(L("BROWSER UPLINK // LAUNCHING EDGE ...", "BROWSER-MODUS // EDGE WIRD GESTARTET ..."))
+        global EDGE_UA
+        self.w.log(L("EDGE UPLINK // LAUNCHING EDGE" + (" IN THE BACKGROUND" if self.headless else "") + " ...",
+                     "EDGE // EDGE WIRD" + (" IM HINTERGRUND" if self.headless else "") + " GESTARTET ..."))
         self.w.act(L("STARTING EDGE ...", "STARTE EDGE ..."))
         self.pw = sync_playwright().start()
-        opts = dict(user_data_dir=str(BROWSER_PROFILE), headless=False,
+        opts = dict(user_data_dir=str(BROWSER_PROFILE), headless=self.headless,
                     args=["--disable-blink-features=AutomationControlled"],
                     ignore_default_args=["--enable-automation"], viewport=None)
+        if self.headless:
+            opts["viewport"] = {"width": 1280, "height": 900}
+            if EDGE_UA:
+                opts["user_agent"] = EDGE_UA
+        self.opts = opts
+        self.launch(opts)
+        if self.headless and not EDGE_UA:
+            # unsichtbares Edge meldet sich als "HeadlessEdg": einmal mit der normalen Kennung neu starten
+            try:
+                ua = self.page.evaluate("() => navigator.userAgent")
+            except Exception:  # noqa: BLE001
+                ua = ""
+            if "Headless" in ua:
+                EDGE_UA = ua.replace("HeadlessChrome", "Chrome").replace("Headless", "")
+                self.ctx.close()
+                opts["user_agent"] = EDGE_UA
+                self.launch(opts)
+        self.open_youtube()
+        self.wait_login()
+        self.w.act()
+
+    def launch(self, opts):
         try:
             self.ctx = self.pw.chromium.launch_persistent_context(channel="msedge", **opts)
         except Exception:  # noqa: BLE001
@@ -1542,9 +1596,24 @@ class BrowserUplink:
                 self.close()
                 raise BrowserFailed(L(f"BROWSER LAUNCH FAILED // {e}", f"BROWSER-START FEHLGESCHLAGEN // {e}"))
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
+
+    def relaunch(self, headless):
+        """Edge mit demselben Profil sichtbar bzw. unsichtbar neu starten."""
+        try:
+            self.ctx.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self.headless = headless
+        opts = dict(self.opts, headless=headless)
+        if headless:
+            opts["viewport"] = {"width": 1280, "height": 900}
+            if EDGE_UA:
+                opts["user_agent"] = EDGE_UA
+        else:
+            opts["viewport"] = None
+            opts.pop("user_agent", None)
+        self.launch(opts)
         self.open_youtube()
-        self.wait_login()
-        self.w.act()
 
     def open_youtube(self):
         self.page.goto("https://www.youtube.com/", wait_until="domcontentloaded", timeout=60000)
@@ -1558,16 +1627,28 @@ class BrowserUplink:
 
     def wait_login(self):
         if self.logged_in():
-            self.w.log(L("BROWSER UPLINK // SIGNED IN", "BROWSER-MODUS // ANGEMELDET"), "ok")
+            self.w.log(L("EDGE UPLINK // SIGNED IN TO YOUTUBE", "EDGE // BEI YOUTUBE ANGEMELDET"), "ok")
             return
+        if self.headless and self.w.auto:
+            self.w.emit("edge_signin")
+            raise BrowserFailed(L("NOT SIGNED IN TO YOUTUBE IN EDGE // SIGN IN ONCE: PROGRAM > YOUTUBE SIGN-IN",
+                                  "IN EDGE NICHT BEI YOUTUBE ANGEMELDET // EINMAL ANMELDEN: PROGRAMM > YOUTUBE SIGN-IN"))
+        back = self.headless
+        if back:
+            # Lauf von Hand ohne Anmeldung: Edge sichtbar öffnen, danach wieder im Hintergrund weiter
+            self.relaunch(False)
         self.w.log(L("SIGN IN TO YOUTUBE IN THE EDGE WINDOW // WAITING (MAX 15 MIN)", "IM EDGE-FENSTER BEI YOUTUBE ANMELDEN // WARTE (MAX. 15 MIN)"), "warn")
         self.w.emit("browser_login")
         end = time.time() + 15 * 60
         while time.time() < end:
             self.w.sleep(4)
             if "youtube.com" in (self.page.url or "") and self.logged_in():
-                self.w.log(L("BROWSER UPLINK // SIGNED IN", "BROWSER-MODUS // ANGEMELDET"), "ok")
+                self.w.log(L("EDGE UPLINK // SIGNED IN", "EDGE // ANGEMELDET"), "ok")
                 self.w.emit("mode", "browser")
+                if back:
+                    self.w.sleep(2)               # Anmeldung im Profil ablegen lassen
+                    self.relaunch(True)
+                    self.w.log(L("EDGE UPLINK // CONTINUING IN THE BACKGROUND", "EDGE // WEITER IM HINTERGRUND"), "ok")
                 return
         raise BrowserFailed(L("NO YOUTUBE SIGN-IN WITHIN 15 MIN", "KEINE YOUTUBE-ANMELDUNG INNERHALB VON 15 MIN"))
 
@@ -1593,7 +1674,7 @@ class BrowserUplink:
                 continue
             if res.get("fatal"):
                 if attempt == 2:
-                    raise BrowserFailed(L(f"BROWSER UPLINK // {res['fatal']}", f"BROWSER-MODUS // {res['fatal']}"))
+                    raise BrowserFailed(L(f"EDGE UPLINK // {res['fatal']}", f"EDGE // {res['fatal']}"))
                 self.open_youtube()
                 continue
             if res.get("status") == "STATUS_SUCCEEDED":
@@ -1610,9 +1691,9 @@ class BrowserUplink:
                 self.w.log(L(f"SKIPPED {video_id} // {err}", f"ÜBERSPRUNGEN {video_id} // {err}"), "warn")
                 return False
             if attempt == 2:
-                raise BrowserFailed(L(f"BROWSER UPLINK // HTTP {http} {err}", f"BROWSER-MODUS // HTTP {http} {err}"))
+                raise BrowserFailed(L(f"EDGE UPLINK // HTTP {http} {err}", f"EDGE // HTTP {http} {err}"))
             self.w.sleep(15)
-        raise BrowserFailed(L("BROWSER UPLINK // GAVE UP", "BROWSER-MODUS // AUFGEGEBEN"))
+        raise BrowserFailed(L("EDGE UPLINK // GAVE UP", "EDGE // AUFGEGEBEN"))
 
     def yt_call(self, path, body):
         for attempt in range(3):
@@ -1632,15 +1713,15 @@ class BrowserUplink:
                 continue
             if res.get("fatal"):
                 if attempt == 2:
-                    raise BrowserFailed(L(f"BROWSER UPLINK // {res['fatal']}", f"BROWSER-MODUS // {res['fatal']}"))
+                    raise BrowserFailed(L(f"EDGE UPLINK // {res['fatal']}", f"EDGE // {res['fatal']}"))
                 self.open_youtube()
                 continue
             if res.get("http") == 200 and res.get("json") is not None:
                 return res["json"]
             if attempt == 2:
-                raise BrowserFailed(L(f"BROWSER UPLINK // HTTP {res.get('http')} ON {path}", f"BROWSER-MODUS // HTTP {res.get('http')} BEI {path}"))
+                raise BrowserFailed(L(f"EDGE UPLINK // HTTP {res.get('http')} ON {path}", f"EDGE // HTTP {res.get('http')} BEI {path}"))
             time.sleep(5)
-        raise BrowserFailed(L("BROWSER UPLINK // GAVE UP", "BROWSER-MODUS // AUFGEGEBEN"))
+        raise BrowserFailed(L("EDGE UPLINK // GAVE UP", "EDGE // AUFGEGEBEN"))
 
     def add_many(self, playlist_id, video_ids):
         """Mehrere Videos in einer Anfrage. True = alle drin, False = abgelehnt (einzeln prüfen)."""
@@ -1667,7 +1748,7 @@ class BrowserUplink:
                 continue
             if res.get("fatal"):
                 if attempt == 2:
-                    raise BrowserFailed(L(f"BROWSER UPLINK // {res['fatal']}", f"BROWSER-MODUS // {res['fatal']}"))
+                    raise BrowserFailed(L(f"EDGE UPLINK // {res['fatal']}", f"EDGE // {res['fatal']}"))
                 self.open_youtube()
                 continue
             http, j = res.get("http"), res.get("json") or {}
@@ -1683,12 +1764,17 @@ class BrowserUplink:
             if http == 400 or j.get("status") == "STATUS_FAILED":
                 return False
             if attempt == 2:
-                raise BrowserFailed(L(f"BROWSER UPLINK // HTTP {http}", f"BROWSER-MODUS // HTTP {http}"))
+                raise BrowserFailed(L(f"EDGE UPLINK // HTTP {http}", f"EDGE // HTTP {http}"))
             self.w.sleep(15)
-        raise BrowserFailed(L("BROWSER UPLINK // GAVE UP", "BROWSER-MODUS // AUFGEGEBEN"))
+        raise BrowserFailed(L("EDGE UPLINK // GAVE UP", "EDGE // AUFGEGEBEN"))
 
-    def create_playlist(self, title, description):
-        j = self.yt_call("playlist/create", {"title": title, "privacyStatus": ctx().privacy.upper()})
+    def set_privacy(self, playlist_id, privacy):
+        j = self.yt_call("browse/edit_playlist", {"playlistId": playlist_id, "actions": [
+            {"action": "ACTION_SET_PLAYLIST_PRIVACY", "playlistPrivacy": privacy.upper()}]})
+        return j.get("status") == "STATUS_SUCCEEDED"
+
+    def create_playlist(self, title, description, privacy=None):
+        j = self.yt_call("playlist/create", {"title": title, "privacyStatus": (privacy or ctx().privacy).upper()})
         pid = j.get("playlistId")
         if not pid:
             raise BrowserFailed(L("PLAYLIST CREATE FAILED", "PLAYLIST KONNTE NICHT ANGELEGT WERDEN"))
@@ -1856,12 +1942,13 @@ class BrowserUplink:
 
 class Worker(threading.Thread):
     def __init__(self, years, limit, out, fallback=False, resolve=None, check_only=False, scan_only=False, auto=False,
-                 context=None):
+                 context=None, signin=False):
         super().__init__(daemon=True)
         # Kanal-Kontext des Laufs: ohne Angabe der angezeigte Kanal (dasselbe Objekt, damit z. B. geänderte
         # Vorlagen auch während des Laufs gelten); context_for(...) für einen anderen Kanal
-        self.ctx = context or ctx()
+        self.ctx = copy.copy(context or ctx())   # eigene Kopie: Kanalwechsel in der Oberfläche ändern sie nicht
         self.auto = auto             # automatische Prüfung im Hintergrund
+        self.signin = signin         # nur Edge öffnen, damit man sich bei YouTube anmelden kann
         self.resolve_target = resolve
         self.check_only = check_only
         self.scan_only = scan_only
@@ -1871,8 +1958,9 @@ class Worker(threading.Thread):
         self.years = years
         self.limit = limit
         self.out = out
-        self.fallback = fallback
-        self.mode = "api"
+        self.fallback = True         # Edge ist immer erlaubt (Schreiben, und Lesen ohne Kontingent)
+        self.api_all = API_ALL       # Option USE API FOR EVERYTHING: Schreiben erst über die API, dann Edge
+        self.mode = "api" if self.api_all else "browser"     # Weg für Schreibschritte
         self.browser = None
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
@@ -1942,6 +2030,11 @@ class Worker(threading.Thread):
         use_context(self.ctx)
         reason = "fertig"
         try:
+            if self.signin:
+                self.ensure_browser()          # wartet, bis man im Edge-Fenster angemeldet ist
+                self.log(L("EDGE IS SIGNED IN TO YOUTUBE // CHRONOLIST CAN USE IT NOW",
+                           "EDGE IST BEI YOUTUBE ANGEMELDET // CHRONOLIST KANN ES JETZT NUTZEN"), "ok")
+                return
             if not all(get_creds()):
                 raise RuntimeError(L("NO API CREDENTIALS // OPEN API SETUP", "KEINE API-ZUGANGSDATEN // API-KNOPF OBEN ÖFFNEN"))
             if self.auto and not load(TOKEN_FILE, None):
@@ -1961,7 +2054,7 @@ class Worker(threading.Thread):
             if self.scan_only:
                 self.scan_archive()
                 if self.fallback:
-                    # Archiv-Scan braucht API; was fehlt, kommt (nur mit FALLBACK) über die Kanalseite, ohne Kontingent
+                    # Archiv-Scan braucht API; was fehlt, kommt über die Kanalseite, ohne Kontingent
                     for y in ctx().years:
                         if load(videos_file(y), None) is None:
                             self.check()
@@ -2038,15 +2131,15 @@ class Worker(threading.Thread):
             reason = "quota"
             y = getattr(self, "scanning", None)
             if y is not None:
-                self.log(L(f"{y} NOT SCANNED YET // THE VIDEO SCAN NEEDS API QUOTA (THE BROWSER FALLBACK "
-                           f"CAN ONLY ADD) // CONTINUES AFTER RESET {quota_reset_local()}",
-                           f"{y} NOCH NICHT GESUCHT // DIE SUCHE BRAUCHT API-KONTINGENT (DER BROWSER KANN NUR "
-                           f"EINFÜGEN) // GEHT NACH DEM RESET {quota_reset_local()} WEITER"), "warn")
+                self.log(L(f"{y} NOT SCANNED YET // THE VIDEO SCAN NEEDS API QUOTA // "
+                           f"CONTINUES AFTER RESET {quota_reset_local()}",
+                           f"{y} NOCH NICHT GESUCHT // DIE SUCHE BRAUCHT API-KONTINGENT // "
+                           f"GEHT NACH DEM RESET {quota_reset_local()} WEITER"), "warn")
             else:
                 self.log(L(f"DAILY API QUOTA REACHED // PROGRESS SAVED // RESET {quota_reset_local()}", f"TAGESKONTINGENT ERREICHT // FORTSCHRITT GESPEICHERT // RESET {quota_reset_local()}"), "warn")
         except BrowserFailed as e:
             reason = "fehler"
-            self.log(L(f"BROWSER FALLBACK FAILED // {e}", f"FALLBACK FEHLGESCHLAGEN // {e}"), "err")
+            self.log(L(f"EDGE FAILED // {e}", f"EDGE FEHLGESCHLAGEN // {e}"), "err")
         except Exception as e:  # noqa: BLE001
             reason = "fehler"
             self.log(L(f"ERROR // {e}", f"FEHLER // {e}"), "err")
@@ -2060,10 +2153,6 @@ class Worker(threading.Thread):
     def auto_run(self):
         """Automatische Prüfung: laufendes Jahr nach neuen Videos absuchen (nur dort, wo schon ein Stand
         gespeichert ist), dann das Jahr (wenn gewählt) und die Listen mit Auto-Haken auffüllen."""
-        if quota_blocked("units"):
-            self.log(L(f"AUTO-CHECK SKIPPED // API QUOTA USED UP UNTIL {quota_reset_local()}",
-                       f"AUTO-PRÜFUNG ÜBERSPRUNGEN // KONTINGENT BIS {quota_reset_local()} AUFGEBRAUCHT"), "warn")
-            return
         keys = [y for y in self.years if is_list_key(y)]
         before = {}
         for k in self.years:
@@ -2085,7 +2174,8 @@ class Worker(threading.Thread):
         for k in self.years:
             after = len(load(videos_file(k), None) or [])
             result[k] = 0 if before[k] is None else max(0, after - before[k])
-        self.emit("auto_result", result)
+        self.emit("auto_result", result, str(ctx().chan_dir), {k: year_label(k) for k in result},
+                  ctx().channel.get("title") or ctx().channel.get("handle") or "")
         total = sum(result.values())
         self.log(L(f"AUTO-CHECK DONE // {total} NEW VIDEO{'S' if total != 1 else ''}",
                    f"AUTO-PRÜFUNG FERTIG // {total} NEUE{'S' if total == 1 else ''} VIDEO{'S' if total != 1 else ''}"),
@@ -2150,6 +2240,12 @@ class Worker(threading.Thread):
         cost = api_cost(method, path)
         exempt = method == "GET" and path == "channels"   # Kanalabfrage darf in die Reserve
         if quota_blocked("units") and not (exempt and reserve_only()):
+            raise QuotaExceeded()
+        if self.api_all and not self.auto and method != "GET" and quota_used() + cost > QUOTA_DAILY - AUTO_RESERVE:
+            if not getattr(self, "_reserve_logged", False):
+                self._reserve_logged = True
+                self.log(L(f"API QUOTA // {AUTO_RESERVE} UNITS KEPT FOR AUTO-CHECK",
+                           f"API-KONTINGENT // {AUTO_RESERVE} EINHEITEN BLEIBEN FÜR AUTO-CHECK"), "warn")
             raise QuotaExceeded()
         if not exempt and quota_used() + cost > QUOTA_DAILY - QUOTA_RESERVE:
             mark_quota("units", "reserve")
@@ -2308,12 +2404,12 @@ class Worker(threading.Thread):
                 self.emit("progress", y)
         prog["done"] = True
         save(archive_file(), prog)
-        self.log(L(f"ARCHIVE SCAN COMPLETE // {len(written)} YEARS READY FOR THE BROWSER FALLBACK", f"ARCHIV-SCAN FERTIG // {len(written)} JAHRE BEREIT FÜR DEN FALLBACK"), "ok")
+        self.log(L(f"ARCHIVE SCAN COMPLETE // {len(written)} YEARS READY", f"ARCHIV-SCAN FERTIG // {len(written)} JAHRE BEREIT"), "ok")
         if not complete:
             self.log(L(f"UPLOAD LIST CAPPED BY YOUTUBE // {oldest} AND OLDER USE THE SLOWER DATE SEARCH", f"YOUTUBE KAPPT DIE UPLOAD-LISTE // {oldest} UND ÄLTER ÜBER DIE LANGSAMERE DATUMSSUCHE"), "warn")
 
     def use_web(self, year):
-        """Videoliste über die Kanalseite holen? Nur mit FALLBACK. Für Jahre hinter der 20.000er-Grenze
+        """Videoliste über die Kanalseite holen? Für Jahre hinter der 20.000er-Grenze
         immer (die API-Suche ist lückenhaft), sonst nur, wenn das Kontingent leer ist."""
         if not self.fallback:
             return False
@@ -2324,8 +2420,10 @@ class Worker(threading.Thread):
 
     def ensure_browser(self):
         if not self.browser:
-            self.browser = BrowserUplink(self)
+            self.browser = BrowserUplink(self, headless=not self.signin)   # sichtbar nur zum Anmelden
             self.browser.start()
+            if self.mode == "browser":
+                self.emit("mode", "browser")
 
     def channel_id(self):
         """Kanal-ID besorgen: gespeichert, aus Scan-Daten oder über YouTube auflösen. Wird gemerkt."""
@@ -2550,7 +2648,7 @@ class Worker(threading.Thread):
 
     def refresh_new(self, year, videos):
         """Laufendes Jahr: neue Videos hinten anhängen. Mit Kontingent über die API (Upload-Liste,
-        1 Einheit pro 50), sonst mit FALLBACK über die Kanalseite."""
+        1 Einheit pro 50), sonst über die Kanalseite."""
         known = {v["id"] for v in videos}
         self.act(L("LOOKING FOR NEW VIDEOS ...", "SUCHE NEUE VIDEOS ..."), year)
         new = []          # (id, published) neueste zuerst
@@ -2596,8 +2694,8 @@ class Worker(threading.Thread):
                             if d[:4] == str(year):
                                 new.append((v, d))
             else:
-                self.log(L(f"{year_label(year)} // CHECK FOR NEW VIDEOS SKIPPED // NEEDS API QUOTA OR FALLBACK",
-                           f"{year_label(year)} // NEUE VIDEOS NICHT GEPRÜFT // BRAUCHT API-KONTINGENT ODER FALLBACK"), "warn")
+                self.log(L(f"{year_label(year)} // CHECK FOR NEW VIDEOS SKIPPED // NEEDS API QUOTA OR EDGE",
+                           f"{year_label(year)} // NEUE VIDEOS NICHT GEPRÜFT // BRAUCHT API-KONTINGENT ODER EDGE"), "warn")
         except QuotaExceeded:
             self.log(L(f"{year_label(year)} // CHECK FOR NEW VIDEOS SKIPPED // QUOTA", f"{year_label(year)} // NEUE VIDEOS NICHT GEPRÜFT // KONTINGENT"), "warn")
         finally:
@@ -2769,7 +2867,7 @@ class Worker(threading.Thread):
         got = 0
         progress()
         try:
-            if self.mode == "api" and not quota_blocked("units"):
+            if not quota_blocked("units"):
                 for y in sorted(by_year):
                     for pid in part_ids(load(state_file(y), {})):
                         token = None
@@ -2845,6 +2943,10 @@ class Worker(threading.Thread):
             if not videos and not load(state_file(key), {}).get("playlist_id"):
                 self.log(L("NO MATCHES // NO PLAYLIST CREATED YET", "KEINE TREFFER // NOCH KEINE PLAYLIST ANGELEGT"), "warn")
                 continue
+            try:
+                self.apply_privacy(key)
+            except BrowserFailed as e:
+                self.log(L(f"VISIBILITY NOT CHANGED // {e}", f"SICHTBARKEIT NICHT GEÄNDERT // {e}"), "warn")
             self.fill(key, videos)
 
     # --- Playlist befüllen
@@ -2854,7 +2956,7 @@ class Worker(threading.Thread):
             return
         try:
             if load(videos_file(year), None) is None:
-                self.log(L(f"PRE-SCAN {year_label(year)} FOR BROWSER FALLBACK", f"VORAB-SUCHE {year_label(year)} FÜR DEN FALLBACK"))
+                self.log(L(f"PRE-SCAN {year_label(year)} FOR EDGE", f"VORAB-SUCHE {year_label(year)} FÜR EDGE"))
             self.collect(year)
             self.ensure_playlist(year)
         except SearchLimit:
@@ -2874,30 +2976,58 @@ class Worker(threading.Thread):
         finally:
             self.act(None, year)
 
-    def create_playlist(self, title, description):
+    def create_playlist(self, title, description, privacy=None):
+        privacy = privacy or ctx().privacy
         pid = None
         if self.mode == "api":
             try:
                 pid = self.call("POST", "playlists", {"part": "snippet,status"}, {
                     "snippet": {"title": title, "description": description},
-                    "status": {"privacyStatus": ctx().privacy},
+                    "status": {"privacyStatus": privacy},
                 })["id"]
             except QuotaExceeded:
                 if not self.fallback:
                     raise
                 self.switch_to_browser()
         if pid is None:
-            if not self.browser:
-                raise QuotaExceeded()
-            pid = self.browser.create_playlist(title, description)
+            self.ensure_browser()
+            pid = self.browser.create_playlist(title, description, privacy)
         return pid
+
+    def apply_privacy(self, key):
+        """Eigene Liste: geänderte Sichtbarkeit auf die vorhandene(n) Playlist(s) übertragen."""
+        lst = find_list(key) or {}
+        want = lst.get("privacy")
+        state = load(state_file(key), {})
+        if want not in PRIVACY_OPTIONS or not state.get("playlist_id") or state.get("privacy", ctx().privacy) == want:
+            return
+        ok = True
+        for pid in part_ids(state):
+            try:
+                if self.mode == "api" and not quota_blocked("units"):
+                    self.call("PUT", "playlists", {"part": "status"}, {"id": pid, "status": {"privacyStatus": want}})
+                else:
+                    self.ensure_browser()
+                    ok = self.browser.set_privacy(pid, want) and ok
+            except QuotaExceeded:
+                self.ensure_browser()
+                ok = self.browser.set_privacy(pid, want) and ok
+        if ok:
+            state["privacy"] = want
+            save(state_file(key), state)
+            self.log(L(f"PLAYLIST VISIBILITY // {privacy_label(want)}", f"PLAYLIST-SICHTBARKEIT // {privacy_label(want)}"), "ok")
+        else:
+            self.log(L(f"COULD NOT CHANGE THE VISIBILITY // PLEASE SET IT TO {privacy_label(want)} ON YOUTUBE",
+                       f"SICHTBARKEIT NICHT GEÄNDERT // BITTE AUF YOUTUBE AUF {privacy_label(want)} STELLEN"), "warn")
 
     def rename_playlist(self, pid, title, description):
         """Bestmöglich umbenennen (Browser oder API). Fehler sind nicht schlimm, nur ein Hinweis."""
         try:
+            if self.mode == "browser":
+                self.ensure_browser()
             if self.browser and self.browser.rename_playlist(pid, title):
                 return True
-            if not quota_blocked("units"):
+            if self.api_all and not quota_blocked("units"):
                 self.call("PUT", "playlists", {"part": "snippet"},
                           {"id": pid, "snippet": {"title": title, "description": description}})
                 return True
@@ -2915,7 +3045,7 @@ class Worker(threading.Thread):
         while len(parts) <= k:
             n = len(parts) + 1
             title = part_title(year, n, n)
-            pid = self.create_playlist(title, playlist_description(year))
+            pid = self.create_playlist(title, playlist_description(year), key_privacy(year))
             parts.append(pid)
             state["parts"] = parts
             state["playlist_id"] = parts[0]
@@ -2930,19 +3060,18 @@ class Worker(threading.Thread):
         sf = state_file(year)
         state = load(sf, {})
         if not state.get("playlist_id"):
-            pid = self.create_playlist(playlist_title(year), playlist_description(year))
-            state = {"playlist_id": pid, "parts": [pid], "next": 0, "skipped": []}
+            pv = key_privacy(year)
+            pid = self.create_playlist(playlist_title(year), playlist_description(year), pv)
+            state = {"playlist_id": pid, "parts": [pid], "next": 0, "skipped": [], "privacy": pv}
             save(sf, state)
             self.log(L(f"PLAYLIST CREATED // {playlist_title(year)}", f"PLAYLIST ANGELEGT // {playlist_title(year)}"), "ok")
         return state
 
     def switch_to_browser(self):
-        self.log(L("DAILY API QUOTA REACHED // SWITCHING TO BROWSER FALLBACK", "TAGESKONTINGENT ERREICHT // WECHSEL ZUM FALLBACK"), "warn")
+        self.log(L("API QUOTA LIMIT REACHED // CONTINUING IN EDGE", "API-KONTINGENT AUSGESCHÖPFT // WEITER ÜBER EDGE"), "warn")
         self.mode = "browser"
+        self.ensure_browser()
         self.emit("mode", "browser")
-        if not self.browser:          # evtl. schon offen (Kanalseite)
-            self.browser = BrowserUplink(self)
-            self.browser.start()
 
     def add_video(self, playlist_id, video_id):
         """True = hinzugefügt, False = übersprungen."""
@@ -2961,10 +3090,12 @@ class Worker(threading.Thread):
                 if not self.fallback:
                     raise
                 self.switch_to_browser()
+        self.ensure_browser()
         return self.browser.add(playlist_id, video_id)
 
     def add_batch(self, playlist_id, video_ids):
         """Browser-Modus: bis zu BATCH_SIZE Videos in einer Anfrage. Liefert pro Video True/False."""
+        self.ensure_browser()
         if self.browser.add_many(playlist_id, video_ids):
             return [True] * len(video_ids)
         # Abgelehnt: prüfen, was trotzdem drin ist, den Rest einzeln versuchen (verhindert Duplikate)
@@ -2996,14 +3127,17 @@ class Worker(threading.Thread):
             pause, label = None, None
         if pause:
             resume = (datetime.datetime.now() + datetime.timedelta(seconds=pause)).strftime("%H:%M:%S")
-            self.log(L(f"BROWSER UPLINK // {count} ADDED // {label} {fmt_secs(pause)}, RESUME {resume}", f"BROWSER-MODUS // {count} EINGEFÜGT // {wait_label(label)} {fmt_secs(pause)}, WEITER UM {resume}"))
+            self.log(L(f"EDGE UPLINK // {count} ADDED // {label} {fmt_secs(pause)}, RESUME {resume}", f"EDGE // {count} EINGEFÜGT // {wait_label(label)} {fmt_secs(pause)}, WEITER UM {resume}"))
             self.sleep(pause, label)
+            self.log(L("EDGE UPLINK // ADDING VIDEOS ...", "EDGE // FÜGE VIDEOS EIN ..."))
         else:
             self.sleep(random.uniform(*BATCH_PAUSE), "NEXT BATCH")
 
     # --- Playlist-Checker
-    def list_playlist(self, pid):
-        if self.mode == "api":
+    def list_playlist(self, pid, web=False):
+        """Playlist lesen: über die API (billig). Über Edge, wenn kein Kontingent da ist oder `web` gesetzt ist
+        (Edge braucht zum Entfernen seine eigenen Kennungen)."""
+        if not web and not quota_blocked("units"):
             try:
                 items, token = [], None
                 while True:
@@ -3018,14 +3152,13 @@ class Worker(threading.Thread):
                     if not token:
                         return items
             except QuotaExceeded:
-                if not self.fallback:
-                    raise
-                self.switch_to_browser()
+                pass
+        self.ensure_browser()
         return self.browser.list_items(pid, lambda n: self.act(
             L(f"CHECKING PLAYLIST // {n} READ", f"PRÜFE PLAYLIST // {n} GELESEN")))
 
     def remove_item(self, pid, item):
-        if self.mode == "api" and item.get("item"):
+        if self.mode == "api" and item.get("item") and not quota_blocked("units"):
             try:
                 self.call("DELETE", "playlistItems", {"id": item["item"]})
                 return
@@ -3051,9 +3184,10 @@ class Worker(threading.Thread):
             seen = set()
             for pid in pids:              # Teile der Reihe nach; doppelt = schon in einem früheren Teil
                 before = set(seen)
+                web = False
                 for _ in range(3):
                     try:
-                        items = self.list_playlist(pid)
+                        items = self.list_playlist(pid, web)
                         here, dups = set(), []
                         for it in items:
                             if it["vid"] in here or it["vid"] in before:
@@ -3067,6 +3201,7 @@ class Worker(threading.Thread):
                         seen = before | here
                         break
                     except RelistNeeded:
+                        web = True        # zum Entfernen über Edge: Playlist dort lesen
                         continue
             n = state.get("next", 0)
             moved = 0
@@ -3273,16 +3408,45 @@ class Worker(threading.Thread):
             self.verify(y, videos, state, L("FULL SCAN", "KOMPLETT"))
         self.log(L("PLAYLIST CHECK COMPLETE", "PLAYLIST-PRÜFUNG FERTIG"), "ok")
 
+    def playlist_gone(self, pid):
+        """Wurde die Playlist auf YouTube gelöscht? Kostet 1 Einheit; ohne Kontingent oder bei Fehlern: False."""
+        if quota_blocked("units"):
+            return False
+        try:
+            j = self.call("GET", "playlists", {"part": "id", "id": pid, "maxResults": 1})
+        except Exception:  # noqa: BLE001
+            return False
+        return isinstance(j, dict) and "items" in j and not j["items"]
+
+    def check_deleted(self, year):
+        """Playlist(s) auf YouTube gelöscht? Dann den Stand zurücksetzen, damit sie neu angelegt und gefüllt werden."""
+        sf = state_file(year)
+        state = load(sf, {})
+        parts = part_ids(state)
+        if not parts:
+            return
+        gone = [p for p in parts if self.playlist_gone(p)]
+        if not gone:
+            return
+        if len(gone) == len(parts):
+            keep = {k: state[k] for k in ("privacy",) if k in state}
+            save(sf, keep)
+            self.log(L(f"{year_label(year)} // PLAYLIST WAS DELETED ON YOUTUBE // CREATING A NEW ONE",
+                       f"{year_label(year)} // PLAYLIST WURDE AUF YOUTUBE GELÖSCHT // LEGE EINE NEUE AN"), "warn")
+            self.emit("progress", year)
+        else:
+            self.log(L(f"{year_label(year)} // {len(gone)} OF {len(parts)} PLAYLIST PARTS WERE DELETED ON YOUTUBE // "
+                       f"DELETE THE REST TOO TO REBUILD IT",
+                       f"{year_label(year)} // {len(gone)} VON {len(parts)} PLAYLIST-TEILEN AUF YOUTUBE GELÖSCHT // "
+                       f"ZUM NEUAUFBAU AUCH DEN REST LÖSCHEN"), "warn")
+
     def fill(self, year, videos):
         self.scanning = None
         sf = state_file(year)
+        self.check_deleted(year)
         state = self.ensure_playlist(year)
         self.cur = (year, videos)
         if state.get("repair"):
-            if not self.fallback:
-                self.log(L(f"{year_label(year)} // PLAYLIST NEEDS A REPAIR (MISSING VIDEOS / SHORTS TO REMOVE) // TURN ON FALLBACK FOR IT",
-                           f"{year_label(year)} // PLAYLIST MUSS NACHGETRAGEN/BEREINIGT WERDEN // DAFÜR FALLBACK EINSCHALTEN"), "warn")
-                return False
             state = self.repair(year, videos, state)
         if not state.get("tracked") and 0 < state.get("next", 0) < len(videos):
             # einmalig für ältere Stände: volle Prüfung, danach reicht die schnelle
@@ -3294,6 +3458,9 @@ class Worker(threading.Thread):
         if i >= len(videos):
             self.log(L(f"{year_label(year)} ALREADY COMPLETE", f"{year_label(year)} IST SCHON FERTIG"))
             return True
+        rest = len(videos) - i
+        self.log(L(f"{year_label(year)} // ADDING {rest} VIDEO{'S' if rest != 1 else ''} ...",
+                   f"{year_label(year)} // FÜGE {rest} VIDEO{'S' if rest != 1 else ''} EIN ..."))
         while i < len(videos):
             if self.limit and added >= self.limit:
                 self.log(L(f"{year_label(year)} // RUN LIMIT OF {self.limit} VIDEOS REACHED", f"{year_label(year)} // LIMIT VON {self.limit} VIDEOS FÜR DIESEN LAUF ERREICHT"))
@@ -4942,8 +5109,13 @@ class ChannelCard(Panel):
         self.create_text(nx, y0 + h * 0.22, text=L("TARGET LOCKED", "ZIEL ERFASST") if has else L("NO TARGET", "KEIN ZIEL"), anchor="w",
                          font=F("mono", 10), fill=RED)
         if tx - nx > px(260):
-            self.create_text(tx - px(12), y0 + h * 0.22, text="CH.ID " + (ctx().channel.get("id", "")[-6:] or "------"),
-                             anchor="e", font=F("mono", 10, False), fill=FLUFF)
+            n_auto = auto_channel_count() if has else 0
+            if n_auto >= 2:
+                self.create_text(tx - px(12), y0 + h * 0.22, text=L(f"AUTO // {n_auto} CHANNELS", f"AUTO // {n_auto} KANÄLE"),
+                                 anchor="e", font=F("mono", 10), fill=CYAN)
+            else:
+                self.create_text(tx - px(12), y0 + h * 0.22, text="CH.ID " + (ctx().channel.get("id", "")[-6:] or "------"),
+                                 anchor="e", font=F("mono", 10, False), fill=FLUFF)
         maxw = tx - nx - px(12)
         name = channel_name().upper() if has else L("SET A YOUTUBE CHANNEL", "YOUTUBE-KANAL WÄHLEN")
         self.create_text(nx, y0 + h * 0.50, text=fit_text(name, F("ui", 21), maxw), anchor="w",
@@ -4979,6 +5151,36 @@ class ChannelCard(Panel):
         self.redraw()
 
 
+def schedule_from(st):
+    """(an?, Modus, Intervall, Uhrzeiten) aus den Einstellungen eines Kanals."""
+    times = sorted({t for t in (parse_time(x) for x in (st.get("auto_times") or [])) if t})
+    mode = "times" if st.get("auto_mode") == "times" and times else "interval"
+    iv = st.get("auto_interval", AUTO_INTERVAL_DEFAULT)
+    iv = iv if isinstance(iv, int) and clean_interval(iv) == iv else AUTO_INTERVAL_DEFAULT
+    return bool(st.get("auto_check")), mode, iv, times
+
+
+def plan_next(mode, interval, times, first=False):
+    """Zeitpunkt der nächsten Auto-Prüfung (beim Start im Intervall-Modus schon nach einer Minute)."""
+    if mode == "times" and times:
+        return next_time_at(times)
+    return time.time() + (60 if first else interval * 60)
+
+
+def channel_folder(entry):
+    return DATA_DIR / (entry.get("folder") or channel_slug(entry))
+
+
+def channel_settings_of(entry):
+    st = load(channel_folder(entry) / "settings.json", None)
+    return st if isinstance(st, dict) else {}
+
+
+def auto_channel_count():
+    """Wie viele Kanäle aus der Kanalliste haben AUTO-CHECK an?"""
+    return sum(1 for c in load_channels() if channel_settings_of(c).get("auto_check"))
+
+
 def channel_overview(entry):
     """Kurzinfo eines Kanals aus seinem Ordner (ohne ihn anzuzeigen): AUTO-CHECK-Stand und letzte Prüfung."""
     folder = DATA_DIR / (entry.get("folder") or channel_slug(entry))
@@ -5011,11 +5213,15 @@ class SwitchRow(tk.Canvas):
 
     H = 58
 
-    def __init__(self, master, entry, active, on_pick, on_remove, on_edit):
+    def __init__(self, master, entry, active, on_pick, on_remove, on_edit, on_auto, app=None):
         super().__init__(master, height=px(self.H), bg=BG, highlightthickness=0, bd=0, cursor="hand2")
         self.entry, self.active = entry, active
-        self.on_pick, self.on_remove, self.on_edit = on_pick, on_remove, on_edit
-        self.hover = self.x_hover = self.e_hover = self.confirm = False
+        self.app = app             # gesetzt, wenn für diesen Kanal gerade ein Lauf aktiv ist
+        if app:
+            self.after(500, self.live_tick)
+        self.on_pick, self.on_remove, self.on_edit, self.on_auto = on_pick, on_remove, on_edit, on_auto
+        self.hover = self.x_hover = self.e_hover = self.a_hover = self.confirm = False
+        self.auto_box = None
         self.auto, self.when, self.new = channel_overview(entry)
         self.bind("<Configure>", lambda e: self.redraw())
         self.bind("<Map>", lambda e: self.redraw())
@@ -5040,14 +5246,20 @@ class SwitchRow(tk.Canvas):
         w = self.winfo_width()
         xh = (not self.active) and e.x >= self.x_area(w)
         eh = self.e_area(w) <= e.x < self.x_area(w)
-        if (xh, eh) != (self.x_hover, self.e_hover):
-            self.x_hover, self.e_hover = xh, eh
+        b = self.auto_box
+        ah = bool(b) and b[0] <= e.x <= b[2] and b[1] <= e.y <= b[3]
+        if (xh, eh, ah) != (self.x_hover, self.e_hover, self.a_hover):
+            self.x_hover, self.e_hover, self.a_hover = xh, eh, ah
             self.redraw()
 
     def click(self, e):
         w = self.winfo_width()
         # Aktionen erst nach dem Klick ausführen: sie schließen bzw. bauen die Liste neu (diese Zeile verschwindet)
         top = self.winfo_toplevel()
+        b = self.auto_box
+        if b and not self.confirm and b[0] <= e.x <= b[2] and b[1] <= e.y <= b[3]:
+            top.after(20, self.on_auto, self.entry)
+            return
         if self.e_area(w) <= e.x < self.x_area(w) and not self.confirm:
             top.after(20, self.on_edit, self.entry)
             return
@@ -5063,6 +5275,17 @@ class SwitchRow(tk.Canvas):
             self.reset_confirm()
             return
         top.after(20, self.on_pick, self.entry)
+
+    def live_tick(self):
+        """Läuft hier gerade etwas: Anzeige blinken lassen und Status aktuell halten; danach normal zeichnen."""
+        if not self.winfo_exists() or not self.app:
+            return
+        if self.app.worker_dir() is None:
+            self.app = None
+            self.auto, self.when, self.new = channel_overview(self.entry)
+        else:
+            self.after(500, self.live_tick)
+        self.redraw()
 
     def reset_confirm(self):
         if self.winfo_exists() and self.confirm:
@@ -5091,9 +5314,19 @@ class SwitchRow(tk.Canvas):
             name = self.entry.get("title") or self.entry.get("handle") or "?"
             auto = self.auto or L("AUTO OFF", "AUTO AUS")
             fa = F("mono", 10)
-            aw = tkfont.Font(font=fa).measure(auto)
-            self.create_text(xr, h * 0.33, text=auto, anchor="e", font=fa,
-                             fill=CYAN if self.auto else mix(TEXT_MUTED, BG, 0.7))
+            aw = tkfont.Font(font=fa).measure(auto) + px(26)
+            # AUTO-CHECK-Schalter: kleines Feld mit LED, Klick schaltet AUTO-CHECK dieses Kanals an/aus
+            ay = h * 0.33
+            ax0, ax1 = xr - aw, xr
+            on = bool(self.auto)
+            col = CYAN if on else mix(TEXT_MUTED, BG, 0.85 if self.a_hover else 0.65)
+            self.create_rectangle(ax0, ay - px(10), ax1, ay + px(10), fill=mix(CYAN, BG, 0.16) if on else BG,
+                                  outline=CYAN if self.a_hover else mix(col, BG, 0.8))
+            k = px(6)
+            lx = ax0 + px(9)
+            self.create_rectangle(lx - k / 2, ay - k / 2, lx + k / 2, ay + k / 2, fill=CYAN if on else BG, outline=col)
+            self.create_text(lx + px(8), ay, text=auto, anchor="w", font=fa, fill=col)
+            self.auto_box = (ax0 - px(3), ay - px(13), ax1 + px(3), ay + px(13))
             self.create_text(px(16), h * 0.33, anchor="w", font=F("ui", 15),
                              fill=TEXT if (self.active or self.hover) else mix(TEXT, BG, 0.8),
                              text=fit_text(name.upper(), F("ui", 15), xr - aw - px(32)))
@@ -5102,7 +5335,12 @@ class SwitchRow(tk.Canvas):
                 sub += L("  //  SHOWN", "  //  ANGEZEIGT")
             self.create_text(px(16), h * 0.72, anchor="w", font=F("mono", 10, False), fill=TEXT_MUTED,
                              text=fit_text(sub, F("mono", 10, False), xr // 2))
-            if self.when:
+            if self.app:
+                on = int(time.time() * 2) % 2 == 0
+                txt = "●  " + (getattr(self.app, "status_text", "") or L("RUNNING", "LÄUFT"))
+                self.create_text(xr, h * 0.72, anchor="e", font=F("mono", 10),
+                                 fill=GREEN if on else mix(GREEN, BG, 0.55), text=txt)
+            elif self.when:
                 extra = (f"  //  +{self.new} " + L("NEW", "NEU")) if self.new else ""
                 e = self.create_text(xr, h * 0.72, anchor="e", font=F("mono", 10), text=extra,
                                      fill=GREEN) if extra else None
@@ -5152,8 +5390,10 @@ class ChannelSwitcher(tk.Toplevel):
         cur = ctx().channel
         if not chans and cur.get("first_year"):
             chans = [dict(cur)]
+        live = self.app.worker_dir()
         for c in chans:
-            r = SwitchRow(self.inner, c, same_channel(c, cur), self.pick, self.remove, self.edit)
+            r = SwitchRow(self.inner, c, same_channel(c, cur), self.pick, self.remove, self.edit, self.toggle_auto,
+                          app=self.app if live is not None and channel_folder(c) == live else None)
             r.pack(fill="x", padx=px(8), pady=(0, px(4)))
         add = CutButton(self.inner, L("+  ADD CHANNEL", "+  KANAL HINZUFÜGEN"), self.add, height=px(32), size=11)
         add.set_color(CYAN)
@@ -5186,8 +5426,6 @@ class ChannelSwitcher(tk.Toplevel):
         if same_channel(entry, ctx().channel):
             self.close()
             return
-        if self.app.busy():
-            return
         self.close()
         info = {k: entry[k] for k in CHANNEL_FIELDS if k in entry}
         self.app.write_log(L(f"CHANNEL SWITCHED // {info.get('title') or info.get('handle')}",
@@ -5205,6 +5443,27 @@ class ChannelSwitcher(tk.Toplevel):
     def add(self):
         self.close()
         self.app.edit_channel(new=True)
+
+    def toggle_auto(self, entry):
+        """AUTO-CHECK eines Kanals direkt in der Liste an- oder ausschalten (Zeitplan bleibt, wie er ist)."""
+        if same_channel(entry, ctx().channel):
+            self.app.toggle_auto_check()
+        else:
+            f = channel_folder(entry) / "settings.json"
+            st = load(f, None)
+            st = st if isinstance(st, dict) else {}
+            st["auto_check"] = not st.get("auto_check")
+            save(f, st)
+            if st["auto_check"]:
+                auto_defaults(channel_folder(entry), entry.get("first_year"))
+            if not st["auto_check"]:
+                self.app.auto_next_by.pop(channel_folder(entry).name, None)
+            name = entry.get("handle") or entry.get("title") or ""
+            self.app.write_log(L(f"AUTO-CHECK {'ON' if st['auto_check'] else 'OFF'} // {name}",
+                                 f"AUTO-PRÜFUNG {'AN' if st['auto_check'] else 'AUS'} // {name}"), "info")
+            self.app.channel_card.redraw()
+        self.build()
+        self.app.place_switcher()
 
     def edit(self, entry):
         if self.app.busy():
@@ -5877,6 +6136,66 @@ class WhatsNewDialog(tk.Toplevel):
         self.focus_force()
 
 
+class EdgeNoticeDialog(tk.Toplevel):
+    """Einmalig: Chronolist liest über die API und schreibt über Edge. Mit Hinweis auf das Risiko."""
+
+    def __init__(self, app):
+        super().__init__(app, bg=BG)
+        self.app = app
+        self.title(L("How Chronolist works with YouTube", "So arbeitet Chronolist mit YouTube"))
+        self.transient(app)
+        self.resizable(False, False)
+        pad = px(18)
+        Section(self, L("YOUTUBE // EDGE", "YOUTUBE // EDGE"), "NOTICE // ONCE").pack(
+            fill="x", padx=pad, pady=(pad, px(10)))
+        base = "Segoe UI" if "Segoe UI" in tkfont.families(self) else "TkDefaultFont"
+        paras = [
+            (TEXT, L("Chronolist reads through the official YouTube API: finding videos and checking playlists. "
+                     "That costs almost none of the daily quota.",
+                     "Chronolist liest über die offizielle YouTube-API: Videos finden und Playlists prüfen. Das kostet "
+                     "kaum etwas vom Tageskontingent.")),
+            (TEXT, L("Everything that changes a playlist happens in a separate Edge window in which you are signed in "
+                     "to YouTube: creating playlists and adding, removing or sorting videos. Edge runs invisibly in the "
+                     "background; a window only opens when you need to sign in.",
+                     "Alles, was eine Playlist ändert, passiert in einem eigenen Edge-Fenster, in dem du bei YouTube "
+                     "angemeldet bist: Playlists anlegen sowie Videos einfügen, entfernen und sortieren. Edge läuft "
+                     "unsichtbar im Hintergrund; ein Fenster öffnet sich nur, wenn du dich anmelden musst.")),
+            (YELLOW, L("Warning: Chronolist sends the same requests as the YouTube website. Automating the website "
+                       "this way breaks YouTube's rules and puts your account at risk. You use it at your own risk.",
+                       "Achtung: Chronolist schickt dabei dieselben Anfragen wie die YouTube-Webseite. Die Webseite so "
+                       "zu automatisieren verstößt gegen die YouTube-Regeln und ist ein Risiko für dein Konto. Die "
+                       "Nutzung erfolgt auf eigenes Risiko.")),
+            (TEXT_DIM, L("If you prefer the API for everything: PROGRAM > USE API FOR EVERYTHING. The daily quota is "
+                         "then enough for about 200 videos.",
+                         "Lieber alles über die API: PROGRAMM > API FÜR ALLES NUTZEN. Das Tageskontingent reicht dann "
+                         "für etwa 200 Videos.")),
+        ]
+        for color, text in paras:
+            tk.Label(self, text=text, bg=BG, fg=color, font=(base, -px(15)), justify="left", anchor="w",
+                     wraplength=px(560)).pack(fill="x", padx=pad, pady=(0, px(10)))
+        row = tk.Frame(self, bg=BG)
+        row.pack(fill="x", padx=pad, pady=(px(6), pad))
+        CutButton(row, L("GOT IT", "VERSTANDEN"), self.close, width=140).pack(side="left")
+        CutButton(row, "YOUTUBE SIGN-IN", self.signin, width=180).pack(side="left", padx=(px(8), 0))
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.bind("<Escape>", lambda e: self.close())
+        style_window(self)
+        self.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - self.winfo_width()) // 2
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - self.winfo_height()) // 3)
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        self.focus_force()
+
+    def close(self):
+        self.app.settings["edge_notice"] = True
+        save_settings_file(self.app.settings)
+        self.destroy()
+
+    def signin(self):
+        self.close()
+        self.app.youtube_signin()
+
+
 class UpdateDialog(tk.Toplevel):
     """Rückfrage vor dem Update."""
 
@@ -6010,6 +6329,28 @@ class AppSettingsDialog(tk.Toplevel):
                                  "Startet Chronolist mit Windows, öffnet sich das Fenster minimiert. "
                                  "Zusammen mit AUTO-CHECK hält es deine Playlists im Hintergrund aktuell."))
 
+        Section(body, "YOUTUBE", "EDGE // API").pack(fill="x", pady=(0, px(8)))
+        CutButton(body, L("YOUTUBE SIGN-IN", "YOUTUBE SIGN-IN"), self.signin, width=W).pack(anchor="w")
+        hint(L("CHRONOLIST CREATES PLAYLISTS AND ADDS VIDEOS THROUGH EDGE, INVISIBLY IN THE BACKGROUND. "
+               "OPENS EDGE SO YOU CAN SIGN IN TO YOUTUBE ONCE. THE SIGN-IN IS KEPT.",
+               "CHRONOLIST LEGT PLAYLISTS AN UND FÜGT VIDEOS ÜBER EDGE EIN, UNSICHTBAR IM HINTERGRUND. "
+               "ÖFFNET EDGE, DAMIT DU DICH EINMAL BEI YOUTUBE ANMELDEN KANNST. DIE ANMELDUNG BLEIBT GESPEICHERT."))
+        self.api_all = API_ALL
+        self.api_card = ToggleCard(body, L("USE API FOR EVERYTHING", "API FÜR ALLES NUTZEN"),
+                                   L("ADD VIDEOS THROUGH THE API, EDGE ONLY AFTER THE QUOTA",
+                                     "VIDEOS ÜBER DIE API EINFÜGEN, EDGE ERST NACH DEM KONTINGENT"),
+                                   self.api_all, self.toggle_api_all, compact=True)
+        self.api_card.pack(fill="x", pady=(0, px(2)))
+        hint(L(f"WARNING: EVERY ADDED VIDEO COSTS 50 OF THE 10,000 DAILY API UNITS, SO THE QUOTA IS GONE AFTER ABOUT "
+               f"200 VIDEOS. CHRONOLIST THEN KEEPS {AUTO_RESERVE:,} UNITS FOR AUTO-CHECK AND CONTINUES IN EDGE.",
+               f"ACHTUNG: JEDES EINGEFÜGTE VIDEO KOSTET 50 DER 10.000 API-EINHEITEN PRO TAG, DAS KONTINGENT IST NACH "
+               f"ETWA 200 VIDEOS LEER. CHRONOLIST HÄLT DANN {AUTO_RESERVE:,} EINHEITEN FÜR AUTO-CHECK FREI UND MACHT "
+               f"ÜBER EDGE WEITER.".replace(",", ".")), last=True)
+        Tooltip(self.api_card, L("Off (default): the API is only used for reading, which costs almost no quota. "
+                                 "Creating playlists and adding, removing or sorting videos happens in Edge.",
+                                 "Aus (Standard): Die API wird nur zum Lesen genutzt, das kostet kaum Kontingent. "
+                                 "Playlists anlegen und Videos einfügen, entfernen oder sortieren passiert in Edge."))
+
         Section(body, "UPDATES", "GITHUB // RELEASES").pack(fill="x", pady=(0, px(8)))
         self.updates = bool(app.settings.get("check_updates", True))
         self.upd_card = ToggleCard(body, L("CHECK FOR UPDATES", "NACH UPDATES SUCHEN"),
@@ -6073,9 +6414,19 @@ class AppSettingsDialog(tk.Toplevel):
         self.updates = not self.updates
         self.upd_card.update_value(self.updates)
 
+    def toggle_api_all(self):
+        self.api_all = not self.api_all
+        self.api_card.update_value(self.api_all)
+
+    def signin(self):
+        self.destroy()
+        self.app.youtube_signin()
+
     def save(self):
         st = self.app.settings
         st["check_updates"] = self.updates
+        global API_ALL
+        API_ALL = st["api_everything"] = self.api_all
         self.app.set_windows(self.boot, self.minimized and self.boot)
         self.app.autorun = self.autorun
         self.app.alerts = self.alerts
@@ -6119,9 +6470,10 @@ HELP_TEXT_DE = [
     ("li", "START drücken. Den Rest erledigt das Programm."),
 
     ("h2", "Wie Chronolist arbeitet"),
-    ("p", "Chronolist spricht auf zwei Wegen mit YouTube. Normalerweise über die offizielle Schnittstelle von Google "
-          "(YouTube Data API). Wenn du FALLBACK einschaltest, zusätzlich über die YouTube-Webseite in einem eigenen "
-          "Edge-Fenster. Ein Durchlauf sieht so aus:"),
+    ("p", "Chronolist spricht auf zwei Wegen mit YouTube. Gelesen wird über die offizielle Schnittstelle von Google "
+          "(YouTube Data API), das kostet kaum Kontingent. Alles, was eine Playlist ändert, läuft über die "
+          "YouTube-Webseite in einem eigenen Edge-Fenster, in dem du bei YouTube angemeldet bist. Ein Durchlauf sieht "
+          "so aus:"),
     ("num", "1.  Anmelden. Beim ersten Start meldest du dich einmal bei Google an. Dafür öffnest du den Link und gibst "
             "den angezeigten Code ein. Danach merkt sich Chronolist die Anmeldung."),
     ("num", "2.  Videos finden. Zuerst muss Chronolist wissen, welche Videos zu welchem Jahr gehören. "
@@ -6132,8 +6484,8 @@ HELP_TEXT_DE = [
             "Chronolist deshalb Monat für Monat. Das verbraucht viele Einheiten und ist auf etwa 100 Suchen am Tag "
             "begrenzt. Bei großen Kanälen schafft man so ungefähr ein altes Jahr pro Tag. Außerdem lässt diese Suche "
             "von YouTube manchmal einzelne Videos aus.\n"
-            "• Kanalseite (nur mit FALLBACK): Chronolist liest im Edge-Fenster die Videoseite des Kanals, sortiert nach "
-            "\"Älteste\". Das ist vollständig und braucht kein Kontingent. Mit FALLBACK wird das für alte Jahre immer "
+            "• Kanalseite: Chronolist liest im Edge-Fenster die Videoseite des Kanals, sortiert nach "
+            "\"Älteste\". Das ist vollständig und braucht kein Kontingent. Das wird für alte Jahre immer "
             "genommen und für alle anderen, sobald das Kontingent leer ist. Jahre, die vorher über die Suche gefunden "
             "wurden, werden damit abgeglichen: fehlende Videos werden in die Playlist nachgetragen und an die "
             "richtige Stelle geschoben. Dafür das Jahr einfach markieren und START drücken.\n"
@@ -6141,18 +6493,17 @@ HELP_TEXT_DE = [
     ("num", "3.  Playlist anlegen. Für jedes Jahr legt Chronolist eine Playlist an. Standardmäßig heißt sie zum "
             "Beispiel \"MeinKanal 2012 in Upload-Reihenfolge\" und ist öffentlich. Name, Beschreibung, Sichtbarkeit "
             "und ein eigenes Bild stellst du unter KANAL-EINSTELLUNGEN ein."),
-    ("num", "4.  Füllen. Die Videos werden der Reihe nach eingefügt. Jedes Video verbraucht 50 von 10.000 Einheiten, "
-            "die man pro Tag hat. Das reicht für ungefähr 200 Videos am Tag."),
-    ("num", "5.  Wenn das Tageskontingent leer ist:\n"
-            "• FALLBACK aus: Chronolist hält an. Im Protokoll steht, wann das Kontingent zurückgesetzt wird. Das ist "
-            "um Mitternacht kalifornischer Zeit. Chronolist rechnet das in deine Uhrzeit um.\n"
-            "• FALLBACK an: Chronolist öffnet ein eigenes Edge-Fenster und fügt die restlichen Videos über die "
-            "YouTube-Webseite ein, genau so, wie die Webseite es beim Speichern selbst macht. Dabei werden keine "
-            "Einheiten verbraucht. Es läuft in Paketen zu 30 Videos mit Pausen dazwischen. Neue Playlists kann das "
-            "Edge-Fenster auch anlegen. Videos finden (Schritt 2) kann es aber nicht.\n"
-            "Chronolist merkt sich, wenn das Kontingent oder das Suchlimit an einem Tag aufgebraucht ist. Bis zum "
-            "Reset fragt es nach einem Neustart nicht noch einmal nach, sondern nimmt gleich den Fallback. In dieser "
-            "Zeit ist der API-Knopf gelb und zeigt LIMIT.\n"
+    ("num", "4.  Füllen. Die Videos werden der Reihe nach im Edge-Fenster eingefügt, genau so, wie die Webseite es "
+            "beim Speichern selbst macht. Dabei werden keine Einheiten verbraucht. Es läuft in Paketen zu 30 Videos "
+            "mit Pausen dazwischen. Edge läuft dabei unsichtbar im Hintergrund. Bist du dort noch nicht bei YouTube "
+            "angemeldet, öffnet sich einmal ein Edge-Fenster zum Anmelden, danach geht es im Hintergrund weiter."),
+    ("num", "5.  Kontingent. Lesen kostet nur wenige Einheiten. Ist das Tageskontingent trotzdem leer, liest "
+            "Chronolist die Kanalseite in Edge. Nur die Datumssuche für alte Jahre (Schritt 2) braucht Kontingent und "
+            "wartet dann bis zum Reset um Mitternacht kalifornischer Zeit; Chronolist rechnet das in deine Uhrzeit um. "
+            "Bis dahin ist der API-Knopf gelb und zeigt LIMIT.\n"
+            "Mit API FÜR ALLES NUTZEN (unter PROGRAMM) fügt Chronolist auch über die API ein. Jedes Video kostet dann "
+            "50 von 10.000 Einheiten, das reicht für etwa 200 Videos am Tag. 1.000 Einheiten bleiben für AUTO-CHECK "
+            "übrig, danach geht es über Edge weiter.\n"
             "Chronolist zählt die verbrauchten Einheiten mit und hört schon kurz vor dem Ende auf: 20 Einheiten bleiben "
             "immer übrig, damit du auch dann noch einen Kanal hinzufügen oder tauschen kannst. Das Mitzählen ist nur "
             "eine Schätzung, weil andere Programme im selben Google-Projekt nicht mitgezählt werden."),
@@ -6162,14 +6513,14 @@ HELP_TEXT_DE = [
             "und beim Knopf PRÜFEN: Doppelte werden entfernt und der Fortschritt wird abgeglichen.\n"
             "Shorts kommen nicht in die Playlists, Livestreams schon (manche Kanäle haben darüber z. B. mehrere "
             "Perspektiven veröffentlicht). Shorts erkennt Chronolist über die Shorts-Liste des Kanals. Die wird "
-            "einmal über die API gelesen, sobald etwas Kontingent da ist. Mit FALLBACK werden Shorts auch aus "
+            "einmal über die API gelesen, sobald etwas Kontingent da ist. Shorts werden auch aus "
             "bestehenden Playlists entfernt. Die Kanalseite ergänzt nur fehlende Videos, entfernt aber nie welche."),
     ("num", "7.  Nächstes Jahr. Ist ein Jahr fertig, geht es mit dem nächsten markierten Jahr in der Reihenfolge der "
             "Liste weiter. Kann ein Jahr gerade nicht gesucht werden, weil das Kontingent leer ist, nimmt Chronolist "
             "das nächste markierte Jahr, das schon bereit ist, und holt das fehlende später nach."),
     ("num", "8.  Laufendes Jahr. Das aktuelle Jahr bleibt markiert, auch wenn es fertig ist. Bei jedem Lauf schaut "
             "Chronolist nach neuen Videos und hängt sie hinten an. Mit Kontingent kostet das nur ein paar Einheiten, "
-            "ohne geht es mit FALLBACK über die Kanalseite. Im Januar gilt das auch noch für das Vorjahr.\n"
+            "ohne geht es über die Kanalseite. Im Januar gilt das auch noch für das Vorjahr.\n"
             "Mehr als 5.000 Videos: Eine YouTube-Playlist fasst höchstens 5.000 Videos. Hat ein Jahr mehr, legt "
             "Chronolist automatisch eine zweite Playlist \"… (Teil 2)\" an und benennt die erste in \"… (Teil 1)\" "
             "um. Prüfen und Nachtragen laufen dann für jeden Teil."),
@@ -6178,7 +6529,8 @@ HELP_TEXT_DE = [
     ("p", "Die Nutzung der YouTube-Schnittstelle ist kostenlos. Es fällt kein Geld an. Google gibt aber jedem Projekt "
           "ein festes Tageskontingent, gemessen in sogenannten Einheiten. Standardmäßig sind das 10.000 Einheiten "
           "am Tag, dazu ein eigenes Limit von etwa 100 Suchen am Tag. Ist das Kontingent aufgebraucht, geht es nach "
-          "dem Reset am nächsten Tag weiter. Über das Edge-Fenster werden gar keine Einheiten verbraucht."),
+          "dem Reset am nächsten Tag weiter. Über das Edge-Fenster werden gar keine Einheiten verbraucht. Die Kosten "
+          "fürs Einfügen fallen nur mit API FÜR ALLES NUTZEN an."),
     ("p", "So viele Einheiten braucht jede Aktion:"),
     ("li", "Upload-Liste durchgehen (Archiv-Scan): 1 Einheit pro 50 Videos"),
     ("li", "Datumssuche für alte Jahre: 100 Einheiten pro 50 Videos, zählt außerdem zum Suchlimit"),
@@ -6204,12 +6556,13 @@ HELP_TEXT_DE = [
            "wann es zurückgesetzt wird. Das ist eine Schätzung: andere Programme im selben Google-Projekt zählen "
            "nicht mit."),
     ("dt", "Statusanzeige"),
-    ("dd", "Zeigt, was das Programm gerade macht, zum Beispiel BEREIT, LÄUFT, BROWSER-MODUS (läuft über das "
+    ("dd", "Zeigt, was das Programm gerade macht, zum Beispiel BEREIT, LÄUFT, EDGE AKTIV (läuft über das "
            "Edge-Fenster), PAUSIERT oder eine Wartezeit mit Countdown."),
 
     ("h2", "Zielkanal"),
     ("p", "Hier steht der Kanal, dessen Videos gesammelt werden. KANÄLE klappt die Liste aller bekannten Kanäle auf: "
-          "Ein Klick auf einen Kanal wechselt sofort (ohne API). Rechts steht sein AUTO-CHECK und darunter die "
+          "Ein Klick auf einen Kanal wechselt sofort (ohne API). Rechts steht sein AUTO-CHECK (ein Klick darauf "
+          "schaltet ihn an oder aus) und darunter die "
           "letzte Prüfung. Mit + KANAL HINZUFÜGEN gibst du einen neuen Kanal ein, als @Name, als Link zum Kanal oder "
           "als Kanal-ID (die fängt mit UC an); Chronolist holt sich dann den Namen und das Startjahr. Das ✕ (zweimal "
           "klicken) nimmt einen Kanal aus der Liste, seine Daten bleiben erhalten. EDIT (BEARB.) bearbeitet einen Kanal: Name "
@@ -6228,10 +6581,7 @@ HELP_TEXT_DE = [
     ("p", "Cyan, leuchtend: läuft gerade. Es ist immer nur ein Jahr cyan.\n"
           "Gelb: angefangen, wartet darauf, weiterzumachen.\n"
           "Blaugrau: noch nicht angefangen.\n"
-          "Grün mit Haken, abgedunkelt: fertig, alle Videos sind drin. Fertige Jahre werden automatisch abgewählt.\n"
-          "Roter Text \"BRAUCHT API\": Hier geht es erst nach dem Reset des Tageskontingents weiter, die Uhrzeit "
-          "steht dahinter. Das betrifft Jahre, deren Videos noch gesucht werden müssen, denn das geht nur über die "
-          "API. Bei angefangenen und bereiten Jahren nur, wenn FALLBACK aus ist."),
+          "Grün mit Haken, abgedunkelt: fertig, alle Videos sind drin. Fertige Jahre werden automatisch abgewählt."),
     ("dt", "Was unter dem Jahr stehen kann"),
     ("dd", "Läuft für ein Jahr gerade etwas, steht hier in Cyan, was passiert, mit Fortschritt, z. B. KANALSEITE // 1400 GELESEN, "
            "NACHTRAG // 40/102 EINGEFÜGT, SORTIERE // 20/102 oder PRÜFE PLAYLIST // 600 GELESEN.\n"
@@ -6252,7 +6602,7 @@ HELP_TEXT_DE = [
           "oder nimmst sie über Link oder Video-ID fest hinzu.\n"
           "Eine Liste ist eine Karte wie ein Jahr: anklicken zum Markieren, Rechtsklick zum Bearbeiten. Sie wird nach den Jahren "
           "bearbeitet und bei jedem Lauf neu abgeglichen, also kommen neue Videos automatisch dazu. Ändern sich die "
-          "Begriffe, wird die Playlist beim nächsten Lauf angepasst (dafür muss FALLBACK an sein). Dafür braucht Chronolist "
+          "Begriffe, wird die Playlist beim nächsten Lauf angepasst. Dafür braucht Chronolist "
           "die Titel aller Videos. Fehlende werden beim Start aus deinen Playlists nachgeladen (kostet wenig Kontingent) "
           "oder sonst einzeln und langsam ohne Kontingent. Eine gelöschte Liste bleibt auf YouTube bestehen, bis du sie dort löschst."),
 
@@ -6269,13 +6619,13 @@ HELP_TEXT_DE = [
            "erste stehen bleibt, damit die Reihenfolge stimmt. Außerdem wird der Fortschritt abgeglichen."),
 
     ("h2", "Optionen"),
-    ("dt", "FALLBACK"),
-    ("dd", "Wenn das Tageskontingent aufgebraucht ist, macht Chronolist über ein eigenes Edge-Fenster weiter, in dem "
-           "du bei YouTube angemeldet bist. Das Fenster muss offen bleiben, minimieren geht aber. Alte Jahre werden "
-           "darüber außerdem vollständig über die Kanalseite gesucht, auch ohne Kontingent.\n"
+    ("dt", "EDGE"),
+    ("dd", "Chronolist legt Playlists in Edge an und fügt dort Videos ein, entfernt und sortiert "
+           "sie. Dafür musst du in diesem Fenster einmal bei YouTube angemeldet sein: PROGRAMM > YOUTUBE SIGN-IN "
+           "öffnet es dafür. Die Anmeldung bleibt gespeichert. Edge läuft unsichtbar im Hintergrund.\n"
            "Wichtig: Das ist eine automatische Nutzung der YouTube-Webseite und laut den Nutzungsbedingungen von "
-           "YouTube nicht erlaubt. Im schlimmsten Fall kann dein Konto gesperrt werden. Deshalb ist der Schalter am "
-           "Anfang aus."),
+           "YouTube nicht erlaubt. Im schlimmsten Fall kann dein Konto gesperrt werden. Wer das nicht möchte, "
+           "schaltet unter PROGRAMM API FÜR ALLES NUTZEN ein."),
     ("dt", "PROGRAMM"),
     ("dd", "Einstellungen für das Programm selbst.\n"
            "Sprache: Englisch oder Deutsch. Das gilt für die ganze Oberfläche, die Tooltips, diese Hilfe und das "
@@ -6288,16 +6638,20 @@ HELP_TEXT_DE = [
     ("dd", "Die Karte AUTO-CHECK im Hauptfenster schaltet die automatische Suche nach neuen Videos ein. Dann zeigt "
            "jede Karte (Jahr oder Liste) einen kleinen AUTO-Schalter. Nur Karten mit eingeschaltetem AUTO werden "
            "aktuell gehalten. Bei Jahren ist das nur beim laufenden Jahr sinnvoll, bei Listen kommt jedes neue "
-           "passende Video dazu.\n"
+           "passende Video dazu. Hat beim Einschalten noch keine Karte AUTO an, bekommen das laufende Jahr und alle "
+           "Listen AUTO; neue Listen starten dann ebenfalls mit AUTO. Einzelne Karten schaltest du bei Bedarf aus.\n"
            "Wann geprüft wird, stellst du pro Kanal unter KANAL-EINSTELLUNGEN ein, entweder als Intervall oder zu festen Uhrzeiten. "
            "Intervall: 30 Minuten, 1, 2 oder 6 Stunden oder ein eigener Wert (Vielfache von 5, mindestens 15 Minuten). "
            "Der Abstand läuft ab dem Ende des letzten Durchlaufs, auch eines manuellen. Feste Uhrzeiten: bis zu "
            "vier Uhrzeiten am Tag (HH:MM). Chronolist muss dann offen sein; fällt eine Uhrzeit in einen anderen "
            "Lauf, wird die Prüfung direkt danach nachgeholt.\n"
-           "Jede Prüfung kostet nur wenige API-Einheiten und entfällt, wenn das Kontingent aufgebraucht ist. Läuft "
-           "gerade ein anderer Durchlauf, wartet sie. Sie öffnet nie den Browser (kein FALLBACK). Voraussetzung: "
-           "Chronolist ist schon einmal angemeldet und die Videos des Jahres sind schon gesucht. AUTO-CHECK und "
-           "Zeitplan gelten für den aktuellen Kanal.\n"
+           "Jede Prüfung liest über die API (wenige Einheiten) und fügt neue Videos über Edge ein, das dabei "
+           "unsichtbar im Hintergrund läuft. Läuft gerade ein anderer Durchlauf, wartet sie. Voraussetzung: "
+           "Chronolist ist schon einmal angemeldet, auch in Edge bei YouTube, und die Videos des Jahres sind schon gesucht. AUTO-CHECK und "
+           "Zeitplan gelten pro Kanal: Jeder Kanal aus der Kanalliste mit eingeschaltetem AUTO-CHECK wird nach seinem "
+           "eigenen Zeitplan geprüft, auch wenn gerade ein anderer Kanal angezeigt wird. Sind mehrere fällig, kommen "
+           "sie nacheinander dran. Das Ergebnis eines anderen Kanals steht im Log und in der Kanalliste (LAST CHECK); "
+           "die Kanalkarte zeigt AUTO // 2 CHANNELS, wenn mehrere Kanäle aktiv sind.\n"
            "Auf jeder Karte mit AUTO steht neben dem AUTO-Schalter, wann zuletzt geprüft wurde, und wie viele Videos dabei dazukamen "
            "(z. B. ZULETZT 14:02 // +2 NEU).\n"
            "Hinweis bei neuen Videos (unter PROGRAMM ein- und ausschaltbar): Hat die Prüfung etwas ergänzt, blinkt "
@@ -6359,7 +6713,7 @@ HELP_TEXT_DE = [
           "gerne als Issue auf GitHub."),
     ("p", "Chronolist ist ein unabhängiges Projekt und steht in keiner Verbindung zu YouTube oder Google. "
           "Du nutzt dabei deine eigenen API-Zugangsdaten und dein eigenes Konto. Für die Einhaltung der "
-          "Nutzungsbedingungen von YouTube bist du selbst verantwortlich, besonders beim FALLBACK."),
+          "Nutzungsbedingungen von YouTube bist du selbst verantwortlich, besonders beim Einfügen über Edge."),
 ]
 
 
@@ -6375,8 +6729,9 @@ HELP_TEXT_EN = [
     ("li", "Press START. The program does the rest."),
 
     ("h2", "How Chronolist works"),
-    ("p", "Chronolist talks to YouTube in two ways. Normally through Google's official interface (YouTube Data API). "
-          "If you switch on FALLBACK, also through the YouTube website in a separate Edge window. A run looks like this:"),
+    ("p", "Chronolist talks to YouTube in two ways. It reads through Google's official interface (YouTube Data API), "
+          "which costs almost no quota. Everything that changes a playlist goes through the YouTube website in a "
+          "separate Edge window in which you are signed in to YouTube. A run looks like this:"),
     ("num", "1.  Sign in. On the first start you sign in to Google once by opening the link and entering the code "
             "shown. After that Chronolist remembers the sign-in."),
     ("num", "2.  Find the videos. First Chronolist has to know which videos belong to which year. This only works "
@@ -6386,8 +6741,8 @@ HELP_TEXT_EN = [
             "• Date search: that list only contains the newest 20,000 uploads, so older years are searched month by "
             "month. This uses many units and is limited to about 100 searches per day. For large channels that is "
             "roughly one old year per day. On top of that, YouTube's search sometimes leaves out single videos.\n"
-            "• Channel page (only with FALLBACK): Chronolist reads the channel's videos page in the Edge window, sorted "
-            "by \"Oldest\". This is complete and needs no quota. With FALLBACK it is always used for old years and for "
+            "• Channel page: Chronolist reads the channel's videos page in the Edge window, sorted "
+            "by \"Oldest\". This is complete and needs no quota. It is always used for old years and for "
             "all other years once the quota is used up. Years found earlier through the search are checked against it: "
             "missing videos are added to the playlist and moved to the right spot. Just select the year and press "
             "START.\n"
@@ -6395,18 +6750,17 @@ HELP_TEXT_EN = [
     ("num", "3.  Create the playlist. Chronolist creates one playlist per year. By default it is called, for "
             "example, \"MyChannel 2012 in upload order\" and is public. Title, description, visibility and a custom "
             "image are set under CHANNEL SETTINGS."),
-    ("num", "4.  Fill it. The videos are added in order. Each video uses 50 of the 10,000 units you get per day, "
-            "which is enough for about 200 videos a day."),
-    ("num", "5.  When the daily quota is used up:\n"
-            "• FALLBACK off: Chronolist stops. The log shows when the quota resets. That is midnight California "
-            "time; Chronolist converts it to your local time.\n"
-            "• FALLBACK on: Chronolist opens its own Edge window and adds the remaining videos through the YouTube "
-            "website, exactly the way the website does it when you save a video. This uses no units. It works in "
-            "batches of 30 videos with pauses in between. The Edge window can also create new playlists. It cannot "
-            "find videos (step 2), though.\n"
-            "Chronolist remembers when the quota or the search limit was used up on a given day. Until the reset it "
-            "won't ask again after a restart and goes straight to the fallback. During that time the API button is "
-            "yellow and shows LIMIT.\n"
+    ("num", "4.  Fill it. The videos are added in order in the Edge window, exactly the way the website does it when "
+            "you save a video. This uses no units. It works in batches of 30 videos with pauses in between. Edge runs "
+            "invisibly in the background. If you are not signed in to YouTube there yet, an Edge window opens once "
+            "for the sign-in, then it continues in the background."),
+    ("num", "5.  Quota. Reading costs only a few units. If the daily quota is used up anyway, Chronolist reads the "
+            "channel page in Edge. Only the date search for old years (step 2) needs quota and then waits for the "
+            "reset at midnight California time; Chronolist converts it to your local time. Until then the API button "
+            "is yellow and shows LIMIT.\n"
+            "With USE API FOR EVERYTHING (under PROGRAM) Chronolist also adds videos through the API. Each video then "
+            "costs 50 of 10,000 units, which is enough for about 200 videos a day. 1,000 units are kept for "
+            "AUTO-CHECK, after that it continues in Edge.\n"
             "Chronolist counts the units it uses and stops a little early: 20 units are always kept so you can still "
             "add or change a channel. The count is only an estimate, because other programs in the same Google "
             "project are not counted."),
@@ -6416,14 +6770,14 @@ HELP_TEXT_EN = [
             "are removed and the progress is synced.\n"
             "Shorts are not added to the playlists, livestreams are (some channels used them to publish several "
             "perspectives, for example). Shorts are detected through the channel's shorts list, which is read once "
-            "through the API when a little quota is available. With FALLBACK shorts are also removed from existing "
+            "through the API when a little quota is available. Shorts are also removed from existing "
             "playlists. The channel page only adds missing videos and never removes any."),
     ("num", "7.  Next year. When a year is done, Chronolist moves on to the next selected year in the order of the "
             "list. If a year can't be searched right now because the quota is used up, Chronolist takes the next "
             "selected year that is already ready and catches up later."),
     ("num", "8.  Current year. The current year stays selected even when it is done. On every run Chronolist looks "
-            "for new videos and appends them. With quota this costs only a few units, without quota it works with "
-            "FALLBACK through the channel page. In January this also applies to the previous year.\n"
+            "for new videos and appends them. With quota this costs only a few units, without quota it works "
+            "through the channel page. In January this also applies to the previous year.\n"
             "More than 5,000 videos: a YouTube playlist holds at most 5,000 videos. If a year has more, Chronolist "
             "automatically creates a second playlist \"… (Part 2)\" and renames the first one to \"… (Part 1)\". "
             "Checking and repairing then work for each part."),
@@ -6432,7 +6786,7 @@ HELP_TEXT_EN = [
     ("p", "Using the YouTube API is free. There is no money involved. Google does give every project a fixed daily "
           "quota, measured in units. By default that is 10,000 units per day, plus a separate limit of about 100 "
           "searches per day. When the quota is used up, things continue after the reset the next day. The Edge "
-          "window uses no units at all."),
+          "window uses no units at all. Adding videos only costs units with USE API FOR EVERYTHING."),
     ("p", "Units per action:"),
     ("li", "Going through the upload list (archive scan): 1 unit per 50 videos"),
     ("li", "Date search for old years: 100 units per 50 videos, also counts towards the search limit"),
@@ -6457,12 +6811,13 @@ HELP_TEXT_EN = [
            "when the quota is used up or only the reserve is left; then it shows when it resets. This is an estimate: "
            "other programs in the same Google project are not counted."),
     ("dt", "Status display"),
-    ("dd", "Shows what the program is doing, for example STANDBY, RUNNING, BROWSER UPLINK (running through the Edge "
+    ("dd", "Shows what the program is doing, for example STANDBY, RUNNING, EDGE UPLINK (running through the Edge "
            "window), PAUSED or a waiting time with a countdown."),
 
     ("h2", "Target channel"),
     ("p", "The channel whose videos are collected. CHANNELS opens the list of all known channels: one click switches "
-          "right away (no API). On the right you see its AUTO-CHECK and below the last check. + ADD CHANNEL enters a "
+          "right away (no API). On the right you see its AUTO-CHECK (click it to switch it on or off) and below the "
+          "last check. + ADD CHANNEL enters a "
           "new channel, as @name, as a link to the channel or as the channel ID (starts with UC); Chronolist then "
           "looks up its name and start year. The ✕ (click twice) takes a channel off the list, its data is kept. "
           "EDIT edits a channel: fix its name and first year (no API) or LOOK UP AGAIN on YouTube. "
@@ -6479,10 +6834,7 @@ HELP_TEXT_EN = [
     ("p", "Cyan, glowing: running right now. Only one year is ever cyan.\n"
           "Yellow: started, waiting to continue.\n"
           "Blue-gray: not started yet.\n"
-          "Green with a check mark, dimmed: done, all videos are in. Finished years are deselected automatically.\n"
-          "Red text \"NEEDS API\": this year can only continue after the daily quota resets, the time is shown "
-          "next to it. This applies to years whose videos still have to be searched, which only works through the "
-          "API. For started and ready years only when FALLBACK is off."),
+          "Green with a check mark, dimmed: done, all videos are in. Finished years are deselected automatically."),
     ("dt", "What can appear under a year"),
     ("dd", "While something is happening for a year, this line shows it in cyan, with progress, e.g. CHANNEL PAGE // "
            "1400 READ, REPAIR // 40/102 ADDED, SORTING // 20/102 or CHECKING PLAYLIST // 600 READ.\n"
@@ -6502,7 +6854,7 @@ HELP_TEXT_EN = [
           "Exclude videos (select with Ctrl/Shift+click, then EXCLUDE); the ALL CHANNEL VIDEOS view lets you include videos that do not match or add them for good with a link or video ID.\n"
           "A list is a card like a year: click to select, right-click to edit. It runs after the years and is matched again "
           "on every run, so new videos are added automatically. If you change the terms, the playlist is adjusted on the "
-          "next run (this needs FALLBACK on). Chronolist needs the titles of all videos for this. Missing ones are loaded "
+          "next run Chronolist needs the titles of all videos for this. Missing ones are loaded "
           "at the start from your playlists (little quota) or otherwise one by one, slowly, without quota. A deleted list "
           "stays on YouTube until you delete it there."),
 
@@ -6519,12 +6871,13 @@ HELP_TEXT_EN = [
            "one so the order stays right. The progress is synced as well."),
 
     ("h2", "Options"),
-    ("dt", "FALLBACK"),
-    ("dd", "When the daily quota is used up, Chronolist continues in a separate Edge window where you are signed in "
-           "to YouTube. The window has to stay open, minimizing is fine. Old years are also searched completely "
-           "through the channel page there, even without quota.\n"
+    ("dt", "EDGE"),
+    ("dd", "Chronolist creates playlists in Edge and adds, removes and sorts videos there. For "
+           "this you need to be signed in to YouTube in that window once: PROGRAM > YOUTUBE SIGN-IN opens it. The "
+           "sign-in is kept. Edge runs invisibly in the background.\n"
            "Important: this is automated use of the YouTube website and is not allowed by YouTube's Terms of "
-           "Service. In the worst case your account can be restricted. That's why the switch is off by default."),
+           "Service. In the worst case your account can be restricted. If you don't want that, switch on USE API "
+           "FOR EVERYTHING under PROGRAM."),
     ("dt", "PROGRAM"),
     ("dd", "Settings for the program itself.\n"
            "Language: English or German. This applies to the whole interface, the tooltips, this help and the log. "
@@ -6536,14 +6889,19 @@ HELP_TEXT_EN = [
     ("dt", "AUTO-CHECK"),
     ("dd", "The AUTO-CHECK card in the main window switches on the automatic search for new videos. Then every card "
            "(year or list) shows a small AUTO switch. Only cards with AUTO switched on are kept up to date. For years "
-           "that only makes sense for the current year, for lists every new matching video is added.\n"
+           "that only makes sense for the current year, for lists every new matching video is added. If no card has "
+           "AUTO yet when you switch it on, the current year and all lists get AUTO; new lists then start with AUTO "
+           "too. Switch single cards off if needed.\n"
            "Under CHANNEL SETTINGS you choose per channel when it checks: at an interval or at fixed times. Interval: 30 minutes, 1, 2 or 6 "
            "hours, or your own value (multiples of 5, at least 15 minutes). The wait starts when the last run ends, a "
            "manual one included. Fixed times: up to four times per day (HH:MM). Chronolist must be open then; if a "
            "time falls into another run, the check follows right after it.\n"
-           "A check costs only a few API units and is skipped when the quota is used up. If another run is active it "
-           "waits. It never opens the browser (no FALLBACK). It needs a finished sign-in and a year whose videos were "
-           "already scanned. AUTO-CHECK and its schedule apply to the current channel.\n"
+           "A check reads through the API (a few units) and adds new videos through Edge, which runs invisibly in the "
+           "background. If another run is active it waits. It needs a finished sign-in, also to YouTube in Edge, and a year whose videos were "
+           "already scanned. AUTO-CHECK and its schedule are per channel: every channel in the channel list with "
+           "AUTO-CHECK on is checked on its own schedule, even while another channel is shown. If several are due, "
+           "they run one after another. A result of another channel shows in the log and in the channel list (LAST "
+           "CHECK); the channel card shows AUTO // 2 CHANNELS when several channels are active.\n"
            "Every card with AUTO shows next to the AUTO switch when it was last checked and how many videos were added (e.g. "
            "LAST CHECK 14:02 // +2 NEW).\n"
            "New video alert (can be switched off under PROGRAM): when a check added videos, the taskbar icon flashes. "
@@ -6603,7 +6961,7 @@ HELP_TEXT_EN = [
           "as issues on GitHub."),
     ("p", "Chronolist is an independent project and not affiliated with YouTube or Google. You use your own API "
           "credentials and your own account. You are responsible for following YouTube's Terms of Service, "
-          "especially when using FALLBACK."),
+          "especially when adding videos through Edge."),
 ]
 
 
@@ -7043,7 +7401,22 @@ class ListDialog(tk.Toplevel):
                                  "Empty = the CUSTOM LISTS template under CHANNEL SETTINGS.",
                                  "Eigene Beschreibung für diese Liste. Platzhalter: {name} {channel} {handle} {count}. "
                                  "Leer = die Vorlage im Reiter EIGENE LISTEN unter KANAL-EINSTELLUNGEN."))
-        self.desc_box.pack(fill="x", pady=(px(3), px(12)))
+        self.desc_box.pack(fill="x", pady=(px(3), px(10)))
+        tk.Label(left, text=L("VISIBILITY ON YOUTUBE", "SICHTBARKEIT AUF YOUTUBE"), bg=BG, fg=TEXT_MUTED,
+                 font=F("mono", 11), anchor="w").pack(fill="x")
+        vis = tk.Frame(left, bg=BG)
+        vis.pack(fill="x", pady=(px(4), px(12)))
+        self.privacy = lst.get("privacy") if lst.get("privacy") in PRIVACY_OPTIONS else ctx().privacy
+        self.vis_btns = {}
+        for k, opt in enumerate(PRIVACY_OPTIONS):
+            b = CutButton(vis, privacy_label(opt), lambda o=opt: self.set_privacy(o), width=136, height=px(30), size=11)
+            b.pack(side="left", padx=(0, px(6)) if k < len(PRIVACY_OPTIONS) - 1 else 0)
+            self.vis_btns[opt] = b
+        self.set_privacy(self.privacy)
+        Tooltip(vis, L("Who can see this list's playlist. Public: everyone. Unlisted: only people with the link. "
+                       "Private: only you. A change is applied to the existing playlist on the next run.",
+                       "Wer die Playlist dieser Liste sehen kann. Öffentlich: alle. Nicht gelistet: nur wer den Link "
+                       "hat. Privat: nur du. Eine Änderung wird beim nächsten Lauf auf die Playlist übertragen."))
 
         Section(left, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
         tk.Label(left, text=L("A VIDEO IS INCLUDED IF ITS TITLE CONTAINS ...", "EIN VIDEO KOMMT IN DIE LISTE, WENN SEIN TITEL ... ENTHÄLT"),
@@ -7203,6 +7576,12 @@ class ListDialog(tk.Toplevel):
         if cur["from"] or cur["to"]:
             txt += L(f"  //  years {cur['from'] or '…'} to {cur['to'] or '…'}", f"  //  Jahre {cur['from'] or '…'} bis {cur['to'] or '…'}")
         return L("Matches: ", "Passt auf: ") + txt.replace(" OR ", L(" OR ", " ODER ")).replace(" AND ", L(" AND ", " UND "))
+
+    def set_privacy(self, opt):
+        self.privacy = opt
+        for o, b in self.vis_btns.items():
+            b.set_color(GREEN if o == opt else YELLOW)
+            b.set_text(("● " if o == opt else "") + privacy_label(o))
 
     def field(self, parent, label, var):
         tk.Label(parent, text=label, bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w").pack(fill="x")
@@ -7408,9 +7787,10 @@ class ListDialog(tk.Toplevel):
         else:
             lst = None
         if lst is None:
-            lst = {"id": self.lst_id or new_list_id()}
+            # neue Liste: mit AUTO, wenn AUTO-CHECK für den Kanal an ist
+            lst = {"id": self.lst_id or new_list_id(), "auto": bool(getattr(self.app, "auto_check", False))}
             lists.append(lst)
-        lst.update(name=name, desc=self.desc_box.get("1.0", "end").strip(), **cur)
+        lst.update(name=name, desc=self.desc_box.get("1.0", "end").strip(), privacy=self.privacy, **cur)
         save_lists(lists)
         key = list_key(lst)
         self.app.lists_changed(select_key=key if not self.lst_id else None)
@@ -7433,9 +7813,16 @@ class ListDialog(tk.Toplevel):
             except OSError:
                 pass
         self.app.lists_changed(removed_key=key)
-        self.app.write_log(L("LIST DELETED // ITS PLAYLIST STAYS ON YOUTUBE UNTIL YOU DELETE IT THERE",
-                             "LISTE GELÖSCHT // IHRE PLAYLIST BLEIBT AUF YOUTUBE, BIS DU SIE DORT LÖSCHST") +
-                           (" // " + " ".join(f"https://www.youtube.com/playlist?list={p}" for p in pids) if pids else ""), "warn")
+        if pids:
+            self.app.write_log(L("LIST DELETED // ITS PLAYLIST STAYS ON YOUTUBE UNTIL YOU DELETE IT THERE",
+                                 "LISTE GELÖSCHT // IHRE PLAYLIST BLEIBT AUF YOUTUBE, BIS DU SIE DORT LÖSCHST"), "warn",
+                               actions=[(L(f"  // OPEN PLAYLIST{' ' + str(i + 1) if len(pids) > 1 else ''} ›",
+                                           f"  // PLAYLIST{' ' + str(i + 1) if len(pids) > 1 else ''} ÖFFNEN ›"),
+                                         lambda p=p: webbrowser.open(f"https://www.youtube.com/playlist?list={p}"))
+                                        for i, p in enumerate(pids)])
+        else:
+            self.app.write_log(L("LIST DELETED // IT HAD NO PLAYLIST ON YOUTUBE YET",
+                                 "LISTE GELÖSCHT // SIE HATTE NOCH KEINE PLAYLIST AUF YOUTUBE"), "info")
         self.destroy()
 
 
@@ -8103,14 +8490,9 @@ class App(tk.Tk):
         opts.columnconfigure(0, weight=1, uniform="opt")
         opts.columnconfigure(1, weight=1, uniform="opt")
         # Zeile 1: Ablauf
-        self.fallback = bool(self.settings.get("browser_fallback", False))
-        global FALLBACK_ON
-        FALLBACK_ON = self.fallback
-        for r in self.rows.values():
-            r.refresh_blocked()
-        self.fallback_card = ToggleCard(opts, "FALLBACK", L("EDGE AFTER QUOTA", "EDGE BEI LIMIT"),
-                                        self.fallback, self.toggle_fallback, compact=True)
-        self.fallback_card.grid(row=0, column=1, sticky="ew", padx=(px(3), 0), pady=(0, px(4)))
+        global API_ALL
+        API_ALL = bool(self.settings.get("api_everything", False))
+        self.settings.pop("browser_fallback", None)      # alte Option FALLBACK: Edge ist jetzt immer der Weg
         self.skip_ahead = True                       # immer: nächstes bereites markiertes Jahr vorziehen
         self.autorun = bool(self.settings.get("autorun", False))
         self.win_on = get_windows_autostart()
@@ -8124,6 +8506,7 @@ class App(tk.Tk):
         if not self.auto_times:
             self.auto_mode = "interval"
         self.auto_next = self.plan_auto(first=True)
+        self.auto_next_by = {}               # nächste Auto-Prüfung der übrigen Kanäle (Ordner -> Zeitpunkt)
         global AUTO_SHOW
         AUTO_SHOW = self.auto_check
         AUTO_YEARS.clear()
@@ -8132,7 +8515,7 @@ class App(tk.Tk):
         self.alerts = bool(self.settings.get("alerts", True))
         self.auto_card = ToggleCard(opts, "AUTO-CHECK", self.auto_sub(), self.auto_check,
                                     self.toggle_auto_check, compact=True)
-        self.auto_card.grid(row=0, column=0, sticky="ew", padx=(0, px(3)), pady=(0, px(4)))
+        self.auto_card.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, px(4)))
         Tooltip(self.auto_card, L("Looks for new videos by itself while Chronolist is open. When on, every card "
                                   "shows an AUTO switch: only cards with AUTO on are kept up to date. The schedule "
                                   "(interval or fixed times) is set per channel in the CHANNEL SETTINGS.",
@@ -8143,6 +8526,7 @@ class App(tk.Tk):
         self.app_card = SettingsCard(opts, self.edit_app_settings, lambda: L("PROGRAM", "PROGRAMM"),
                                      lambda: " // ".join([LANGUAGES[LANG]]
                                                          + ([L("AUTO-RUN", "AUTOSTART")] if self.autorun else [])
+                                                         + ([L("API FOR ALL", "API FÜR ALLES")] if API_ALL else [])
                                                          + ([L("ON BOOT", "MIT WINDOWS")] if self.win_on else [])), icon="gear")
         self.app_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
         self.settings_card = SettingsCard(opts, self.edit_settings,
@@ -8234,6 +8618,8 @@ class App(tk.Tk):
         if "--minimized" in sys.argv:
             self.after(400, self.iconify)
         self.after(30000, self.auto_tick)
+        if not self.settings.get("edge_notice"):
+            self.after(1200, lambda: self.winfo_exists() and EdgeNoticeDialog(self))
         self.after(2000, self.quota_tick)
         self.after(450, self.dots_tick)
 
@@ -8245,7 +8631,6 @@ class App(tk.Tk):
     def save_settings(self):
         self.settings.update(years=self.selected_years(), year_order=list(self.order), autorun=self.autorun,
                              auto_years=sorted(AUTO_YEARS),
-                             browser_fallback=getattr(self, "fallback", False),
                              )
         save_settings_file(self.settings)
         self.save_view()
@@ -8278,7 +8663,8 @@ class App(tk.Tk):
         if not self.auto_times:
             self.auto_mode = "interval"
         AUTO_SHOW = self.auto_check
-        self.auto_next = self.plan_auto(first=True)
+        # schon für diesen Kanal geplant (lief als Hintergrund-Kanal)? Dann den Zeitpunkt behalten
+        self.auto_next = self.auto_next_by.pop(ctx().chan_dir.name, None) or self.plan_auto(first=True)
         self.auto_card.sub = self.auto_sub()
         self.auto_card.update_value(self.auto_check)
 
@@ -8422,16 +8808,20 @@ class App(tk.Tk):
     def edit_settings(self):
         SettingsDialog(self)             # auch während eines Laufs (gilt für ab dann angelegte Playlists)
 
-    def toggle_fallback(self):
-        global FALLBACK_ON
-        self.fallback = not self.fallback
-        FALLBACK_ON = self.fallback
-        for r in self.rows.values():
-            r.refresh_blocked()
-        self.fallback_card.update_value(self.fallback)
-        self.save_settings()
+    def youtube_signin(self):
+        """Edge sichtbar öffnen, damit man sich einmal bei YouTube anmelden kann (gilt dann auch für AUTO-CHECK)."""
         if self.worker and self.worker.is_alive():
-            self.worker.fallback = self.fallback
+            self.write_log(L("PLEASE WAIT UNTIL THE CURRENT RUN IS FINISHED", "BITTE WARTEN, BIS DER LAUF FERTIG IST"),
+                           "warn")
+            return
+        self.write_log(L("YOUTUBE SIGN-IN // OPENING EDGE ...", "YOUTUBE-ANMELDUNG // ÖFFNE EDGE ..."), "sep")
+        self.worker = Worker([], 0, self.out, signin=True)
+        self.worker.start()
+        self.start_btn.set_enabled(False)
+        self.check_btn.set_enabled(False)
+        self.scan_btn.set_enabled(False)
+        self.stop_btn.set_enabled(True)
+        self.set_status("running")
 
     def set_windows(self, on, minimized=False):
         if bool(on) == self.win_on and (not on or bool(minimized) == self.win_min):
@@ -8468,6 +8858,15 @@ class App(tk.Tk):
     def toggle_auto_check(self):
         global AUTO_SHOW
         self.auto_check = not self.auto_check
+        if self.auto_check and ctx().channel.get("first_year"):
+            self.save_view()
+            if auto_defaults(ctx().chan_dir, ctx().channel.get("first_year")):
+                AUTO_YEARS.clear()
+                AUTO_YEARS.update(load(view_file(), {}).get("auto_years", []))
+                self.settings["auto_years"] = sorted(AUTO_YEARS)
+                self.write_log(L("AUTO ON FOR THE CURRENT YEAR AND ALL LISTS // SWITCH SINGLE CARDS OFF IF NEEDED",
+                                 "AUTO AN FÜR DAS LAUFENDE JAHR UND ALLE LISTEN // EINZELNE KARTEN BEI BEDARF AUSSCHALTEN"),
+                               "info")
         AUTO_SHOW = self.auto_check
         self.settings["auto_check"] = self.auto_check
         self.auto_next = self.plan_auto(first=True)
@@ -8477,6 +8876,7 @@ class App(tk.Tk):
         for r in self.rows.values():
             r.redraw()
         self.save_settings()
+        self.channel_card.redraw()              # zählt die Kanäle mit AUTO-CHECK (aus den gespeicherten Einstellungen)
 
     def toggle_row_auto(self, key):
         set_auto(key, not auto_on(key))
@@ -8484,20 +8884,32 @@ class App(tk.Tk):
             self.rows[key].redraw()
         self.save_settings()
 
-    def auto_result(self, result):
-        """Ergebnis einer Auto-Prüfung: pro Karte merken (LAST CHECK) und bei neuen Videos Bescheid geben."""
+    def auto_result(self, result, chan_dir=None, labels=None, title=""):
+        """Ergebnis einer Auto-Prüfung: pro Karte merken (LAST CHECK) und bei neuen Videos Bescheid geben.
+        Kommt es von einem anderen als dem angezeigten Kanal, landet es in dessen Ordner."""
         now = time.time()
-        for k, n in result.items():
-            AUTO_LAST[str(k)] = {"t": now, "new": int(n)}
-        save(autocheck_file(), AUTO_LAST)
-        for k in result:
-            if k in self.rows:
-                self.rows[k].redraw()
+        shown = chan_dir is None or Path(chan_dir) == ctx().chan_dir
+        if shown:
+            for k, n in result.items():
+                AUTO_LAST[str(k)] = {"t": now, "new": int(n)}
+            save(autocheck_file(), AUTO_LAST)
+            for k in result:
+                if k in self.rows:
+                    self.rows[k].redraw()
+        else:
+            f = Path(chan_dir) / "autocheck.json"
+            d = load(f, {})
+            d = d if isinstance(d, dict) else {}
+            for k, n in result.items():
+                d[str(k)] = {"t": now, "new": int(n)}
+            save(f, d)
         total = sum(result.values())
         if total and self.alerts:
-            names = [year_label(k) for k, n in result.items() if n]
+            names = [(labels or {}).get(k) or year_label(k) for k, n in result.items() if n]
             text = L(f"{total} new video{'s' if total != 1 else ''} added: {', '.join(names)}",
                      f"{total} neue{'s' if total == 1 else ''} Video{'s' if total != 1 else ''} ergänzt: {', '.join(names)}")
+            if not shown and title:
+                text = f"{title}: {text}"
             flash_taskbar(self)
             try:
                 hidden = self.state() == "iconic" or self.focus_displayof() is None
@@ -8515,24 +8927,90 @@ class App(tk.Tk):
             pass
 
     def auto_tick(self):
+        """Alle 30 s: fällige Auto-Prüfungen aller Kanäle mit AUTO-CHECK, nacheinander (immer nur ein Lauf)."""
         self.after(30000, self.auto_tick)
-        if not self.auto_check or time.time() < self.auto_next:
-            return
+        try:
+            self.auto_tick_run()
+        except Exception as e:  # noqa: BLE001
+            self.write_log(L(f"AUTO-CHECK ERROR // {e}", f"AUTO-PRÜFUNG FEHLER // {e}"), "err")
+
+    def auto_tick_run(self):
         if self.worker and self.worker.is_alive():
             return
-        if not all(get_creds()) or not ctx().channel or not load(TOKEN_FILE, None):
+        if not all(get_creds()) or not load(TOKEN_FILE, None):
             return
-        self.run_auto()
+        now = time.time()
+        due = []
+        cur = ctx().chan_dir.name
+        if self.auto_check and ctx().channel and now >= self.auto_next:
+            due.append((self.auto_next, None))
+        for i, c in enumerate(load_channels()):
+            folder = channel_folder(c).name
+            if folder == cur:
+                continue
+            on, mode, iv, times = schedule_from(channel_settings_of(c))
+            if not on:
+                self.auto_next_by.pop(folder, None)
+                continue
+            nxt = self.auto_next_by.setdefault(folder, plan_next(mode, iv, times, first=True) + 60 * i)
+            if now >= nxt:
+                due.append((nxt, c))
+        if not due:
+            return
+        due.sort(key=lambda d: d[0])
+        entry = due[0][1]
+        if entry is None:
+            self.run_auto()
+        else:
+            self.run_auto_for(entry)
+
+    def run_auto_for(self, entry):
+        """Auto-Prüfung eines Kanals, der gerade nicht angezeigt wird (eigener Kanal-Kontext)."""
+        folder = channel_folder(entry)
+        on, mode, iv, times = schedule_from(channel_settings_of(entry))
+        self.auto_next_by[folder.name] = plan_next(mode, iv, times)
+        info = {k: entry[k] for k in CHANNEL_FIELDS if k in entry}
+        c = context_for(info)
+        view = load(folder / "view.json", {}) or {}
+        auto_years = {y for y in view.get("auto_years", []) if isinstance(y, int)}
+        lists = load(folder / "lists.json", [])
+        keys = [y for y in c.years if y in auto_years and growing(y)] + \
+               [list_key(x) for x in (lists if isinstance(lists, list) else []) if x.get("auto")]
+        handle = (info.get("handle") or info.get("title") or "").upper()
+        if not keys:
+            self.auto_nothing(handle)
+            return
+        nxt = datetime.datetime.fromtimestamp(self.auto_next_by[folder.name])
+        when = (L("NEXT AT ", "NÄCHSTE UM ") + nxt.strftime("%H:%M")) if mode == "times" else \
+            (L("NEXT IN ", "NÄCHSTE IN ") + interval_label(iv))
+        self.write_log(L("AUTO-CHECK", "AUTO-PRÜFUNG") + f" // {handle} // {datetime.datetime.now():%H:%M} // {when}", "sep")
+        self.worker = Worker(keys, 0, self.out, auto=True, context=c)
+        self.run_mode = "running"
+        self.pause_info = None
+        self.worker.start()
+        self.start_btn.set_enabled(False)
+        self.check_btn.set_enabled(False)
+        self.scan_btn.set_enabled(False)
+        self.stop_btn.set_enabled(True)
+        self.set_status("running")
+
+    def auto_nothing(self, handle):
+        """Fällige Auto-Prüfung ohne Karte mit AUTO-Schalter: im Log sagen, statt still zu überspringen."""
+        self.write_log(L(f"AUTO-CHECK // {handle} // SKIPPED // NO YEAR OR LIST HAS AUTO ON",
+                         f"AUTO-PRÜFUNG // {handle} // ÜBERSPRUNGEN // KEIN JAHR UND KEINE LISTE HAT AUTO AN"), "warn")
 
     def run_auto(self):
         keys = [y for y in ctx().years if y in AUTO_YEARS and growing(y)] + \
                [list_key(x) for x in load_lists() if x.get("auto")]
         keys = [k for k in keys if k in self.rows]
         self.auto_next = self.plan_auto()
+        handle = (ctx().channel.get("handle") or ctx().channel.get("title") or "").upper()
         if not keys:
+            self.auto_nothing(handle)
             return
-        self.write_log(L("AUTO-CHECK", "AUTO-PRÜFUNG") + f" // {datetime.datetime.now():%H:%M} // " + self.auto_next_text(), "sep")
-        self.worker = Worker(keys, 0, self.out, fallback=False, auto=True)
+        self.write_log(L("AUTO-CHECK", "AUTO-PRÜFUNG") + f" // {handle} // {datetime.datetime.now():%H:%M} // "
+                       + self.auto_next_text(), "sep")
+        self.worker = Worker(keys, 0, self.out, auto=True)
         self.run_mode = "running"
         self.pause_info = None
         self.worker.start()
@@ -8547,7 +9025,7 @@ class App(tk.Tk):
         text, role, state, blink = {
             "idle": (L("STANDBY", "BEREIT"), CYAN, "inactive", False),
             "running": (L("RUNNING", "LÄUFT"), GREEN, "running", False),
-            "browser": (L("BROWSER UPLINK", "BROWSER-MODUS"), GREEN, "running", False),
+            "browser": (L("EDGE UPLINK", "EDGE AKTIV"), GREEN, "running", False),
             "browser_login": (L("SIGN IN // EDGE", "ANMELDEN // EDGE"), YELLOW, "active", True),
             "checking": (L("PLAYLIST CHECK...", "PRÜFE PLAYLIST..."), CYAN, "active", True),
             "stopping": (L("STOPPING...", "WIRD GESTOPPT..."), CYAN, "inactive", True),
@@ -8556,6 +9034,7 @@ class App(tk.Tk):
             "quota": (L("DAILY QUOTA REACHED", "TAGESLIMIT ERREICHT"), YELLOW, "active", False),
             "fehler": (L("ERROR // SEE LOG", "FEHLER // SIEHE PROTOKOLL"), RED, "frame", False),
         }.get(key, (key.upper(), CYAN, "inactive", False))
+        self.status_text = text
         self.header.chip.show(text, role, state, blink)
 
     def animate(self):
@@ -8715,10 +9194,9 @@ class App(tk.Tk):
         Tooltip(self.help_btn, L("Opens the detailed help for all features.",
                                  "Öffnet die ausführliche Hilfe zu allen Funktionen."))
         Tooltip(self.setup_btn, lambda: {
-            YELLOW: L("The daily quota is used up. Until the reset, Chronolist won't ask again and goes straight to "
-                      "the fallback if it is switched on.",
-                      "Das Tageskontingent ist aufgebraucht. Bis zum Reset fragt Chronolist nicht mehr nach und nimmt "
-                      "direkt den Fallback, wenn er eingeschaltet ist.")
+            YELLOW: L("The daily quota is used up. Until the reset, Chronolist reads the channel page in Edge instead.",
+                      "Das Tageskontingent ist aufgebraucht. Bis zum Reset liest Chronolist stattdessen die Kanalseite "
+                      "in Edge.")
                     + (f" Reset: {fmt_reset(quota_blocked('units'))}." if quota_blocked("units") else ""),
             RED: L("YouTube access is missing or was refused. Click to enter your Client ID and secret.",
                    "Zugang zu YouTube fehlt oder wurde abgelehnt. Klicken, um Client ID und Secret einzutragen."),
@@ -8750,11 +9228,6 @@ class App(tk.Tk):
                                  "Needed for SUGGESTIONS and custom lists, for example with a new channel.",
                                  "Lädt alle Videos und Titel des Kanals, ohne eine Playlist anzulegen oder zu ändern. "
                                  "Nötig für SUGGESTIONS und eigene Listen, zum Beispiel bei einem neuen Kanal."))
-        Tooltip(self.fallback_card, L("When the daily YouTube quota is used up, continue in a separate Edge window. "
-                                      "Warning: this breaks YouTube's rules and puts your account at risk.",
-                                      "Wenn das tägliche YouTube-Kontingent leer ist, über ein eigenes Edge-Fenster "
-                                      "weitermachen. Achtung: verstößt gegen die YouTube-Regeln, Risiko für dein "
-                                      "Konto."))
         Tooltip(self.app_card, L("Program settings: language, auto-run, start with Windows and update check.",
                                  "Programm-Einstellungen: Sprache, Autostart, Start mit Windows und Update-Prüfung."))
         Tooltip(self.settings_card, L("Playlist title and description with placeholders and visibility.",
@@ -8897,9 +9370,21 @@ class App(tk.Tk):
         self.start_btn.set_enabled(False)
         self.set_status("running")
 
+    def worker_dir(self):
+        """Datenordner des Kanals, für den gerade ein Lauf aktiv ist (oder None)."""
+        w = self.worker
+        return w.ctx.chan_dir if (w and w.is_alive() and getattr(w, "ctx", None) is not None) else None
+
+    def worker_foreign(self):
+        """Gehört der (letzte) Lauf zu einem anderen als dem angezeigten Kanal?"""
+        w = self.worker
+        return w is not None and getattr(w, "ctx", None) is not None and w.ctx.chan_dir != ctx().chan_dir
+
     def apply_channel(self, info):
         if ctx().channel.get("first_year"):
             self.save_view()                     # Ansicht des bisherigen Kanals merken
+            if self.auto_check:                  # bisheriger Kanal läuft im Hintergrund weiter: Zeitplan merken
+                self.auto_next_by[ctx().chan_dir.name] = self.auto_next
         self.settings["channel"] = info
         set_channel(info)
         self.load_channel_settings()
@@ -8923,6 +9408,9 @@ class App(tk.Tk):
         self.footer.redraw()
         if hasattr(self, "settings_card"):
             self.settings_card.redraw()
+        cur = getattr(self, "worker_current", None)
+        if self.worker_dir() and not self.worker_foreign() and cur in self.rows:
+            self.rows[cur].refresh(running=True, info=year_info(cur))   # zurück beim Kanal, der gerade läuft
 
     def start(self):
         if self.worker and self.worker.is_alive():
@@ -8941,7 +9429,7 @@ class App(tk.Tk):
             return
         self.save_settings()
         self.write_log(f"START // {', '.join(map(year_label, years))}", "sep")
-        self.worker = Worker(years, 0, self.out, fallback=self.fallback)
+        self.worker = Worker(years, 0, self.out)
         self.worker.skip_ahead = self.skip_ahead
         self.run_mode = "running"
         self.pause_info = None
@@ -8967,7 +9455,7 @@ class App(tk.Tk):
             return
         names = ", ".join(map(year_label, years))
         self.write_log(L(f"PLAYLIST CHECK // {names}", f"PLAYLIST-PRÜFUNG // {names}"), "sep")
-        self.worker = Worker(years, 0, self.out, fallback=self.fallback, check_only=True)
+        self.worker = Worker(years, 0, self.out, check_only=True)
         self.run_mode = "running"
         self.pause_info = None
         self.worker.start()
@@ -8988,7 +9476,7 @@ class App(tk.Tk):
             self.edit_channel()
             return
         self.write_log(L("SCAN ONLY // ARCHIVE AND TITLES, NO PLAYLISTS", "NUR SCANNEN // ARCHIV UND TITEL, KEINE PLAYLISTS"), "sep")
-        self.worker = Worker([], 0, self.out, fallback=self.fallback, scan_only=True)
+        self.worker = Worker([], 0, self.out, scan_only=True)
         self.run_mode = "running"
         self.pause_info = None
         self.worker.start()
@@ -9202,14 +9690,29 @@ class App(tk.Tk):
         return "break"
 
     # --- Nachrichten vom Worker
-    def write_log(self, text, level="info"):
+    def write_log(self, text, level="info", actions=None):
         stamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.logbox.config(state="normal")
         self.finish_dots()
         self.logbox.insert("end", f"[{stamp}] ", "ts")
-        m = re.match(r"^((?:REPAIR|NACHTRAG) \d+ // )(420)(/\d+ (?:MOVED|VERSCHOBEN))$", text)
-        r = re.match(r"^(\d{4}) // .*SHORTS.*(?:REMOVED|ENTFERNT)", text)
-        if r:
+        if actions:
+            # Zeile mit anklickbaren Aktionen (z. B. Playlist im Browser öffnen)
+            self.logbox.insert("end", text, level)
+            for label, fn in actions:
+                tag = f"act_{self.logbox.index('end')}_{id(fn)}"
+                self.logbox.insert("end", label, ("loglink", tag))
+                self.logbox.tag_bind(tag, "<Button-1>", lambda e, f=fn: f())
+                self.logbox.tag_bind(tag, "<Enter>", lambda e: self.logbox.configure(cursor="hand2"))
+                self.logbox.tag_bind(tag, "<Leave>", lambda e: self.logbox.configure(cursor=""))
+            self.logbox.insert("end", "\n", level)
+            text = None
+        m = r = None
+        if text is not None:
+            m = re.match(r"^((?:REPAIR|NACHTRAG) \d+ // )(420)(/\d+ (?:MOVED|VERSCHOBEN))$", text)
+            r = re.match(r"^(\d{4}) // .*SHORTS.*(?:REMOVED|ENTFERNT)", text)
+        if text is None:
+            pass
+        elif r:
             y = int(r.group(1))
             tag = f"rm{y}_{self.logbox.index('end')}"
             self.logbox.insert("end", text, level)
@@ -9270,6 +9773,23 @@ class App(tk.Tk):
             while True:
                 msg = self.out.get_nowait()
                 kind = msg[0]
+                if kind == "current":
+                    self.worker_current = msg[1]
+                foreign = (kind in ("progress", "checking", "select", "activity", "current")
+                           and self.worker_foreign())
+                if foreign:
+                    if kind == "checking":
+                        self.set_status("checking" if msg[2] else getattr(self, "run_mode", "running"))
+                    elif kind == "select" and not self.worker.auto:
+                        # Lauf eines nicht angezeigten Kanals: Auswahl in dessen Ansicht nachführen
+                        vf = self.worker.ctx.chan_dir / "view.json"
+                        view = load(vf, {}) or {}
+                        years = [y for y in view.get("years", []) if y != msg[2]]
+                        if msg[1] is not None and msg[1] not in years:
+                            years.append(msg[1])
+                        view["years"] = years
+                        save(vf, view)
+                    continue
                 if kind == "log":
                     self.write_log(msg[1], msg[2])
                 elif kind == "progress":
@@ -9329,8 +9849,13 @@ class App(tk.Tk):
                     self.chip_label = None
                 elif kind == "browser_login":
                     self.set_status("browser_login")
+                elif kind == "edge_signin":
+                    if self.alerts:
+                        flash_taskbar(self)
+                        windows_toast("Chronolist", L("AUTO-CHECK needs a YouTube sign-in in Edge: Program > YOUTUBE SIGN-IN.",
+                                                      "AUTO-CHECK braucht eine YouTube-Anmeldung in Edge: Programm > YOUTUBE SIGN-IN."))
                 elif kind == "auto_result":
-                    self.auto_result(msg[1])
+                    self.auto_result(*msg[1:])
                 elif kind == "select":
                     if msg[1] in self.rows:
                         self.rows[msg[1]].refresh(selected=True)
@@ -9356,7 +9881,13 @@ class App(tk.Tk):
                 elif kind == "done":
                     # Intervall: zählt ab dem Ende jedes Laufs. Feste Uhrzeiten: nur nach einer Auto-Prüfung neu planen
                     # (eine fällige Uhrzeit, die in einen manuellen Lauf fiel, wird danach nachgeholt)
-                    if self.auto_mode != "times" or getattr(self.worker, "auto", False):
+                    w = self.worker
+                    self.worker_current = None
+                    if self.worker_foreign():
+                        on, mode, iv, times = schedule_from(load(w.ctx.chan_dir / "settings.json", {}) or {})
+                        if on and (getattr(w, "auto", False) or mode != "times"):
+                            self.auto_next_by[w.ctx.chan_dir.name] = plan_next(mode, iv, times)
+                    elif self.auto_mode != "times" or getattr(w, "auto", False):
                         self.auto_next = self.plan_auto()
                     self.start_btn.set_enabled(True)
                     self.check_btn.set_enabled(True)
