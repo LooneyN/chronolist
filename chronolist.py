@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.5.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 160
+BUILD = 161
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -7881,6 +7881,59 @@ def style_titlebar(root):
         pass
 
 
+def install_context_menu(root):
+    """Rechtsklick-Menü (Ausschneiden, Kopieren, Einfügen, Alles markieren) für alle Eingabefelder und Textfelder."""
+    menu = tk.Menu(root, tearoff=0, bg=BG2, fg=TEXT, activebackground=mix(CYAN, BG, 0.35), activeforeground="#ffffff",
+                   disabledforeground=mix(TEXT_MUTED, BG, 0.6), bd=1, relief="flat", font=F("mono", 11, False))
+
+    def editable(w):
+        try:
+            return str(w.cget("state")) not in ("disabled", "readonly")
+        except tk.TclError:
+            return True
+
+    def has_selection(w):
+        try:
+            return bool(w.selection_get()) if isinstance(w, tk.Entry) else bool(w.tag_ranges("sel"))
+        except tk.TclError:
+            return False
+
+    def select_all(w):
+        w.focus_set()
+        if isinstance(w, tk.Entry):
+            w.select_range(0, "end")
+            w.icursor("end")
+        else:
+            w.tag_add("sel", "1.0", "end-1c")
+
+    def popup(e):
+        w = e.widget
+        can_edit, sel = editable(w), has_selection(w)
+        try:
+            clip = bool(w.clipboard_get())
+        except tk.TclError:
+            clip = False
+        menu.delete(0, "end")
+        menu.add_command(label=L("CUT", "AUSSCHNEIDEN"), accelerator="Ctrl+X",
+                         state="normal" if can_edit and sel else "disabled",
+                         command=lambda: w.event_generate("<<Cut>>"))
+        menu.add_command(label=L("COPY", "KOPIEREN"), accelerator="Ctrl+C", state="normal" if sel else "disabled",
+                         command=lambda: w.event_generate("<<Copy>>"))
+        menu.add_command(label=L("PASTE", "EINFÜGEN"), accelerator="Ctrl+V",
+                         state="normal" if can_edit and clip else "disabled",
+                         command=lambda: (w.focus_set(), w.event_generate("<<Paste>>")))
+        menu.add_separator()
+        menu.add_command(label=L("SELECT ALL", "ALLES MARKIEREN"), command=lambda: select_all(w))
+        try:
+            menu.tk_popup(e.x_root, e.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    for cls in ("Entry", "Text"):
+        root.bind_class(cls, "<Button-3>", popup, add="+")
+
+
 def style_window(win):
     """Dunkle Titelleiste und kein durchscheinender Hintergrund – auch nach dem Anzeigen noch einmal setzen."""
     style_titlebar(win)
@@ -7948,6 +8001,7 @@ class App(tk.Tk):
             self.settings["channel"]["id"] = ctx().channel["id"]
             save_settings_file(self.settings)
         register_channel(ctx().channel)            # Kanalverzeichnis anlegen/aktualisieren (beim ersten Start aus data/*/view.json)
+        install_context_menu(self)
         self.out = queue.Queue()
         self.worker = None
         self.code = ""
