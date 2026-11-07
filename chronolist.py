@@ -19,6 +19,7 @@ Zugangsdaten:  credentials.json  (über API SETUP im Programm)
 Einstellungen: settings.json     (u. a. Zielkanal, Playlist-Namensvorlage, Update-Check)
 Fortschritt:   data/<kanal>/videos_<jahr>.json, collect_<jahr>.json, state_<jahr>.json
 """
+import copy
 import datetime
 import json
 import os
@@ -98,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 166
+BUILD = 167
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1882,7 +1883,7 @@ class Worker(threading.Thread):
         super().__init__(daemon=True)
         # Kanal-Kontext des Laufs: ohne Angabe der angezeigte Kanal (dasselbe Objekt, damit z. B. geänderte
         # Vorlagen auch während des Laufs gelten); context_for(...) für einen anderen Kanal
-        self.ctx = context or ctx()
+        self.ctx = copy.copy(context or ctx())   # eigene Kopie: Kanalwechsel in der Oberfläche ändern sie nicht
         self.auto = auto             # automatische Prüfung im Hintergrund
         self.signin = signin         # nur Edge öffnen, damit man sich bei YouTube anmelden kann
         self.resolve_target = resolve
@@ -5080,9 +5081,12 @@ class SwitchRow(tk.Canvas):
 
     H = 58
 
-    def __init__(self, master, entry, active, on_pick, on_remove, on_edit, on_auto):
+    def __init__(self, master, entry, active, on_pick, on_remove, on_edit, on_auto, app=None):
         super().__init__(master, height=px(self.H), bg=BG, highlightthickness=0, bd=0, cursor="hand2")
         self.entry, self.active = entry, active
+        self.app = app             # gesetzt, wenn für diesen Kanal gerade ein Lauf aktiv ist
+        if app:
+            self.after(500, self.live_tick)
         self.on_pick, self.on_remove, self.on_edit, self.on_auto = on_pick, on_remove, on_edit, on_auto
         self.hover = self.x_hover = self.e_hover = self.a_hover = self.confirm = False
         self.auto_box = None
@@ -5140,6 +5144,17 @@ class SwitchRow(tk.Canvas):
             return
         top.after(20, self.on_pick, self.entry)
 
+    def live_tick(self):
+        """Läuft hier gerade etwas: Anzeige blinken lassen und Status aktuell halten; danach normal zeichnen."""
+        if not self.winfo_exists() or not self.app:
+            return
+        if self.app.worker_dir() is None:
+            self.app = None
+            self.auto, self.when, self.new = channel_overview(self.entry)
+        else:
+            self.after(500, self.live_tick)
+        self.redraw()
+
     def reset_confirm(self):
         if self.winfo_exists() and self.confirm:
             self.confirm = False
@@ -5188,7 +5203,12 @@ class SwitchRow(tk.Canvas):
                 sub += L("  //  SHOWN", "  //  ANGEZEIGT")
             self.create_text(px(16), h * 0.72, anchor="w", font=F("mono", 10, False), fill=TEXT_MUTED,
                              text=fit_text(sub, F("mono", 10, False), xr // 2))
-            if self.when:
+            if self.app:
+                on = int(time.time() * 2) % 2 == 0
+                txt = "●  " + (getattr(self.app, "status_text", "") or L("RUNNING", "LÄUFT"))
+                self.create_text(xr, h * 0.72, anchor="e", font=F("mono", 10),
+                                 fill=GREEN if on else mix(GREEN, BG, 0.55), text=txt)
+            elif self.when:
                 extra = (f"  //  +{self.new} " + L("NEW", "NEU")) if self.new else ""
                 e = self.create_text(xr, h * 0.72, anchor="e", font=F("mono", 10), text=extra,
                                      fill=GREEN) if extra else None
@@ -5238,8 +5258,10 @@ class ChannelSwitcher(tk.Toplevel):
         cur = ctx().channel
         if not chans and cur.get("first_year"):
             chans = [dict(cur)]
+        live = self.app.worker_dir()
         for c in chans:
-            r = SwitchRow(self.inner, c, same_channel(c, cur), self.pick, self.remove, self.edit, self.toggle_auto)
+            r = SwitchRow(self.inner, c, same_channel(c, cur), self.pick, self.remove, self.edit, self.toggle_auto,
+                          app=self.app if live is not None and channel_folder(c) == live else None)
             r.pack(fill="x", padx=px(8), pady=(0, px(4)))
         add = CutButton(self.inner, L("+  ADD CHANNEL", "+  KANAL HINZUFÜGEN"), self.add, height=px(32), size=11)
         add.set_color(CYAN)
@@ -5271,8 +5293,6 @@ class ChannelSwitcher(tk.Toplevel):
     def pick(self, entry):
         if same_channel(entry, ctx().channel):
             self.close()
-            return
-        if self.app.busy():
             return
         self.close()
         info = {k: entry[k] for k in CHANNEL_FIELDS if k in entry}
@@ -8828,7 +8848,7 @@ class App(tk.Tk):
         text, role, state, blink = {
             "idle": (L("STANDBY", "BEREIT"), CYAN, "inactive", False),
             "running": (L("RUNNING", "LÄUFT"), GREEN, "running", False),
-            "browser": (L("BROWSER UPLINK", "BROWSER-MODUS"), GREEN, "running", False),
+            "browser": (L("EDGE UPLINK", "EDGE AKTIV"), GREEN, "running", False),
             "browser_login": (L("SIGN IN // EDGE", "ANMELDEN // EDGE"), YELLOW, "active", True),
             "checking": (L("PLAYLIST CHECK...", "PRÜFE PLAYLIST..."), CYAN, "active", True),
             "stopping": (L("STOPPING...", "WIRD GESTOPPT..."), CYAN, "inactive", True),
@@ -8837,6 +8857,7 @@ class App(tk.Tk):
             "quota": (L("DAILY QUOTA REACHED", "TAGESLIMIT ERREICHT"), YELLOW, "active", False),
             "fehler": (L("ERROR // SEE LOG", "FEHLER // SIEHE PROTOKOLL"), RED, "frame", False),
         }.get(key, (key.upper(), CYAN, "inactive", False))
+        self.status_text = text
         self.header.chip.show(text, role, state, blink)
 
     def animate(self):
@@ -9172,6 +9193,16 @@ class App(tk.Tk):
         self.start_btn.set_enabled(False)
         self.set_status("running")
 
+    def worker_dir(self):
+        """Datenordner des Kanals, für den gerade ein Lauf aktiv ist (oder None)."""
+        w = self.worker
+        return w.ctx.chan_dir if (w and w.is_alive() and getattr(w, "ctx", None) is not None) else None
+
+    def worker_foreign(self):
+        """Gehört der (letzte) Lauf zu einem anderen als dem angezeigten Kanal?"""
+        w = self.worker
+        return w is not None and getattr(w, "ctx", None) is not None and w.ctx.chan_dir != ctx().chan_dir
+
     def apply_channel(self, info):
         if ctx().channel.get("first_year"):
             self.save_view()                     # Ansicht des bisherigen Kanals merken
@@ -9200,6 +9231,9 @@ class App(tk.Tk):
         self.footer.redraw()
         if hasattr(self, "settings_card"):
             self.settings_card.redraw()
+        cur = getattr(self, "worker_current", None)
+        if self.worker_dir() and not self.worker_foreign() and cur in self.rows:
+            self.rows[cur].refresh(running=True, info=year_info(cur))   # zurück beim Kanal, der gerade läuft
 
     def start(self):
         if self.worker and self.worker.is_alive():
@@ -9547,11 +9581,22 @@ class App(tk.Tk):
             while True:
                 msg = self.out.get_nowait()
                 kind = msg[0]
+                if kind == "current":
+                    self.worker_current = msg[1]
                 foreign = (kind in ("progress", "checking", "select", "activity", "current")
-                           and getattr(self.worker, "ctx", None) is not None and self.worker.ctx is not ctx())
+                           and self.worker_foreign())
                 if foreign:
                     if kind == "checking":
                         self.set_status("checking" if msg[2] else getattr(self, "run_mode", "running"))
+                    elif kind == "select" and not self.worker.auto:
+                        # Lauf eines nicht angezeigten Kanals: Auswahl in dessen Ansicht nachführen
+                        vf = self.worker.ctx.chan_dir / "view.json"
+                        view = load(vf, {}) or {}
+                        years = [y for y in view.get("years", []) if y != msg[2]]
+                        if msg[1] is not None and msg[1] not in years:
+                            years.append(msg[1])
+                        view["years"] = years
+                        save(vf, view)
                     continue
                 if kind == "log":
                     self.write_log(msg[1], msg[2])
@@ -9645,9 +9690,11 @@ class App(tk.Tk):
                     # Intervall: zählt ab dem Ende jedes Laufs. Feste Uhrzeiten: nur nach einer Auto-Prüfung neu planen
                     # (eine fällige Uhrzeit, die in einen manuellen Lauf fiel, wird danach nachgeholt)
                     w = self.worker
-                    if getattr(w, "auto", False) and getattr(w, "ctx", None) is not None and w.ctx is not ctx():
-                        _, mode, iv, times = schedule_from(load(w.ctx.chan_dir / "settings.json", {}) or {})
-                        self.auto_next_by[w.ctx.chan_dir.name] = plan_next(mode, iv, times)
+                    self.worker_current = None
+                    if self.worker_foreign():
+                        on, mode, iv, times = schedule_from(load(w.ctx.chan_dir / "settings.json", {}) or {})
+                        if on and (getattr(w, "auto", False) or mode != "times"):
+                            self.auto_next_by[w.ctx.chan_dir.name] = plan_next(mode, iv, times)
                     elif self.auto_mode != "times" or getattr(w, "auto", False):
                         self.auto_next = self.plan_auto()
                     self.start_btn.set_enabled(True)

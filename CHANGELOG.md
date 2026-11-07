@@ -13,6 +13,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - PROGRAM > YOUTUBE SIGN-IN opens Edge so you can sign in to YouTube once.
 - PROGRAM > USE API FOR EVERYTHING (off by default): adds videos through the API as before. 1,000 units of the daily quota stay free for AUTO-CHECK; after that Chronolist continues in Edge.
 - A one-time notice on start explains the API/Edge split and the risk of automating the YouTube website.
+- You can switch channels while a run or check is active; it keeps working for its own channel in the background. The channel list marks the channel that is being worked on with a blinking status (e.g. EDGE UPLINK), and switching back shows its progress again.
 - Several channels at once: every channel in the channel list with AUTO-CHECK on is checked in the background on its own schedule, even while another channel is shown. Checks that are due at the same time run one after another. The log names the channel, the channel list shows its last check, the new video alert names the channel, and the channel card shows "AUTO // 2 CHANNELS" when more than one channel is active. In the channel list, the AUTO field of each row switches that channel's AUTO-CHECK on or off with one click. If a due check finds no year or list with AUTO on, the log says so instead of skipping it silently.
 
 ## [3.5.0] - 2026-11-07
