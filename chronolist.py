@@ -48,7 +48,7 @@ except ImportError:  # nicht unter Windows
 # ---------------------------------------------------------------- Einstellungen
 # Zugangsdaten stehen NICHT im Code, sondern in credentials.json (wird über API SETUP angelegt).
 # Kanal wird im Programm eingegeben und in settings.json gespeichert.
-# Standard-Vorlagen; im Programm unter PLAYLISTS änderbar (gespeichert in settings.json).
+# Standard-Vorlagen; im Programm unter CHANNEL SETTINGS änderbar (gespeichert in settings.json).
 # Platzhalter: {channel} {handle} {year} {count}, für eigene Listen zusätzlich {name}
 # --- Sprache der Oberfläche: "en" oder "de" (in settings.json "language", im Programm unter PROGRAMM)
 LANGUAGES = {"en": "ENGLISH", "de": "DEUTSCH"}
@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.4.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 151
+BUILD = 152
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -5208,7 +5208,7 @@ class ScheduleEditor(tk.Frame):
 
 
 class SettingsDialog(tk.Toplevel):
-    """Playlist-Einstellungen: je eine Vorlage für Jahre und für eigene Listen (Reiter), Sichtbarkeit für alle."""
+    """Kanal-Einstellungen: Playlist-Vorlagen für Jahre und eigene Listen (Reiter), Sichtbarkeit und AUTO-CHECK-Zeitplan."""
 
     KINDS = ("years", "lists")
     CHIPS = {"years": ("{channel}", "{handle}", "{year}", "{count}"),
@@ -5219,7 +5219,7 @@ class SettingsDialog(tk.Toplevel):
     def __init__(self, app, kind="years"):
         super().__init__(app, bg=BG)
         self.app = app
-        self.title(L("Playlist settings", "Playlist-Einstellungen"))
+        self.title(L("Channel settings", "Kanal-Einstellungen"))
         self.transient(app)
         self.minsize(*fit_min(px(640), px(560)))
         self.geometry(fit(px(720), px(900)))
@@ -5242,7 +5242,7 @@ class SettingsDialog(tk.Toplevel):
         self.area.pack(fill="both", expand=True, padx=(pad, pad - px(12)), pady=(pad, 0))
         body = self.area.inner
 
-        Section(body, L("PLAYLIST SETTINGS", "PLAYLIST-EINSTELLUNGEN"),
+        Section(body, L("PLAYLIST TEMPLATES", "PLAYLIST-VORLAGEN"),
                 "CHANNEL // " + (ctx().channel.get("handle") or ctx().channel.get("title") or "--").upper()).pack(fill="x", pady=(0, px(10)))
         tabs = tk.Frame(body, bg=BG)
         tabs.pack(fill="x", pady=(0, px(10)))
@@ -5262,14 +5262,15 @@ class SettingsDialog(tk.Toplevel):
         for k in self.KINDS:
             self.build_page(k, st)
 
-        self.lbl(body, L("VISIBILITY  (YEARS AND LISTS)", "SICHTBARKEIT  (JAHRE UND LISTEN)"))
+        Section(body, L("VISIBILITY", "SICHTBARKEIT"), "YEARS // LISTS").pack(fill="x", pady=(px(14), px(8)))
         vis = tk.Frame(body, bg=BG)
-        vis.pack(fill="x", pady=(px(4), px(4)))
+        vis.pack(fill="x", pady=(0, px(4)))
         self.privacy = st.get("privacy", "public")
         self.vis_btns = {}
-        for opt in PRIVACY_OPTIONS:
-            b = CutButton(vis, privacy_label(opt), lambda o=opt: self.set_privacy(o), width=150)
-            b.pack(side="left", padx=(0, px(6)))
+        vw = (672 - 6 * (len(PRIVACY_OPTIONS) - 1)) // len(PRIVACY_OPTIONS)   # bündig mit dem Zeitplan darunter
+        for k, opt in enumerate(PRIVACY_OPTIONS):
+            b = CutButton(vis, privacy_label(opt), lambda o=opt: self.set_privacy(o), width=vw)
+            b.pack(side="left", padx=(0, px(6)) if k < len(PRIVACY_OPTIONS) - 1 else 0)
             self.vis_btns[opt] = b
         Tooltip(self.vis_btns["public"], L("Anyone can find and watch the playlist.", "Jeder kann die Playlist finden und ansehen."))
         Tooltip(self.vis_btns["unlisted"], L("Only people with the link can see the playlist.", "Nur Leute mit dem Link können die Playlist sehen."))
@@ -5278,11 +5279,11 @@ class SettingsDialog(tk.Toplevel):
         tk.Label(body, text=L("TITLE, DESCRIPTION AND VISIBILITY APPLY TO PLAYLISTS CREATED FROM NOW ON.",
                               "TITEL, BESCHREIBUNG UND SICHTBARKEIT GELTEN FÜR PLAYLISTS, DIE AB JETZT ANGELEGT WERDEN."),
                  bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w", justify="left",
-                 wraplength=px(640)).pack(fill="x", pady=(px(2), px(12)))
+                 wraplength=px(672)).pack(fill="x", pady=(px(2), px(12)))
 
-        self.lbl(body, L("AUTO-CHECK SCHEDULE  (YEARS AND LISTS)", "AUTO-PRÜFUNG ZEITPLAN  (JAHRE UND LISTEN)"))
-        self.schedule = ScheduleEditor(body, app, 684)
-        self.schedule.pack(fill="x", pady=(px(4), px(4)))
+        Section(body, L("AUTO-CHECK SCHEDULE", "AUTO-PRÜFUNG ZEITPLAN"), "YEARS // LISTS").pack(fill="x", pady=(px(6), px(8)))
+        self.schedule = ScheduleEditor(body, app, 672)
+        self.schedule.pack(fill="x", pady=(0, px(4)))
 
         self.kind = None
         self.show(kind)
@@ -5443,7 +5444,7 @@ class SettingsDialog(tk.Toplevel):
         self.app.auto_card.redraw()
         save_settings_file(st)
         apply_templates(st)
-        self.app.write_log(L("PLAYLIST SETTINGS SAVED", "PLAYLIST-EINSTELLUNGEN GESPEICHERT"), "ok")
+        self.app.write_log(L("CHANNEL SETTINGS SAVED", "KANAL-EINSTELLUNGEN GESPEICHERT"), "ok")
         self.app.settings_card.redraw()
         self.destroy()
 
@@ -5813,7 +5814,7 @@ HELP_TEXT_DE = [
             "Was einmal gefunden wurde, wird gespeichert und nicht noch einmal gesucht."),
     ("num", "3.  Playlist anlegen. Für jedes Jahr legt Chronolist eine Playlist an. Standardmäßig heißt sie zum "
             "Beispiel \"MeinKanal 2012 in Upload-Reihenfolge\" und ist öffentlich. Name, Beschreibung, Sichtbarkeit "
-            "und ein eigenes Bild stellst du unter PLAYLISTS ein."),
+            "und ein eigenes Bild stellst du unter KANAL-EINSTELLUNGEN ein."),
     ("num", "4.  Füllen. Die Videos werden der Reihe nach eingefügt. Jedes Video verbraucht 50 von 10.000 Einheiten, "
             "die man pro Tag hat. Das reicht für ungefähr 200 Videos am Tag."),
     ("num", "5.  Wenn das Tageskontingent leer ist:\n"
@@ -5958,7 +5959,7 @@ HELP_TEXT_DE = [
            "jede Karte (Jahr oder Liste) einen kleinen AUTO-Schalter. Nur Karten mit eingeschaltetem AUTO werden "
            "aktuell gehalten. Bei Jahren ist das nur beim laufenden Jahr sinnvoll, bei Listen kommt jedes neue "
            "passende Video dazu.\n"
-           "Wann geprüft wird, stellst du pro Kanal unter PLAYLISTS ein, entweder als Intervall oder zu festen Uhrzeiten. "
+           "Wann geprüft wird, stellst du pro Kanal unter KANAL-EINSTELLUNGEN ein, entweder als Intervall oder zu festen Uhrzeiten. "
            "Intervall: 30 Minuten, 1, 2 oder 6 Stunden oder ein eigener Wert (Vielfache von 5, mindestens 15 Minuten). "
            "Der Abstand läuft ab dem Ende des letzten Durchlaufs, auch eines manuellen. Feste Uhrzeiten: bis zu "
            "vier Uhrzeiten am Tag (HH:MM). Chronolist muss dann offen sein; fällt eine Uhrzeit in einen anderen "
@@ -5972,7 +5973,7 @@ HELP_TEXT_DE = [
            "Hinweis bei neuen Videos (unter PROGRAMM ein- und ausschaltbar): Hat die Prüfung etwas ergänzt, blinkt "
            "das Taskleisten-Symbol. Ist Chronolist minimiert oder im Hintergrund, zeigt Windows zusätzlich eine "
            "Benachrichtigung."),
-    ("dt", "PLAYLISTS"),
+    ("dt", "KANAL-EINSTELLUNGEN"),
     ("dd", "Vorlagen und Sichtbarkeit gelten für den aktuellen Kanal; jeder Kanal hat seine eigenen. Ein neuer "
            "Kanal übernimmt zuerst die Werte des bisher aktiven Kanals.\n"
            "Titel und Beschreibung: Du kannst Platzhalter verwenden, die beim Anlegen ersetzt werden. {channel} wird "
@@ -6063,7 +6064,7 @@ HELP_TEXT_EN = [
             "Whatever has been found is saved and never searched again."),
     ("num", "3.  Create the playlist. Chronolist creates one playlist per year. By default it is called, for "
             "example, \"MyChannel 2012 in upload order\" and is public. Title, description, visibility and a custom "
-            "image are set under PLAYLISTS."),
+            "image are set under CHANNEL SETTINGS."),
     ("num", "4.  Fill it. The videos are added in order. Each video uses 50 of the 10,000 units you get per day, "
             "which is enough for about 200 videos a day."),
     ("num", "5.  When the daily quota is used up:\n"
@@ -6203,7 +6204,7 @@ HELP_TEXT_EN = [
     ("dd", "The AUTO-CHECK card in the main window switches on the automatic search for new videos. Then every card "
            "(year or list) shows a small AUTO switch. Only cards with AUTO switched on are kept up to date. For years "
            "that only makes sense for the current year, for lists every new matching video is added.\n"
-           "Under PLAYLISTS you choose per channel when it checks: at an interval or at fixed times. Interval: 30 minutes, 1, 2 or 6 "
+           "Under CHANNEL SETTINGS you choose per channel when it checks: at an interval or at fixed times. Interval: 30 minutes, 1, 2 or 6 "
            "hours, or your own value (multiples of 5, at least 15 minutes). The wait starts when the last run ends, a "
            "manual one included. Fixed times: up to four times per day (HH:MM). Chronolist must be open then; if a "
            "time falls into another run, the check follows right after it.\n"
@@ -6214,7 +6215,7 @@ HELP_TEXT_EN = [
            "LAST CHECK 14:02 // +2 NEW).\n"
            "New video alert (can be switched off under PROGRAM): when a check added videos, the taskbar icon flashes. "
            "If Chronolist is minimized or in the background, Windows also shows a notification."),
-    ("dt", "PLAYLISTS"),
+    ("dt", "CHANNEL SETTINGS"),
     ("dd", "Templates and visibility apply to the current channel; every channel has its own. A new channel first "
            "takes over the values of the channel that was active before.\n"
            "Title and description: you can use placeholders that are filled in when the playlist is created. "
@@ -6700,9 +6701,9 @@ class ListDialog(tk.Toplevel):
                                 highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3), padx=px(6), pady=px(4))
         self.desc_box.insert("1.0", lst.get("desc", ""))
         Tooltip(self.desc_box, L("Own description for this list. Placeholders: {name} {channel} {handle} {count}. "
-                                 "Empty = the CUSTOM LISTS template under PLAYLISTS.",
+                                 "Empty = the CUSTOM LISTS template under CHANNEL SETTINGS.",
                                  "Eigene Beschreibung für diese Liste. Platzhalter: {name} {channel} {handle} {count}. "
-                                 "Leer = die Vorlage im Reiter EIGENE LISTEN unter PLAYLISTS."))
+                                 "Leer = die Vorlage im Reiter EIGENE LISTEN unter KANAL-EINSTELLUNGEN."))
         self.desc_box.pack(fill="x", pady=(px(3), px(12)))
 
         Section(left, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
@@ -7713,20 +7714,22 @@ class App(tk.Tk):
         self.auto_card.grid(row=0, column=0, sticky="ew", padx=(0, px(3)), pady=(0, px(4)))
         Tooltip(self.auto_card, L("Looks for new videos by itself while Chronolist is open. When on, every card "
                                   "shows an AUTO switch: only cards with AUTO on are kept up to date. The schedule "
-                                  "(interval or fixed times) is set per channel in the PLAYLISTS settings.",
+                                  "(interval or fixed times) is set per channel in the CHANNEL SETTINGS.",
                                   "Sucht von allein nach neuen Videos, solange Chronolist offen ist. Ist es an, "
                                   "zeigt jede Karte einen AUTO-Schalter: nur Karten mit AUTO werden aktuell "
                                   "gehalten. Den Zeitplan (Intervall oder feste Uhrzeiten) stellst du pro Kanal in den "
-                                  "PLAYLISTS-Einstellungen ein."))
+                                  "KANAL-EINSTELLUNGEN ein."))
         self.app_card = SettingsCard(opts, self.edit_app_settings, lambda: L("PROGRAM", "PROGRAMM"),
                                      lambda: " // ".join([LANGUAGES[LANG]]
                                                          + ([L("AUTO-RUN", "AUTOSTART")] if self.autorun else [])
                                                          + ([L("ON BOOT", "MIT WINDOWS")] if self.win_on else [])), icon="gear")
         self.app_card.grid(row=1, column=1, sticky="ew", padx=(px(3), 0))
-        self.settings_card = SettingsCard(opts, self.edit_settings, lambda: "PLAYLISTS",
+        self.settings_card = SettingsCard(opts, self.edit_settings,
+                                          lambda: L("CHANNEL SETTINGS", "KANAL-EINSTELLUNGEN"),
                                           lambda: f"{privacy_label(ctx().privacy)} // "
-                                                  + fill_template(ctx().playlist_template, ctx().years[0] if ctx().years
-                                                                  else datetime.date.today().year - 1))
+                                                  + (self.auto_sub() if self.auto_check else
+                                                     fill_template(ctx().playlist_template, ctx().years[0] if ctx().years
+                                                                   else datetime.date.today().year - 1)))
         self.settings_card.grid(row=1, column=0, sticky="ew", padx=(0, px(3)))
 
         self.login = tk.Frame(right, bg=BG)
@@ -8007,6 +8010,7 @@ class App(tk.Tk):
         self.auto_next = self.plan_auto(first=True)
         self.auto_card.sub = self.auto_sub()
         self.auto_card.update_value(self.auto_check)
+        self.settings_card.redraw()
         for r in self.rows.values():
             r.redraw()
         self.save_settings()

@@ -9,7 +9,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Updating from 3.3.0 or older inside Chronolist can stop with "The process cannot access the file because it is being used by another process". The new version is already downloaded then. Close Chronolist, delete (or rename) Chronolist.exe in its folder, rename Chronolist.new.exe to Chronolist.exe and start it. From this version on, Chronolist finishes the update by itself after closing.
 
 ### Changed
-- The AUTO-CHECK schedule (interval or fixed times) moved from the PROGRAM settings to the PLAYLISTS settings, because it belongs to the channel. NEW VIDEO ALERT stays in the PROGRAM settings under NOTIFICATIONS.
+- PLAYLISTS is now called CHANNEL SETTINGS: everything in it applies to the channel shown (playlist templates, visibility, AUTO-CHECK schedule, left-out videos). The card shows the visibility and, with AUTO-CHECK on, the schedule.
+- The AUTO-CHECK schedule (interval or fixed times) moved from the PROGRAM settings to the CHANNEL SETTINGS, because it belongs to the channel. NEW VIDEO ALERT stays in the PROGRAM settings under NOTIFICATIONS.
 - Playlist templates, visibility and the AUTO-CHECK (on/off and schedule) are now stored per channel. Switching the channel switches them too; a new channel starts with the values of the channel that was active before. Your current values are kept.
 
 ### Fixed
