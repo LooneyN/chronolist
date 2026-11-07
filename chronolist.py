@@ -98,8 +98,8 @@ def default_list_description_template():
 PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
-VERSION = "4.0.0"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 171
+VERSION = "4.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
+BUILD = 174
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -118,10 +118,10 @@ API = "https://www.googleapis.com/youtube/v3"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPE = "https://www.googleapis.com/auth/youtube"
 BATCH_SIZE = 30                 # Browser-Fallback: Videos pro Anfrage
-BATCH_PAUSE = (4, 12)          # Sekunden zwischen zwei Paketen
-COOLDOWN_EVERY = 250            # nach so vielen Videos ein kurzer Cooldown
+BATCH_PAUSE = (4, 10)          # Sekunden zwischen zwei Paketen
+COOLDOWN_EVERY = 300            # nach so vielen Videos ein kurzer Cooldown
 COOLDOWN_PAUSE = (17, 23)       # Sekunden (~20 s)
-LONG_BREAK_EVERY = 1500         # nach so vielen Videos eine lange Pause
+LONG_BREAK_EVERY = 1800         # nach so vielen Videos eine lange Pause
 LONG_BREAK_PAUSE = (210, 270)   # Sekunden (~4 min)
 REMOVE_EXTRAS = True            # nur Videos, die nachweislich Shorts sind, werden aus Playlists entfernt
 CARD_H = 62                     # Höhe aller Listen-/Optionskarten
@@ -1112,7 +1112,8 @@ def check_for_update(out):
         if tag and version_tuple(tag) > version_tuple(VERSION):
             zip_url = next((a.get("browser_download_url") for a in j.get("assets") or []
                             if (a.get("name") or "").lower().endswith("-windows.zip")), None)
-            out.put(("update", tag, j.get("html_url") or f"{REPO_URL}/releases/latest", zip_url, j.get("body") or ""))
+            out.put(("update", tag, j.get("html_url") or f"{REPO_URL}/releases/latest", zip_url,
+                     re.sub(r"^!\[[^\]]*\]\([^)]*\)\s*\n*", "", j.get("body") or "", flags=re.M).strip()))
     except (requests.RequestException, ValueError):
         pass
 
@@ -1538,6 +1539,10 @@ class BrowserFailed(Exception):
     pass
 
 
+class PlaylistGone(Exception):
+    """YouTube kennt die Playlist nicht mehr (auf YouTube gelöscht)."""
+
+
 class NoVideosFound(BrowserFailed):
     """Die Kanalseite zeigt für dieses Jahr keine Videos (Jahr ist schlicht leer)."""
 
@@ -1681,6 +1686,8 @@ class BrowserUplink:
                 self.count += 1
                 return True
             http, err = res.get("http"), res.get("err") or res.get("status")
+            if http == 404:
+                raise PlaylistGone()
             if http in (401, 403):
                 raise BrowserFailed(L(f"YOUTUBE REFUSED ACCESS ({http}) // CHECK SIGNED-IN CHANNEL OWNS THE PLAYLIST", f"YOUTUBE VERWEIGERT DEN ZUGRIFF ({http}) // GEHÖRT DIE PLAYLIST DEM ANGEMELDETEN KANAL?"))
             if http == 429:
@@ -1718,6 +1725,8 @@ class BrowserUplink:
                 continue
             if res.get("http") == 200 and res.get("json") is not None:
                 return res["json"]
+            if res.get("http") == 404 and isinstance(body, dict) and body.get("playlistId"):
+                raise PlaylistGone()
             if attempt == 2:
                 raise BrowserFailed(L(f"EDGE UPLINK // HTTP {res.get('http')} ON {path}", f"EDGE // HTTP {res.get('http')} BEI {path}"))
             time.sleep(5)
@@ -1755,6 +1764,8 @@ class BrowserUplink:
             if http == 200 and j.get("status") == "STATUS_SUCCEEDED":
                 self.count += len(video_ids)
                 return True
+            if http == 404:
+                raise PlaylistGone()
             if http in (401, 403):
                 raise BrowserFailed(L(f"YOUTUBE REFUSED ACCESS ({http}) // CHECK SIGNED-IN CHANNEL OWNS THE PLAYLIST", f"YOUTUBE VERWEIGERT DEN ZUGRIFF ({http}) // GEHÖRT DIE PLAYLIST DEM ANGEMELDETEN KANAL?"))
             if http == 429:
@@ -2947,6 +2958,8 @@ class Worker(threading.Thread):
                 self.apply_privacy(key)
             except BrowserFailed as e:
                 self.log(L(f"VISIBILITY NOT CHANGED // {e}", f"SICHTBARKEIT NICHT GEÄNDERT // {e}"), "warn")
+            except PlaylistGone:
+                pass                                       # fill() legt sie neu an
             self.fill(key, videos)
 
     # --- Playlist befüllen
@@ -3418,14 +3431,15 @@ class Worker(threading.Thread):
             return False
         return isinstance(j, dict) and "items" in j and not j["items"]
 
-    def check_deleted(self, year):
-        """Playlist(s) auf YouTube gelöscht? Dann den Stand zurücksetzen, damit sie neu angelegt und gefüllt werden."""
+    def check_deleted(self, year, force=False):
+        """Playlist(s) auf YouTube gelöscht? Dann den Stand zurücksetzen, damit sie neu angelegt und gefüllt werden.
+        force: YouTube hat beim Einfügen schon gemeldet, dass es die Playlist nicht mehr gibt."""
         sf = state_file(year)
         state = load(sf, {})
         parts = part_ids(state)
         if not parts:
             return
-        gone = [p for p in parts if self.playlist_gone(p)]
+        gone = parts if force else [p for p in parts if self.playlist_gone(p)]
         if not gone:
             return
         if len(gone) == len(parts):
@@ -3441,6 +3455,17 @@ class Worker(threading.Thread):
                        f"ZUM NEUAUFBAU AUCH DEN REST LÖSCHEN"), "warn")
 
     def fill(self, year, videos):
+        try:
+            return self.fill_once(year, videos)
+        except PlaylistGone:
+            self.check_deleted(year, force=True)          # auf YouTube gelöscht: neu anlegen und von vorn füllen
+            try:
+                return self.fill_once(year, videos)
+            except PlaylistGone:
+                raise BrowserFailed(L("YOUTUBE CAN'T FIND THE NEW PLAYLIST EITHER",
+                                      "YOUTUBE FINDET AUCH DIE NEUE PLAYLIST NICHT"))
+
+    def fill_once(self, year, videos):
         self.scanning = None
         sf = state_file(year)
         self.check_deleted(year)
@@ -6674,9 +6699,9 @@ HELP_TEXT_DE = [
     ("h2", "Warum macht Chronolist Pausen?"),
     ("p", "Über das Edge-Fenster arbeitet Chronolist absichtlich nicht im Höchsttempo, damit es nicht wie ein Bot "
           "aussieht. Die Pausen siehst du mit Countdown auf der Jahreskarte und oben in der Statusanzeige."),
-    ("dd", "NÄCHSTES PAKET: kurze Pause zwischen zwei Paketen mit je 30 Videos, 4 bis 12 Sekunden.\n"
-           "KURZE PAUSE: etwa 20 Sekunden nach jeweils 250 Videos.\n"
-           "LANGE PAUSE: etwa vier Minuten nach jeweils 1500 Videos.\n"
+    ("dd", "NÄCHSTES PAKET: kurze Pause zwischen zwei Paketen mit je 30 Videos, 4 bis 10 Sekunden.\n"
+           "KURZE PAUSE: etwa 20 Sekunden nach jeweils 300 Videos.\n"
+           "LANGE PAUSE: etwa vier Minuten nach jeweils 1800 Videos.\n"
            "YOUTUBE BREMST: YouTube bremst kurz, Chronolist wartet zehn Minuten.\n"
            "NEUER VERSUCH oder KEINE VERBINDUNG: kurzer Fehler oder keine Verbindung. Chronolist versucht es gleich "
            "noch einmal."),
@@ -6923,9 +6948,9 @@ HELP_TEXT_EN = [
     ("h2", "Why does Chronolist pause?"),
     ("p", "Through the Edge window Chronolist deliberately doesn't work at full speed, so it doesn't look like a bot. "
           "You see the pauses with a countdown on the year card and in the status display at the top."),
-    ("dd", "NEXT BATCH: short pause between two batches of 30 videos, 4 to 12 seconds.\n"
-           "COOLDOWN: about 20 seconds after every 250 videos.\n"
-           "BREAK: about four minutes after every 1500 videos.\n"
+    ("dd", "NEXT BATCH: short pause between two batches of 30 videos, 4 to 10 seconds.\n"
+           "COOLDOWN: about 20 seconds after every 300 videos.\n"
+           "BREAK: about four minutes after every 1800 videos.\n"
            "RATE LIMIT: YouTube slows things down briefly, Chronolist waits ten minutes.\n"
            "RETRY or NO SIGNAL: a short error or no connection. Chronolist tries again shortly."),
 
