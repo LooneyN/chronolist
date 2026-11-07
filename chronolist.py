@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.5.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 159
+BUILD = 160
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -7017,7 +7017,7 @@ class ListDialog(tk.Toplevel):
 
         templates = load_lists() if not self.lst_id else []
         if templates:
-            tk.Label(left, text=L("TEMPLATE  (OPTIONAL, COPIES NAME AND FILTER)", "VORLAGE  (OPTIONAL, ÜBERNIMMT NAME UND FILTER)"),
+            tk.Label(left, text=L("TEMPLATE  (COPIES NAME; FILTER ONLY IF EMPTY)", "VORLAGE  (ÜBERNIMMT NAME; FILTER NUR WENN LEER)"),
                      bg=BG, fg=TEXT_MUTED, font=F("mono", 11), anchor="w").pack(fill="x")
             self.tpl_lb = tk.Listbox(left, bg=BG2, fg=TEXT, selectbackground=mix(CYAN, BG, 0.3), selectforeground=TEXT,
                                      font=F("mono", 11, False), relief="flat", highlightthickness=1,
@@ -7156,12 +7156,14 @@ class ListDialog(tk.Toplevel):
         self.name_var.set(t.get("name", ""))
         self.desc_box.delete("1.0", "end")
         self.desc_box.insert("1.0", t.get("desc", ""))
-        self.any_var.set(", ".join(t.get("any") or []))
-        self.all_var.set(", ".join(t.get("all") or []))
-        self.none_var.set(", ".join(t.get("none") or []))
-        self.from_var.set(str(t.get("from") or ""))
-        self.to_var.set(str(t.get("to") or ""))
-        self.add, self.skip = set(), set()
+        # Filter nur übernehmen, wenn noch keiner gesetzt ist (z. B. aus einem Vorschlag): sonst bleiben sie
+        if not any(v.get().strip() for v in (self.any_var, self.all_var, self.none_var, self.from_var, self.to_var)):
+            self.any_var.set(", ".join(t.get("any") or []))
+            self.all_var.set(", ".join(t.get("all") or []))
+            self.none_var.set(", ".join(t.get("none") or []))
+            self.from_var.set(str(t.get("from") or ""))
+            self.to_var.set(str(t.get("to") or ""))
+            self.add, self.skip = set(), set()
         self.refresh()
 
     def destroy(self):
