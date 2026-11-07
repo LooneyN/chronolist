@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-11-07
+
 ### Changed
 - Edge works a little faster: 4 to 10 seconds between two batches (was 4 to 12), a short cooldown after every 300 videos (was 250) and the long break after every 1,800 videos (was 1,500).
 
@@ -247,7 +249,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v4.0.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v4.0.1...HEAD
+[4.0.1]: https://github.com/LooneyN/chronolist/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/LooneyN/chronolist/compare/v3.5.0...v4.0.0
 [3.5.0]: https://github.com/LooneyN/chronolist/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/LooneyN/chronolist/compare/v3.3.0...v3.4.0
