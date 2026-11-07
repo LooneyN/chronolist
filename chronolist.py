@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 171
+BUILD = 172
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1112,7 +1112,8 @@ def check_for_update(out):
         if tag and version_tuple(tag) > version_tuple(VERSION):
             zip_url = next((a.get("browser_download_url") for a in j.get("assets") or []
                             if (a.get("name") or "").lower().endswith("-windows.zip")), None)
-            out.put(("update", tag, j.get("html_url") or f"{REPO_URL}/releases/latest", zip_url, j.get("body") or ""))
+            out.put(("update", tag, j.get("html_url") or f"{REPO_URL}/releases/latest", zip_url,
+                     re.sub(r"^!\[[^\]]*\]\([^)]*\)\s*\n*", "", j.get("body") or "", flags=re.M).strip()))
     except (requests.RequestException, ValueError):
         pass
 

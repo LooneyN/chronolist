@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Fixed
+- The update note in the app no longer shows the image line of a release banner as text.
+
 ## [4.0.0] - 2026-11-07
 
 ### Highlights
