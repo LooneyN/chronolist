@@ -11,6 +11,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Changed
 - Log lines that end in "..." (something is still running) show moving dots while a run is active, so you can see it is still working.
 
+### Fixed
+- HIDE DONE did not hide a past year without any videos when it was still checked. Such years are now hidden, and a run or SCAN that finds no videos for a past year unchecks it.
+
 ## [3.4.0] - 2026-11-07
 
 ### Note

@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.5.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 158
+BUILD = 159
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1967,7 +1967,8 @@ class Worker(threading.Thread):
                             self.check()
                             self.emit("current", y)
                             try:
-                                self.collect(y)
+                                if not self.collect(y) and not growing(y):
+                                    self.empty_year(y)
                             except NoVideosFound:
                                 self.empty_year(y)
                 self.fetch_missing_titles()
@@ -2012,6 +2013,9 @@ class Worker(threading.Thread):
                     deferred.append(y)
                     queue_.remove(nxt)          # nach vorne holen, Rest bleibt in deiner Reihenfolge
                     queue_.insert(0, nxt)
+                    continue
+                if not videos and not growing(y) and not is_list_key(y):
+                    self.empty_year(y)              # abgeschlossenes Jahr ohne Videos: abwählen, weiter
                     continue
                 if self.fallback and self.mode == "api":
                     self.prefetch(y + 1)
@@ -8311,7 +8315,10 @@ class App(tk.Tk):
     def is_hidden_row(self, y):
         r = self.rows[y]
         # nur fertige UND abgewählte Karten; angehakte (z. B. laufendes Jahr, Listen) bleiben sichtbar, weil sie weiter abgeglichen werden
-        return bool(self.settings.get("hide_done")) and r.info.get("code") == "done" and not r.running and not r.selected
+        # leere, abgeschlossene Jahre (keine Videos) gelten auch angehakt als fertig
+        empty = not is_list_key(y) and not growing(y) and r.info.get("total") == 0
+        return (bool(self.settings.get("hide_done")) and r.info.get("code") == "done" and not r.running
+                and (not r.selected or empty))
 
     def repack(self):
         """Karten in der gespeicherten Reihenfolge anordnen; fertige ausblenden, wenn gewünscht."""
