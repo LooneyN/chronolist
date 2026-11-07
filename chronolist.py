@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 172
+BUILD = 173
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1539,6 +1539,10 @@ class BrowserFailed(Exception):
     pass
 
 
+class PlaylistGone(Exception):
+    """YouTube kennt die Playlist nicht mehr (auf YouTube gelöscht)."""
+
+
 class NoVideosFound(BrowserFailed):
     """Die Kanalseite zeigt für dieses Jahr keine Videos (Jahr ist schlicht leer)."""
 
@@ -1682,6 +1686,8 @@ class BrowserUplink:
                 self.count += 1
                 return True
             http, err = res.get("http"), res.get("err") or res.get("status")
+            if http == 404:
+                raise PlaylistGone()
             if http in (401, 403):
                 raise BrowserFailed(L(f"YOUTUBE REFUSED ACCESS ({http}) // CHECK SIGNED-IN CHANNEL OWNS THE PLAYLIST", f"YOUTUBE VERWEIGERT DEN ZUGRIFF ({http}) // GEHÖRT DIE PLAYLIST DEM ANGEMELDETEN KANAL?"))
             if http == 429:
@@ -1719,6 +1725,8 @@ class BrowserUplink:
                 continue
             if res.get("http") == 200 and res.get("json") is not None:
                 return res["json"]
+            if res.get("http") == 404 and isinstance(body, dict) and body.get("playlistId"):
+                raise PlaylistGone()
             if attempt == 2:
                 raise BrowserFailed(L(f"EDGE UPLINK // HTTP {res.get('http')} ON {path}", f"EDGE // HTTP {res.get('http')} BEI {path}"))
             time.sleep(5)
@@ -1756,6 +1764,8 @@ class BrowserUplink:
             if http == 200 and j.get("status") == "STATUS_SUCCEEDED":
                 self.count += len(video_ids)
                 return True
+            if http == 404:
+                raise PlaylistGone()
             if http in (401, 403):
                 raise BrowserFailed(L(f"YOUTUBE REFUSED ACCESS ({http}) // CHECK SIGNED-IN CHANNEL OWNS THE PLAYLIST", f"YOUTUBE VERWEIGERT DEN ZUGRIFF ({http}) // GEHÖRT DIE PLAYLIST DEM ANGEMELDETEN KANAL?"))
             if http == 429:
@@ -2948,6 +2958,8 @@ class Worker(threading.Thread):
                 self.apply_privacy(key)
             except BrowserFailed as e:
                 self.log(L(f"VISIBILITY NOT CHANGED // {e}", f"SICHTBARKEIT NICHT GEÄNDERT // {e}"), "warn")
+            except PlaylistGone:
+                pass                                       # fill() legt sie neu an
             self.fill(key, videos)
 
     # --- Playlist befüllen
@@ -3419,14 +3431,15 @@ class Worker(threading.Thread):
             return False
         return isinstance(j, dict) and "items" in j and not j["items"]
 
-    def check_deleted(self, year):
-        """Playlist(s) auf YouTube gelöscht? Dann den Stand zurücksetzen, damit sie neu angelegt und gefüllt werden."""
+    def check_deleted(self, year, force=False):
+        """Playlist(s) auf YouTube gelöscht? Dann den Stand zurücksetzen, damit sie neu angelegt und gefüllt werden.
+        force: YouTube hat beim Einfügen schon gemeldet, dass es die Playlist nicht mehr gibt."""
         sf = state_file(year)
         state = load(sf, {})
         parts = part_ids(state)
         if not parts:
             return
-        gone = [p for p in parts if self.playlist_gone(p)]
+        gone = parts if force else [p for p in parts if self.playlist_gone(p)]
         if not gone:
             return
         if len(gone) == len(parts):
@@ -3442,6 +3455,17 @@ class Worker(threading.Thread):
                        f"ZUM NEUAUFBAU AUCH DEN REST LÖSCHEN"), "warn")
 
     def fill(self, year, videos):
+        try:
+            return self.fill_once(year, videos)
+        except PlaylistGone:
+            self.check_deleted(year, force=True)          # auf YouTube gelöscht: neu anlegen und von vorn füllen
+            try:
+                return self.fill_once(year, videos)
+            except PlaylistGone:
+                raise BrowserFailed(L("YOUTUBE CAN'T FIND THE NEW PLAYLIST EITHER",
+                                      "YOUTUBE FINDET AUCH DIE NEUE PLAYLIST NICHT"))
+
+    def fill_once(self, year, videos):
         self.scanning = None
         sf = state_file(year)
         self.check_deleted(year)
