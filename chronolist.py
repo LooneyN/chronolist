@@ -98,7 +98,7 @@ def default_list_description_template():
 PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
-VERSION = "4.0.1"   # Entwicklungsstand; beim Release ohne "-dev"
+VERSION = "4.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
 BUILD = 174
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
