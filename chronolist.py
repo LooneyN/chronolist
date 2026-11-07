@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 173
+BUILD = 174
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -118,10 +118,10 @@ API = "https://www.googleapis.com/youtube/v3"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPE = "https://www.googleapis.com/auth/youtube"
 BATCH_SIZE = 30                 # Browser-Fallback: Videos pro Anfrage
-BATCH_PAUSE = (4, 12)          # Sekunden zwischen zwei Paketen
-COOLDOWN_EVERY = 250            # nach so vielen Videos ein kurzer Cooldown
+BATCH_PAUSE = (4, 10)          # Sekunden zwischen zwei Paketen
+COOLDOWN_EVERY = 300            # nach so vielen Videos ein kurzer Cooldown
 COOLDOWN_PAUSE = (17, 23)       # Sekunden (~20 s)
-LONG_BREAK_EVERY = 1500         # nach so vielen Videos eine lange Pause
+LONG_BREAK_EVERY = 1800         # nach so vielen Videos eine lange Pause
 LONG_BREAK_PAUSE = (210, 270)   # Sekunden (~4 min)
 REMOVE_EXTRAS = True            # nur Videos, die nachweislich Shorts sind, werden aus Playlists entfernt
 CARD_H = 62                     # Höhe aller Listen-/Optionskarten
@@ -6699,9 +6699,9 @@ HELP_TEXT_DE = [
     ("h2", "Warum macht Chronolist Pausen?"),
     ("p", "Über das Edge-Fenster arbeitet Chronolist absichtlich nicht im Höchsttempo, damit es nicht wie ein Bot "
           "aussieht. Die Pausen siehst du mit Countdown auf der Jahreskarte und oben in der Statusanzeige."),
-    ("dd", "NÄCHSTES PAKET: kurze Pause zwischen zwei Paketen mit je 30 Videos, 4 bis 12 Sekunden.\n"
-           "KURZE PAUSE: etwa 20 Sekunden nach jeweils 250 Videos.\n"
-           "LANGE PAUSE: etwa vier Minuten nach jeweils 1500 Videos.\n"
+    ("dd", "NÄCHSTES PAKET: kurze Pause zwischen zwei Paketen mit je 30 Videos, 4 bis 10 Sekunden.\n"
+           "KURZE PAUSE: etwa 20 Sekunden nach jeweils 300 Videos.\n"
+           "LANGE PAUSE: etwa vier Minuten nach jeweils 1800 Videos.\n"
            "YOUTUBE BREMST: YouTube bremst kurz, Chronolist wartet zehn Minuten.\n"
            "NEUER VERSUCH oder KEINE VERBINDUNG: kurzer Fehler oder keine Verbindung. Chronolist versucht es gleich "
            "noch einmal."),
@@ -6948,9 +6948,9 @@ HELP_TEXT_EN = [
     ("h2", "Why does Chronolist pause?"),
     ("p", "Through the Edge window Chronolist deliberately doesn't work at full speed, so it doesn't look like a bot. "
           "You see the pauses with a countdown on the year card and in the status display at the top."),
-    ("dd", "NEXT BATCH: short pause between two batches of 30 videos, 4 to 12 seconds.\n"
-           "COOLDOWN: about 20 seconds after every 250 videos.\n"
-           "BREAK: about four minutes after every 1500 videos.\n"
+    ("dd", "NEXT BATCH: short pause between two batches of 30 videos, 4 to 10 seconds.\n"
+           "COOLDOWN: about 20 seconds after every 300 videos.\n"
+           "BREAK: about four minutes after every 1800 videos.\n"
            "RATE LIMIT: YouTube slows things down briefly, Chronolist waits ten minutes.\n"
            "RETRY or NO SIGNAL: a short error or no connection. Chronolist tries again shortly."),
 

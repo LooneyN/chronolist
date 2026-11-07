@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+- Edge works a little faster: 4 to 10 seconds between two batches (was 4 to 12), a short cooldown after every 300 videos (was 250) and the long break after every 1,800 videos (was 1,500).
+
 ### Fixed
 - Adding to a playlist that was deleted on YouTube stopped the run with "EDGE UPLINK // HTTP 404". Chronolist now creates the playlist again and fills it from the start, also without API quota.
 - The update note in the app no longer shows the image line of a release banner as text.
