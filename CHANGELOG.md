@@ -16,6 +16,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - A one-time notice on start explains the API/Edge split and the risk of automating the YouTube website.
 - Custom lists have their own visibility (public, unlisted or private), chosen in the list editor. A change is applied to the existing playlist on the next run.
 - Switching on AUTO-CHECK while no card has AUTO yet turns AUTO on for the current year and all custom lists. New lists start with AUTO on when AUTO-CHECK is on.
+- While videos are being added, the log shows a line with moving dots (also after each cooldown), so you can see that a run in another channel is still working.
 - You can switch channels while a run or check is active; it keeps working for its own channel in the background. The channel list marks the channel that is being worked on with a blinking status (e.g. EDGE UPLINK), and switching back shows its progress again.
 - Several channels at once: every channel in the channel list with AUTO-CHECK on is checked in the background on its own schedule, even while another channel is shown. Checks that are due at the same time run one after another. The log names the channel, the channel list shows its last check, the new video alert names the channel, and the channel card shows "AUTO // 2 CHANNELS" when more than one channel is active. In the channel list, the AUTO field of each row switches that channel's AUTO-CHECK on or off with one click. If a due check finds no year or list with AUTO on, the log says so instead of skipping it silently.
 

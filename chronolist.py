@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 168
+BUILD = 169
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -1620,7 +1620,7 @@ class BrowserUplink:
         while time.time() < end:
             self.w.sleep(4)
             if "youtube.com" in (self.page.url or "") and self.logged_in():
-                self.w.log(L("BROWSER UPLINK // SIGNED IN", "BROWSER-MODUS // ANGEMELDET"), "ok")
+                self.w.log(L("EDGE UPLINK // SIGNED IN", "EDGE // ANGEMELDET"), "ok")
                 self.w.emit("mode", "browser")
                 return
         raise BrowserFailed(L("NO YOUTUBE SIGN-IN WITHIN 15 MIN", "KEINE YOUTUBE-ANMELDUNG INNERHALB VON 15 MIN"))
@@ -1647,7 +1647,7 @@ class BrowserUplink:
                 continue
             if res.get("fatal"):
                 if attempt == 2:
-                    raise BrowserFailed(L(f"BROWSER UPLINK // {res['fatal']}", f"BROWSER-MODUS // {res['fatal']}"))
+                    raise BrowserFailed(L(f"EDGE UPLINK // {res['fatal']}", f"EDGE // {res['fatal']}"))
                 self.open_youtube()
                 continue
             if res.get("status") == "STATUS_SUCCEEDED":
@@ -1664,9 +1664,9 @@ class BrowserUplink:
                 self.w.log(L(f"SKIPPED {video_id} // {err}", f"ÜBERSPRUNGEN {video_id} // {err}"), "warn")
                 return False
             if attempt == 2:
-                raise BrowserFailed(L(f"BROWSER UPLINK // HTTP {http} {err}", f"BROWSER-MODUS // HTTP {http} {err}"))
+                raise BrowserFailed(L(f"EDGE UPLINK // HTTP {http} {err}", f"EDGE // HTTP {http} {err}"))
             self.w.sleep(15)
-        raise BrowserFailed(L("BROWSER UPLINK // GAVE UP", "BROWSER-MODUS // AUFGEGEBEN"))
+        raise BrowserFailed(L("EDGE UPLINK // GAVE UP", "EDGE // AUFGEGEBEN"))
 
     def yt_call(self, path, body):
         for attempt in range(3):
@@ -1686,15 +1686,15 @@ class BrowserUplink:
                 continue
             if res.get("fatal"):
                 if attempt == 2:
-                    raise BrowserFailed(L(f"BROWSER UPLINK // {res['fatal']}", f"BROWSER-MODUS // {res['fatal']}"))
+                    raise BrowserFailed(L(f"EDGE UPLINK // {res['fatal']}", f"EDGE // {res['fatal']}"))
                 self.open_youtube()
                 continue
             if res.get("http") == 200 and res.get("json") is not None:
                 return res["json"]
             if attempt == 2:
-                raise BrowserFailed(L(f"BROWSER UPLINK // HTTP {res.get('http')} ON {path}", f"BROWSER-MODUS // HTTP {res.get('http')} BEI {path}"))
+                raise BrowserFailed(L(f"EDGE UPLINK // HTTP {res.get('http')} ON {path}", f"EDGE // HTTP {res.get('http')} BEI {path}"))
             time.sleep(5)
-        raise BrowserFailed(L("BROWSER UPLINK // GAVE UP", "BROWSER-MODUS // AUFGEGEBEN"))
+        raise BrowserFailed(L("EDGE UPLINK // GAVE UP", "EDGE // AUFGEGEBEN"))
 
     def add_many(self, playlist_id, video_ids):
         """Mehrere Videos in einer Anfrage. True = alle drin, False = abgelehnt (einzeln prüfen)."""
@@ -1721,7 +1721,7 @@ class BrowserUplink:
                 continue
             if res.get("fatal"):
                 if attempt == 2:
-                    raise BrowserFailed(L(f"BROWSER UPLINK // {res['fatal']}", f"BROWSER-MODUS // {res['fatal']}"))
+                    raise BrowserFailed(L(f"EDGE UPLINK // {res['fatal']}", f"EDGE // {res['fatal']}"))
                 self.open_youtube()
                 continue
             http, j = res.get("http"), res.get("json") or {}
@@ -1737,9 +1737,9 @@ class BrowserUplink:
             if http == 400 or j.get("status") == "STATUS_FAILED":
                 return False
             if attempt == 2:
-                raise BrowserFailed(L(f"BROWSER UPLINK // HTTP {http}", f"BROWSER-MODUS // HTTP {http}"))
+                raise BrowserFailed(L(f"EDGE UPLINK // HTTP {http}", f"EDGE // HTTP {http}"))
             self.w.sleep(15)
-        raise BrowserFailed(L("BROWSER UPLINK // GAVE UP", "BROWSER-MODUS // AUFGEGEBEN"))
+        raise BrowserFailed(L("EDGE UPLINK // GAVE UP", "EDGE // AUFGEGEBEN"))
 
     def set_privacy(self, playlist_id, privacy):
         j = self.yt_call("browse/edit_playlist", {"playlistId": playlist_id, "actions": [
@@ -3100,8 +3100,9 @@ class Worker(threading.Thread):
             pause, label = None, None
         if pause:
             resume = (datetime.datetime.now() + datetime.timedelta(seconds=pause)).strftime("%H:%M:%S")
-            self.log(L(f"BROWSER UPLINK // {count} ADDED // {label} {fmt_secs(pause)}, RESUME {resume}", f"BROWSER-MODUS // {count} EINGEFÜGT // {wait_label(label)} {fmt_secs(pause)}, WEITER UM {resume}"))
+            self.log(L(f"EDGE UPLINK // {count} ADDED // {label} {fmt_secs(pause)}, RESUME {resume}", f"EDGE // {count} EINGEFÜGT // {wait_label(label)} {fmt_secs(pause)}, WEITER UM {resume}"))
             self.sleep(pause, label)
+            self.log(L("EDGE UPLINK // ADDING VIDEOS ...", "EDGE // FÜGE VIDEOS EIN ..."))
         else:
             self.sleep(random.uniform(*BATCH_PAUSE), "NEXT BATCH")
 
@@ -3397,6 +3398,9 @@ class Worker(threading.Thread):
         if i >= len(videos):
             self.log(L(f"{year_label(year)} ALREADY COMPLETE", f"{year_label(year)} IST SCHON FERTIG"))
             return True
+        rest = len(videos) - i
+        self.log(L(f"{year_label(year)} // ADDING {rest} VIDEO{'S' if rest != 1 else ''} ...",
+                   f"{year_label(year)} // FÜGE {rest} VIDEO{'S' if rest != 1 else ''} EIN ..."))
         while i < len(videos):
             if self.limit and added >= self.limit:
                 self.log(L(f"{year_label(year)} // RUN LIMIT OF {self.limit} VIDEOS REACHED", f"{year_label(year)} // LIMIT VON {self.limit} VIDEOS FÜR DIESEN LAUF ERREICHT"))
@@ -6491,7 +6495,7 @@ HELP_TEXT_DE = [
            "wann es zurückgesetzt wird. Das ist eine Schätzung: andere Programme im selben Google-Projekt zählen "
            "nicht mit."),
     ("dt", "Statusanzeige"),
-    ("dd", "Zeigt, was das Programm gerade macht, zum Beispiel BEREIT, LÄUFT, BROWSER-MODUS (läuft über das "
+    ("dd", "Zeigt, was das Programm gerade macht, zum Beispiel BEREIT, LÄUFT, EDGE AKTIV (läuft über das "
            "Edge-Fenster), PAUSIERT oder eine Wartezeit mit Countdown."),
 
     ("h2", "Zielkanal"),
@@ -6745,7 +6749,7 @@ HELP_TEXT_EN = [
            "when the quota is used up or only the reserve is left; then it shows when it resets. This is an estimate: "
            "other programs in the same Google project are not counted."),
     ("dt", "Status display"),
-    ("dd", "Shows what the program is doing, for example STANDBY, RUNNING, BROWSER UPLINK (running through the Edge "
+    ("dd", "Shows what the program is doing, for example STANDBY, RUNNING, EDGE UPLINK (running through the Edge "
            "window), PAUSED or a waiting time with a countdown."),
 
     ("h2", "Target channel"),
