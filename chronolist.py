@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.5.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 157
+BUILD = 158
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -8175,6 +8175,7 @@ class App(tk.Tk):
             self.after(400, self.iconify)
         self.after(30000, self.auto_tick)
         self.after(2000, self.quota_tick)
+        self.after(450, self.dots_tick)
 
     # --- Einstellungen
     def selected_years(self):
@@ -9141,6 +9142,7 @@ class App(tk.Tk):
     def write_log(self, text, level="info"):
         stamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.logbox.config(state="normal")
+        self.finish_dots()
         self.logbox.insert("end", f"[{stamp}] ", "ts")
         m = re.match(r"^((?:REPAIR|NACHTRAG) \d+ // )(420)(/\d+ (?:MOVED|VERSCHOBEN))$", text)
         r = re.match(r"^(\d{4}) // .*SHORTS.*(?:REMOVED|ENTFERNT)", text)
@@ -9157,6 +9159,12 @@ class App(tk.Tk):
             self.logbox.insert("end", m.group(1), level)
             self.logbox.insert("end", m.group(2), "leaf")
             self.logbox.insert("end", f"{m.group(3)}\n", level)
+        elif text.endswith("...") and not text.endswith("....") and "://" not in text:
+            # läuft noch: die drei Punkte am Ende bewegen sich, solange das die letzte Zeile ist
+            self.logbox.insert("end", text[:-3].rstrip(" ") + " ", level)
+            self.logbox.insert("end", "...", (level, "dots"))
+            self.logbox.insert("end", "\n", level)
+            self.dots_level, self.dots_step = level, 0
         else:
             for part in re.split(r"(https?://\S+)", text):       # Links im Log: Klick kopiert sie
                 if re.match(r"https?://", part):
@@ -9166,6 +9174,32 @@ class App(tk.Tk):
             self.logbox.insert("end", "\n", level)
         if getattr(self, "log_follow", True):
             self.logbox.see("end")
+        self.logbox.config(state="disabled")
+
+    def finish_dots(self):
+        """Bewegte Punkte der bisherigen letzten Zeile wieder als normales "..." stehen lassen."""
+        r = self.logbox.tag_ranges("dots")
+        if r:
+            state = self.logbox.cget("state")
+            self.logbox.config(state="normal")
+            self.logbox.delete(r[0], r[1])
+            self.logbox.insert(r[0], "...", getattr(self, "dots_level", "info"))
+            self.logbox.config(state=state)
+
+    def dots_tick(self):
+        """Läuft gerade etwas, zeigen die Punkte am Ende der letzten Logzeile an, dass es weitergeht."""
+        self.after(450, self.dots_tick)
+        r = self.logbox.tag_ranges("dots")
+        if not r:
+            return
+        if not (self.worker and self.worker.is_alive()):
+            self.finish_dots()
+            return
+        self.dots_step = (getattr(self, "dots_step", 0) + 1) % 4
+        frame = (".  ", ".. ", "...", "   ")[self.dots_step]
+        self.logbox.config(state="normal")
+        self.logbox.delete(r[0], r[1])
+        self.logbox.insert(r[0], frame, (getattr(self, "dots_level", "info"), "dots"))
         self.logbox.config(state="disabled")
 
     def poll(self):
