@@ -31,13 +31,13 @@ YouTube only lets you sort a channel's uploads by "latest" or "popular". Chronol
 - **Suggestions**: finds series in your video titles (e.g. "Season 04 #12") and prepares a list for each one.
 - **Stays up to date**: the current year and all custom lists are re-synced on every run, so new uploads are appended, new matches are added and excluded videos are removed.
 - **Quota-aware**: knows YouTube's daily API limits, remembers when they are used up and shows when they reset (in your local time).
-- **Archive scan**: reads the whole upload list once and prepares all years at very low quota cost; older years beyond YouTube's 20,000-upload cap are found via a month-by-month date search, or, with the browser fallback, completely and without quota via the channel's videos page sorted by oldest.
+- **Archive scan**: reads the whole upload list once and prepares all years at very low quota cost; older years beyond YouTube's 20,000-upload cap are found completely and without quota via the channel's videos page sorted by oldest.
 - **Self-checking**: remembers the batch in flight and checks only that one after an interruption; a full duplicate check runs at the end of each year and with CHECK.
 - **Videos only**: shorts and livestreams are left out.
 - **Pause, resume, stop**; if a year can't be searched right now, Chronolist continues with the next ready one. **HIDE DONE** collapses finished cards to keep the list short.
 - **More than 5,000 videos per year**: split automatically into "Part 1", "Part 2", … because a YouTube playlist holds at most 5,000 videos.
 - **Auto-run** on launch and optional **start with Windows** (in the program settings).
-- **Optional browser fallback** (off by default, see the warning below).
+- **API for reading, Edge for writing**: reading costs almost no quota; playlists are created and filled in a separate Edge window (see the warning below).
 - **Updates in the app**: a green UPDATE button in the header tells you when a new release is available; one click downloads it, replaces the exe and restarts. Your settings and progress stay.
 
 <p align="center">
@@ -80,18 +80,18 @@ The in-app **HELP** (English or German, following the program language) explains
 | --- | --- |
 | Archive scan (upload list) | 1 unit per 50 videos |
 | Date search for old years | 100 units per 50 videos, plus ~100 searches per day limit |
-| Create a playlist | 50 units |
-| Add one video | 50 units |
 | Check a playlist | 1 unit per 50 videos |
-| Remove a duplicate | 50 units |
+| Create a playlist, add or remove a video | no units (through Edge) |
 
-The default quota is 10,000 units per day, roughly 200 added videos. It resets at midnight Pacific Time.
+The default quota is 10,000 units per day. It resets at midnight Pacific Time. If it is used up, Chronolist reads the channel page in Edge instead.
 
-### Browser fallback ⚠️
+### Edge ⚠️
 
-When the daily quota is used up, the optional **FALLBACK** continues in a separate Microsoft Edge window where you are signed in to YouTube, using the same requests the website itself sends when you save a video to a playlist. It works in batches with deliberate pauses.
+Everything that changes a playlist (creating playlists, adding, removing and sorting videos) happens in a separate Microsoft Edge window where you are signed in to YouTube, using the same requests the website itself sends when you save a video to a playlist. It works in batches with deliberate pauses. During AUTO-CHECK, Edge runs invisibly in the background. Sign in once via **PROGRAM > YOUTUBE SIGN-IN**; the sign-in is kept.
 
-**This is automated use of the YouTube website and is not allowed by YouTube's Terms of Service. In the worst case your account can be restricted. Use it at your own risk.** That is why it is off by default.
+**This is automated use of the YouTube website and is not allowed by YouTube's Terms of Service. In the worst case your account can be restricted. Use it at your own risk.** Chronolist shows this notice once on the first start.
+
+If you prefer the official API for everything, switch on **PROGRAM > USE API FOR EVERYTHING**. Creating a playlist, adding or removing a video then costs 50 units each, so the daily quota is enough for about 200 videos. Chronolist keeps 1,000 units for AUTO-CHECK and continues in Edge after that.
 
 ## Configuration
 
@@ -121,7 +121,7 @@ Everything stays in the program folder and is never uploaded anywhere except to 
 | `settings.json` | Settings and selected channel |
 | `quota.json` | Remembered daily limit |
 | `data/<channel>/` | Video lists, titles, custom lists and progress |
-| `browser_profile/` | Sign-in of the fallback Edge window |
+| `browser_profile/` | YouTube sign-in of the Edge window |
 
 Never share these files. They are excluded in `.gitignore`.
 
@@ -136,7 +136,7 @@ pip install -r requirements.txt
 pythonw chronolist.py
 ```
 
-The browser fallback uses Microsoft Edge, which comes with Windows; no extra browser download is needed.
+Chronolist uses Microsoft Edge, which comes with Windows; no extra browser download is needed.
 
 Build the exe yourself:
 

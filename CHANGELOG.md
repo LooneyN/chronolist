@@ -5,7 +5,14 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+- API for reading, Edge for writing: Chronolist now reads through the YouTube API (finding videos, checking playlists, which costs almost no quota) and does everything that changes a playlist in a separate Edge window: creating playlists and adding, removing and sorting videos. The FALLBACK option is gone because Edge is now the normal way. If the quota is used up, reading continues on the channel page in Edge.
+- AUTO-CHECK adds new videos through Edge too, which runs invisibly in the background. If Edge is not signed in to YouTube yet, the check says so in the log and in a notification.
+
 ### Added
+- PROGRAM > YOUTUBE SIGN-IN opens Edge so you can sign in to YouTube once.
+- PROGRAM > USE API FOR EVERYTHING (off by default): adds videos through the API as before. 1,000 units of the daily quota stay free for AUTO-CHECK; after that Chronolist continues in Edge.
+- A one-time notice on start explains the API/Edge split and the risk of automating the YouTube website.
 - Several channels at once: every channel in the channel list with AUTO-CHECK on is checked in the background on its own schedule, even while another channel is shown. Checks that are due at the same time run one after another. The log names the channel, the channel list shows its last check, the new video alert names the channel, and the channel card shows "AUTO // 2 CHANNELS" when more than one channel is active. In the channel list, the AUTO field of each row switches that channel's AUTO-CHECK on or off with one click. If a due check finds no year or list with AUTO on, the log says so instead of skipping it silently.
 
 ## [3.5.0] - 2026-11-07
