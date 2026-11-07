@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-11-07
+
 ### Added
 - Right-click menu in all input fields and the log: cut, copy, paste and select all.
 - Channel switcher: CHANNELS on the channel card opens a list of all channels you used. One click switches right away (no API). Each row shows the channel's AUTO-CHECK schedule and its last check with new videos. + ADD CHANNEL enters a new channel; the ✕ (click twice) takes a channel off the list, its data is kept. EDIT in a row edits a channel: fix its name or first year without the API, or LOOK UP AGAIN on YouTube.
@@ -203,7 +205,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.4.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v3.5.0...HEAD
+[3.5.0]: https://github.com/LooneyN/chronolist/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/LooneyN/chronolist/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/LooneyN/chronolist/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/LooneyN/chronolist/compare/v3.1.0...v3.2.0
