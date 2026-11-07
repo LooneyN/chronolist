@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 163
+BUILD = 164
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -5047,11 +5047,12 @@ class SwitchRow(tk.Canvas):
 
     H = 58
 
-    def __init__(self, master, entry, active, on_pick, on_remove, on_edit):
+    def __init__(self, master, entry, active, on_pick, on_remove, on_edit, on_auto):
         super().__init__(master, height=px(self.H), bg=BG, highlightthickness=0, bd=0, cursor="hand2")
         self.entry, self.active = entry, active
-        self.on_pick, self.on_remove, self.on_edit = on_pick, on_remove, on_edit
-        self.hover = self.x_hover = self.e_hover = self.confirm = False
+        self.on_pick, self.on_remove, self.on_edit, self.on_auto = on_pick, on_remove, on_edit, on_auto
+        self.hover = self.x_hover = self.e_hover = self.a_hover = self.confirm = False
+        self.auto_box = None
         self.auto, self.when, self.new = channel_overview(entry)
         self.bind("<Configure>", lambda e: self.redraw())
         self.bind("<Map>", lambda e: self.redraw())
@@ -5076,14 +5077,20 @@ class SwitchRow(tk.Canvas):
         w = self.winfo_width()
         xh = (not self.active) and e.x >= self.x_area(w)
         eh = self.e_area(w) <= e.x < self.x_area(w)
-        if (xh, eh) != (self.x_hover, self.e_hover):
-            self.x_hover, self.e_hover = xh, eh
+        b = self.auto_box
+        ah = bool(b) and b[0] <= e.x <= b[2] and b[1] <= e.y <= b[3]
+        if (xh, eh, ah) != (self.x_hover, self.e_hover, self.a_hover):
+            self.x_hover, self.e_hover, self.a_hover = xh, eh, ah
             self.redraw()
 
     def click(self, e):
         w = self.winfo_width()
         # Aktionen erst nach dem Klick ausführen: sie schließen bzw. bauen die Liste neu (diese Zeile verschwindet)
         top = self.winfo_toplevel()
+        b = self.auto_box
+        if b and not self.confirm and b[0] <= e.x <= b[2] and b[1] <= e.y <= b[3]:
+            top.after(20, self.on_auto, self.entry)
+            return
         if self.e_area(w) <= e.x < self.x_area(w) and not self.confirm:
             top.after(20, self.on_edit, self.entry)
             return
@@ -5127,9 +5134,19 @@ class SwitchRow(tk.Canvas):
             name = self.entry.get("title") or self.entry.get("handle") or "?"
             auto = self.auto or L("AUTO OFF", "AUTO AUS")
             fa = F("mono", 10)
-            aw = tkfont.Font(font=fa).measure(auto)
-            self.create_text(xr, h * 0.33, text=auto, anchor="e", font=fa,
-                             fill=CYAN if self.auto else mix(TEXT_MUTED, BG, 0.7))
+            aw = tkfont.Font(font=fa).measure(auto) + px(26)
+            # AUTO-CHECK-Schalter: kleines Feld mit LED, Klick schaltet AUTO-CHECK dieses Kanals an/aus
+            ay = h * 0.33
+            ax0, ax1 = xr - aw, xr
+            on = bool(self.auto)
+            col = CYAN if on else mix(TEXT_MUTED, BG, 0.85 if self.a_hover else 0.65)
+            self.create_rectangle(ax0, ay - px(10), ax1, ay + px(10), fill=mix(CYAN, BG, 0.16) if on else BG,
+                                  outline=CYAN if self.a_hover else mix(col, BG, 0.8))
+            k = px(6)
+            lx = ax0 + px(9)
+            self.create_rectangle(lx - k / 2, ay - k / 2, lx + k / 2, ay + k / 2, fill=CYAN if on else BG, outline=col)
+            self.create_text(lx + px(8), ay, text=auto, anchor="w", font=fa, fill=col)
+            self.auto_box = (ax0 - px(3), ay - px(13), ax1 + px(3), ay + px(13))
             self.create_text(px(16), h * 0.33, anchor="w", font=F("ui", 15),
                              fill=TEXT if (self.active or self.hover) else mix(TEXT, BG, 0.8),
                              text=fit_text(name.upper(), F("ui", 15), xr - aw - px(32)))
@@ -5189,7 +5206,7 @@ class ChannelSwitcher(tk.Toplevel):
         if not chans and cur.get("first_year"):
             chans = [dict(cur)]
         for c in chans:
-            r = SwitchRow(self.inner, c, same_channel(c, cur), self.pick, self.remove, self.edit)
+            r = SwitchRow(self.inner, c, same_channel(c, cur), self.pick, self.remove, self.edit, self.toggle_auto)
             r.pack(fill="x", padx=px(8), pady=(0, px(4)))
         add = CutButton(self.inner, L("+  ADD CHANNEL", "+  KANAL HINZUFÜGEN"), self.add, height=px(32), size=11)
         add.set_color(CYAN)
@@ -5241,6 +5258,25 @@ class ChannelSwitcher(tk.Toplevel):
     def add(self):
         self.close()
         self.app.edit_channel(new=True)
+
+    def toggle_auto(self, entry):
+        """AUTO-CHECK eines Kanals direkt in der Liste an- oder ausschalten (Zeitplan bleibt, wie er ist)."""
+        if same_channel(entry, ctx().channel):
+            self.app.toggle_auto_check()
+        else:
+            f = channel_folder(entry) / "settings.json"
+            st = load(f, None)
+            st = st if isinstance(st, dict) else {}
+            st["auto_check"] = not st.get("auto_check")
+            save(f, st)
+            if not st["auto_check"]:
+                self.app.auto_next_by.pop(channel_folder(entry).name, None)
+            name = entry.get("handle") or entry.get("title") or ""
+            self.app.write_log(L(f"AUTO-CHECK {'ON' if st['auto_check'] else 'OFF'} // {name}",
+                                 f"AUTO-PRÜFUNG {'AN' if st['auto_check'] else 'AUS'} // {name}"), "info")
+            self.app.channel_card.redraw()
+        self.build()
+        self.app.place_switcher()
 
     def edit(self, entry):
         if self.app.busy():
@@ -6245,7 +6281,8 @@ HELP_TEXT_DE = [
 
     ("h2", "Zielkanal"),
     ("p", "Hier steht der Kanal, dessen Videos gesammelt werden. KANÄLE klappt die Liste aller bekannten Kanäle auf: "
-          "Ein Klick auf einen Kanal wechselt sofort (ohne API). Rechts steht sein AUTO-CHECK und darunter die "
+          "Ein Klick auf einen Kanal wechselt sofort (ohne API). Rechts steht sein AUTO-CHECK (ein Klick darauf "
+          "schaltet ihn an oder aus) und darunter die "
           "letzte Prüfung. Mit + KANAL HINZUFÜGEN gibst du einen neuen Kanal ein, als @Name, als Link zum Kanal oder "
           "als Kanal-ID (die fängt mit UC an); Chronolist holt sich dann den Namen und das Startjahr. Das ✕ (zweimal "
           "klicken) nimmt einen Kanal aus der Liste, seine Daten bleiben erhalten. EDIT (BEARB.) bearbeitet einen Kanal: Name "
@@ -6501,7 +6538,8 @@ HELP_TEXT_EN = [
 
     ("h2", "Target channel"),
     ("p", "The channel whose videos are collected. CHANNELS opens the list of all known channels: one click switches "
-          "right away (no API). On the right you see its AUTO-CHECK and below the last check. + ADD CHANNEL enters a "
+          "right away (no API). On the right you see its AUTO-CHECK (click it to switch it on or off) and below the "
+          "last check. + ADD CHANNEL enters a "
           "new channel, as @name, as a link to the channel or as the channel ID (starts with UC); Chronolist then "
           "looks up its name and start year. The ✕ (click twice) takes a channel off the list, its data is kept. "
           "EDIT edits a channel: fix its name and first year (no API) or LOOK UP AGAIN on YouTube. "
