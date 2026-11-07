@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
-- Channel switcher: CHANNELS on the channel card opens a list of all channels you used. One click switches right away (no API). Each row shows the channel's AUTO-CHECK schedule and its last check with new videos. + ADD CHANNEL enters a new channel; the ✕ (click twice) takes a channel off the list, its data is kept. The ✎ edits a channel: fix its name or first year without the API, or LOOK UP AGAIN on YouTube.
+- Channel switcher: CHANNELS on the channel card opens a list of all channels you used. One click switches right away (no API). Each row shows the channel's AUTO-CHECK schedule and its last check with new videos. + ADD CHANNEL enters a new channel; the ✕ (click twice) takes a channel off the list, its data is kept. EDIT in a row edits a channel: fix its name or first year without the API, or LOOK UP AGAIN on YouTube.
 
 ## [3.4.0] - 2026-11-07
 

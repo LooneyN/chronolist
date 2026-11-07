@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.5.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 156
+BUILD = 157
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -5030,7 +5030,7 @@ class SwitchRow(tk.Canvas):
         return w - px(40)
 
     def e_area(self, w):
-        return w - px(80)
+        return w - px(98)
 
     def motion(self, e):
         w = self.winfo_width()
@@ -5106,8 +5106,8 @@ class SwitchRow(tk.Canvas):
                 self.create_text(x2, h * 0.72, anchor="e", font=F("mono", 10), fill=TEXT_MUTED,
                                  text=L("LAST CHECK ", "ZULETZT ") + self.when)
         if not self.confirm:
-            self.create_text(self.e_area(w) + px(20), h / 2, text="✎", font=F("mono", 14),
-                             fill=CYAN if self.e_hover else mix(TEXT_MUTED, BG, 0.6))
+            self.create_text((self.e_area(w) + self.x_area(w)) / 2, h / 2, text=L("EDIT", "BEARB."),
+                             font=F("mono", 10), fill=CYAN if self.e_hover else mix(TEXT_MUTED, BG, 0.75))
         if not self.active:
             xc = self.x_area(w) + px(20)
             self.create_text(xc, h / 2, text="✕", font=F("mono", 13),
@@ -6208,7 +6208,7 @@ HELP_TEXT_DE = [
           "Ein Klick auf einen Kanal wechselt sofort (ohne API). Rechts steht sein AUTO-CHECK und darunter die "
           "letzte Prüfung. Mit + KANAL HINZUFÜGEN gibst du einen neuen Kanal ein, als @Name, als Link zum Kanal oder "
           "als Kanal-ID (die fängt mit UC an); Chronolist holt sich dann den Namen und das Startjahr. Das ✕ (zweimal "
-          "klicken) nimmt einen Kanal aus der Liste, seine Daten bleiben erhalten. Das ✎ bearbeitet einen Kanal: Name "
+          "klicken) nimmt einen Kanal aus der Liste, seine Daten bleiben erhalten. EDIT (BEARB.) bearbeitet einen Kanal: Name "
           "und Startjahr korrigieren (ohne API) oder mit NEU ABFRAGEN neu bei YouTube nachschlagen. Jeder Kanal hat seinen eigenen "
           "Fortschritt, seine eigenen Listen und Einstellungen."),
 
@@ -6461,7 +6461,7 @@ HELP_TEXT_EN = [
           "right away (no API). On the right you see its AUTO-CHECK and below the last check. + ADD CHANNEL enters a "
           "new channel, as @name, as a link to the channel or as the channel ID (starts with UC); Chronolist then "
           "looks up its name and start year. The ✕ (click twice) takes a channel off the list, its data is kept. "
-          "The ✎ edits a channel: fix its name and first year (no API) or LOOK UP AGAIN on YouTube. "
+          "EDIT edits a channel: fix its name and first year (no API) or LOOK UP AGAIN on YouTube. "
           "Every channel has its own progress, lists and settings."),
 
     ("h2", "Target years"),
