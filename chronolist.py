@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 162
+BUILD = 163
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2085,7 +2085,8 @@ class Worker(threading.Thread):
         for k in self.years:
             after = len(load(videos_file(k), None) or [])
             result[k] = 0 if before[k] is None else max(0, after - before[k])
-        self.emit("auto_result", result)
+        self.emit("auto_result", result, str(ctx().chan_dir), {k: year_label(k) for k in result},
+                  ctx().channel.get("title") or ctx().channel.get("handle") or "")
         total = sum(result.values())
         self.log(L(f"AUTO-CHECK DONE // {total} NEW VIDEO{'S' if total != 1 else ''}",
                    f"AUTO-PRÜFUNG FERTIG // {total} NEUE{'S' if total == 1 else ''} VIDEO{'S' if total != 1 else ''}"),
@@ -4942,8 +4943,13 @@ class ChannelCard(Panel):
         self.create_text(nx, y0 + h * 0.22, text=L("TARGET LOCKED", "ZIEL ERFASST") if has else L("NO TARGET", "KEIN ZIEL"), anchor="w",
                          font=F("mono", 10), fill=RED)
         if tx - nx > px(260):
-            self.create_text(tx - px(12), y0 + h * 0.22, text="CH.ID " + (ctx().channel.get("id", "")[-6:] or "------"),
-                             anchor="e", font=F("mono", 10, False), fill=FLUFF)
+            n_auto = auto_channel_count() if has else 0
+            if n_auto >= 2:
+                self.create_text(tx - px(12), y0 + h * 0.22, text=L(f"AUTO // {n_auto} CHANNELS", f"AUTO // {n_auto} KANÄLE"),
+                                 anchor="e", font=F("mono", 10), fill=CYAN)
+            else:
+                self.create_text(tx - px(12), y0 + h * 0.22, text="CH.ID " + (ctx().channel.get("id", "")[-6:] or "------"),
+                                 anchor="e", font=F("mono", 10, False), fill=FLUFF)
         maxw = tx - nx - px(12)
         name = channel_name().upper() if has else L("SET A YOUTUBE CHANNEL", "YOUTUBE-KANAL WÄHLEN")
         self.create_text(nx, y0 + h * 0.50, text=fit_text(name, F("ui", 21), maxw), anchor="w",
@@ -4977,6 +4983,36 @@ class ChannelCard(Panel):
             self.resolving = resolving
         self.st = "frame"
         self.redraw()
+
+
+def schedule_from(st):
+    """(an?, Modus, Intervall, Uhrzeiten) aus den Einstellungen eines Kanals."""
+    times = sorted({t for t in (parse_time(x) for x in (st.get("auto_times") or [])) if t})
+    mode = "times" if st.get("auto_mode") == "times" and times else "interval"
+    iv = st.get("auto_interval", AUTO_INTERVAL_DEFAULT)
+    iv = iv if isinstance(iv, int) and clean_interval(iv) == iv else AUTO_INTERVAL_DEFAULT
+    return bool(st.get("auto_check")), mode, iv, times
+
+
+def plan_next(mode, interval, times, first=False):
+    """Zeitpunkt der nächsten Auto-Prüfung (beim Start im Intervall-Modus schon nach einer Minute)."""
+    if mode == "times" and times:
+        return next_time_at(times)
+    return time.time() + (60 if first else interval * 60)
+
+
+def channel_folder(entry):
+    return DATA_DIR / (entry.get("folder") or channel_slug(entry))
+
+
+def channel_settings_of(entry):
+    st = load(channel_folder(entry) / "settings.json", None)
+    return st if isinstance(st, dict) else {}
+
+
+def auto_channel_count():
+    """Wie viele Kanäle aus der Kanalliste haben AUTO-CHECK an?"""
+    return sum(1 for c in load_channels() if channel_settings_of(c).get("auto_check"))
 
 
 def channel_overview(entry):
@@ -6297,7 +6333,10 @@ HELP_TEXT_DE = [
            "Jede Prüfung kostet nur wenige API-Einheiten und entfällt, wenn das Kontingent aufgebraucht ist. Läuft "
            "gerade ein anderer Durchlauf, wartet sie. Sie öffnet nie den Browser (kein FALLBACK). Voraussetzung: "
            "Chronolist ist schon einmal angemeldet und die Videos des Jahres sind schon gesucht. AUTO-CHECK und "
-           "Zeitplan gelten für den aktuellen Kanal.\n"
+           "Zeitplan gelten pro Kanal: Jeder Kanal aus der Kanalliste mit eingeschaltetem AUTO-CHECK wird nach seinem "
+           "eigenen Zeitplan geprüft, auch wenn gerade ein anderer Kanal angezeigt wird. Sind mehrere fällig, kommen "
+           "sie nacheinander dran. Das Ergebnis eines anderen Kanals steht im Log und in der Kanalliste (LAST CHECK); "
+           "die Kanalkarte zeigt AUTO // 2 CHANNELS, wenn mehrere Kanäle aktiv sind.\n"
            "Auf jeder Karte mit AUTO steht neben dem AUTO-Schalter, wann zuletzt geprüft wurde, und wie viele Videos dabei dazukamen "
            "(z. B. ZULETZT 14:02 // +2 NEU).\n"
            "Hinweis bei neuen Videos (unter PROGRAMM ein- und ausschaltbar): Hat die Prüfung etwas ergänzt, blinkt "
@@ -6543,7 +6582,10 @@ HELP_TEXT_EN = [
            "time falls into another run, the check follows right after it.\n"
            "A check costs only a few API units and is skipped when the quota is used up. If another run is active it "
            "waits. It never opens the browser (no FALLBACK). It needs a finished sign-in and a year whose videos were "
-           "already scanned. AUTO-CHECK and its schedule apply to the current channel.\n"
+           "already scanned. AUTO-CHECK and its schedule are per channel: every channel in the channel list with "
+           "AUTO-CHECK on is checked on its own schedule, even while another channel is shown. If several are due, "
+           "they run one after another. A result of another channel shows in the log and in the channel list (LAST "
+           "CHECK); the channel card shows AUTO // 2 CHANNELS when several channels are active.\n"
            "Every card with AUTO shows next to the AUTO switch when it was last checked and how many videos were added (e.g. "
            "LAST CHECK 14:02 // +2 NEW).\n"
            "New video alert (can be switched off under PROGRAM): when a check added videos, the taskbar icon flashes. "
@@ -8124,6 +8166,7 @@ class App(tk.Tk):
         if not self.auto_times:
             self.auto_mode = "interval"
         self.auto_next = self.plan_auto(first=True)
+        self.auto_next_by = {}               # nächste Auto-Prüfung der übrigen Kanäle (Ordner -> Zeitpunkt)
         global AUTO_SHOW
         AUTO_SHOW = self.auto_check
         AUTO_YEARS.clear()
@@ -8278,7 +8321,8 @@ class App(tk.Tk):
         if not self.auto_times:
             self.auto_mode = "interval"
         AUTO_SHOW = self.auto_check
-        self.auto_next = self.plan_auto(first=True)
+        # schon für diesen Kanal geplant (lief als Hintergrund-Kanal)? Dann den Zeitpunkt behalten
+        self.auto_next = self.auto_next_by.pop(ctx().chan_dir.name, None) or self.plan_auto(first=True)
         self.auto_card.sub = self.auto_sub()
         self.auto_card.update_value(self.auto_check)
 
@@ -8477,6 +8521,7 @@ class App(tk.Tk):
         for r in self.rows.values():
             r.redraw()
         self.save_settings()
+        self.channel_card.redraw()              # zählt die Kanäle mit AUTO-CHECK (aus den gespeicherten Einstellungen)
 
     def toggle_row_auto(self, key):
         set_auto(key, not auto_on(key))
@@ -8484,20 +8529,32 @@ class App(tk.Tk):
             self.rows[key].redraw()
         self.save_settings()
 
-    def auto_result(self, result):
-        """Ergebnis einer Auto-Prüfung: pro Karte merken (LAST CHECK) und bei neuen Videos Bescheid geben."""
+    def auto_result(self, result, chan_dir=None, labels=None, title=""):
+        """Ergebnis einer Auto-Prüfung: pro Karte merken (LAST CHECK) und bei neuen Videos Bescheid geben.
+        Kommt es von einem anderen als dem angezeigten Kanal, landet es in dessen Ordner."""
         now = time.time()
-        for k, n in result.items():
-            AUTO_LAST[str(k)] = {"t": now, "new": int(n)}
-        save(autocheck_file(), AUTO_LAST)
-        for k in result:
-            if k in self.rows:
-                self.rows[k].redraw()
+        shown = chan_dir is None or Path(chan_dir) == ctx().chan_dir
+        if shown:
+            for k, n in result.items():
+                AUTO_LAST[str(k)] = {"t": now, "new": int(n)}
+            save(autocheck_file(), AUTO_LAST)
+            for k in result:
+                if k in self.rows:
+                    self.rows[k].redraw()
+        else:
+            f = Path(chan_dir) / "autocheck.json"
+            d = load(f, {})
+            d = d if isinstance(d, dict) else {}
+            for k, n in result.items():
+                d[str(k)] = {"t": now, "new": int(n)}
+            save(f, d)
         total = sum(result.values())
         if total and self.alerts:
-            names = [year_label(k) for k, n in result.items() if n]
+            names = [(labels or {}).get(k) or year_label(k) for k, n in result.items() if n]
             text = L(f"{total} new video{'s' if total != 1 else ''} added: {', '.join(names)}",
                      f"{total} neue{'s' if total == 1 else ''} Video{'s' if total != 1 else ''} ergänzt: {', '.join(names)}")
+            if not shown and title:
+                text = f"{title}: {text}"
             flash_taskbar(self)
             try:
                 hidden = self.state() == "iconic" or self.focus_displayof() is None
@@ -8515,14 +8572,65 @@ class App(tk.Tk):
             pass
 
     def auto_tick(self):
+        """Alle 30 s: fällige Auto-Prüfungen aller Kanäle mit AUTO-CHECK, nacheinander (immer nur ein Lauf)."""
         self.after(30000, self.auto_tick)
-        if not self.auto_check or time.time() < self.auto_next:
-            return
         if self.worker and self.worker.is_alive():
             return
-        if not all(get_creds()) or not ctx().channel or not load(TOKEN_FILE, None):
+        if not all(get_creds()) or not load(TOKEN_FILE, None):
             return
-        self.run_auto()
+        now = time.time()
+        due = []
+        cur = ctx().chan_dir.name
+        if self.auto_check and ctx().channel and now >= self.auto_next:
+            due.append((self.auto_next, None))
+        for i, c in enumerate(load_channels()):
+            folder = channel_folder(c).name
+            if folder == cur:
+                continue
+            on, mode, iv, times = schedule_from(channel_settings_of(c))
+            if not on:
+                self.auto_next_by.pop(folder, None)
+                continue
+            nxt = self.auto_next_by.setdefault(folder, plan_next(mode, iv, times, first=True) + 60 * i)
+            if now >= nxt:
+                due.append((nxt, c))
+        if not due:
+            return
+        due.sort(key=lambda d: d[0])
+        entry = due[0][1]
+        if entry is None:
+            self.run_auto()
+        else:
+            self.run_auto_for(entry)
+
+    def run_auto_for(self, entry):
+        """Auto-Prüfung eines Kanals, der gerade nicht angezeigt wird (eigener Kanal-Kontext)."""
+        folder = channel_folder(entry)
+        on, mode, iv, times = schedule_from(channel_settings_of(entry))
+        self.auto_next_by[folder.name] = plan_next(mode, iv, times)
+        info = {k: entry[k] for k in CHANNEL_FIELDS if k in entry}
+        c = context_for(info)
+        view = load(folder / "view.json", {}) or {}
+        auto_years = {y for y in view.get("auto_years", []) if isinstance(y, int)}
+        lists = load(folder / "lists.json", [])
+        keys = [y for y in c.years if y in auto_years and growing(y)] + \
+               [list_key(x) for x in (lists if isinstance(lists, list) else []) if x.get("auto")]
+        if not keys:
+            return
+        nxt = datetime.datetime.fromtimestamp(self.auto_next_by[folder.name])
+        when = (L("NEXT AT ", "NÄCHSTE UM ") + nxt.strftime("%H:%M")) if mode == "times" else \
+            (L("NEXT IN ", "NÄCHSTE IN ") + interval_label(iv))
+        handle = (info.get("handle") or info.get("title") or "").upper()
+        self.write_log(L("AUTO-CHECK", "AUTO-PRÜFUNG") + f" // {handle} // {datetime.datetime.now():%H:%M} // {when}", "sep")
+        self.worker = Worker(keys, 0, self.out, fallback=False, auto=True, context=c)
+        self.run_mode = "running"
+        self.pause_info = None
+        self.worker.start()
+        self.start_btn.set_enabled(False)
+        self.check_btn.set_enabled(False)
+        self.scan_btn.set_enabled(False)
+        self.stop_btn.set_enabled(True)
+        self.set_status("running")
 
     def run_auto(self):
         keys = [y for y in ctx().years if y in AUTO_YEARS and growing(y)] + \
@@ -8531,7 +8639,9 @@ class App(tk.Tk):
         self.auto_next = self.plan_auto()
         if not keys:
             return
-        self.write_log(L("AUTO-CHECK", "AUTO-PRÜFUNG") + f" // {datetime.datetime.now():%H:%M} // " + self.auto_next_text(), "sep")
+        handle = (ctx().channel.get("handle") or ctx().channel.get("title") or "").upper()
+        self.write_log(L("AUTO-CHECK", "AUTO-PRÜFUNG") + f" // {handle} // {datetime.datetime.now():%H:%M} // "
+                       + self.auto_next_text(), "sep")
         self.worker = Worker(keys, 0, self.out, fallback=False, auto=True)
         self.run_mode = "running"
         self.pause_info = None
@@ -8900,6 +9010,8 @@ class App(tk.Tk):
     def apply_channel(self, info):
         if ctx().channel.get("first_year"):
             self.save_view()                     # Ansicht des bisherigen Kanals merken
+            if self.auto_check:                  # bisheriger Kanal läuft im Hintergrund weiter: Zeitplan merken
+                self.auto_next_by[ctx().chan_dir.name] = self.auto_next
         self.settings["channel"] = info
         set_channel(info)
         self.load_channel_settings()
@@ -9270,6 +9382,12 @@ class App(tk.Tk):
             while True:
                 msg = self.out.get_nowait()
                 kind = msg[0]
+                foreign = (kind in ("progress", "checking", "select", "activity", "current")
+                           and getattr(self.worker, "ctx", None) is not None and self.worker.ctx is not ctx())
+                if foreign:
+                    if kind == "checking":
+                        self.set_status("checking" if msg[2] else getattr(self, "run_mode", "running"))
+                    continue
                 if kind == "log":
                     self.write_log(msg[1], msg[2])
                 elif kind == "progress":
@@ -9330,7 +9448,7 @@ class App(tk.Tk):
                 elif kind == "browser_login":
                     self.set_status("browser_login")
                 elif kind == "auto_result":
-                    self.auto_result(msg[1])
+                    self.auto_result(*msg[1:])
                 elif kind == "select":
                     if msg[1] in self.rows:
                         self.rows[msg[1]].refresh(selected=True)
@@ -9356,7 +9474,11 @@ class App(tk.Tk):
                 elif kind == "done":
                     # Intervall: zählt ab dem Ende jedes Laufs. Feste Uhrzeiten: nur nach einer Auto-Prüfung neu planen
                     # (eine fällige Uhrzeit, die in einen manuellen Lauf fiel, wird danach nachgeholt)
-                    if self.auto_mode != "times" or getattr(self.worker, "auto", False):
+                    w = self.worker
+                    if getattr(w, "auto", False) and getattr(w, "ctx", None) is not None and w.ctx is not ctx():
+                        _, mode, iv, times = schedule_from(load(w.ctx.chan_dir / "settings.json", {}) or {})
+                        self.auto_next_by[w.ctx.chan_dir.name] = plan_next(mode, iv, times)
+                    elif self.auto_mode != "times" or getattr(w, "auto", False):
                         self.auto_next = self.plan_auto()
                     self.start_btn.set_enabled(True)
                     self.check_btn.set_enabled(True)

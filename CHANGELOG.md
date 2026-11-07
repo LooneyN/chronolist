@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+- Several channels at once: every channel in the channel list with AUTO-CHECK on is checked in the background on its own schedule, even while another channel is shown. Checks that are due at the same time run one after another. The log names the channel, the channel list shows its last check, the new video alert names the channel, and the channel card shows "AUTO // 2 CHANNELS" when more than one channel is active.
+
 ## [3.5.0] - 2026-11-07
 
 ### Added
