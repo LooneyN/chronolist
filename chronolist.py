@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "3.4.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 152
+BUILD = 153
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -710,6 +710,73 @@ def new_list_id():
         i = "%06x" % random.randrange(16 ** 6)
         if i not in have:
             return i
+
+
+# --- Listen exportieren / importieren (Datei zum Sichern, Weitergeben oder für einen anderen Kanal)
+LIST_EXPORT_FIELDS = ("name", "desc", "any", "all", "none", "from", "to", "add", "skip")
+
+
+def export_lists(lists, path):
+    """Listen ohne interne ID, Playlist und Fortschritt als .json speichern."""
+    out = [{k: x[k] for k in LIST_EXPORT_FIELDS if x.get(k) not in (None, "", [])} for x in lists]
+    save(Path(path), {"chronolist": "lists", "version": VERSION,
+                      "channel": ctx().channel.get("handle") or ctx().channel.get("title") or "",
+                      "lists": out})
+    return len(out)
+
+
+def import_lists(path):
+    """Listen aus einer Export-Datei als neue Listen anlegen. Gibt (Namen, weggelassene Videos) zurück.
+    Fest aufgenommene/ausgeschlossene Videos, die dieser Kanal nicht hat (z. B. aus einem anderen Kanal),
+    werden weggelassen. Löst ValueError aus, wenn die Datei keine Chronolist-Listen enthält."""
+    d = load(Path(path), None)
+    if isinstance(d, dict) and isinstance(d.get("lists"), list):
+        items = d["lists"]
+    elif isinstance(d, dict) and d.get("name"):
+        items = [d]
+    elif isinstance(d, list):
+        items = d
+    else:
+        raise ValueError(L("NO CHRONOLIST LISTS IN THIS FILE", "KEINE CHRONOLIST-LISTEN IN DIESER DATEI"))
+    items = [x for x in items if isinstance(x, dict) and str(x.get("name") or "").strip()]
+    if not items:
+        raise ValueError(L("NO CHRONOLIST LISTS IN THIS FILE", "KEINE CHRONOLIST-LISTEN IN DIESER DATEI"))
+    known = {v["id"] for v in all_year_videos()}
+    lists = load_lists()
+    names = {str(x.get("name", "")).casefold() for x in lists}
+    ids = {x["id"] for x in lists}
+    added, dropped = [], 0
+
+    def year(v):
+        return v if isinstance(v, int) and 2005 <= v <= 2100 else None
+    for x in items:
+        base = str(x["name"]).strip()[:100]
+        name, n = base, 2
+        while name.casefold() in names:
+            name, n = f"{base} ({n})", n + 1
+        names.add(name.casefold())
+        while True:
+            i = "%06x" % random.randrange(16 ** 6)
+            if i not in ids:
+                ids.add(i)
+                break
+        add = [v for v in (x.get("add") or []) if isinstance(v, str)]
+        skip = [v for v in (x.get("skip") or []) if isinstance(v, str)]
+        keep_add, keep_skip = [v for v in add if v in known], [v for v in skip if v in known]
+        dropped += len(add) - len(keep_add)
+        lists.append({"id": i, "name": name, "desc": str(x.get("desc") or ""),
+                      "any": parse_terms(x.get("any")), "all": parse_terms(x.get("all")),
+                      "none": parse_terms(x.get("none")), "from": year(x.get("from")), "to": year(x.get("to")),
+                      "add": sorted(keep_add), "skip": sorted(keep_skip)})
+        added.append(name)
+    save_lists(lists)
+    return added, dropped
+
+
+def lists_export_name(single=None):
+    h = (ctx().channel.get("handle") or ctx().channel.get("title") or "channel").strip()
+    base = re.sub(r'[\\/:*?"<>|]+', "_", single or "lists")
+    return f"chronolist-{base}-{h}.json"
 
 
 def norm_text(s):
@@ -6667,6 +6734,12 @@ class ListDialog(tk.Toplevel):
             self.del_btn = CutButton(row, L("DELETE LIST", "LISTE LÖSCHEN"), self.delete, width=170)
             self.del_btn.set_color(RED)
             self.del_btn.pack(side="right")
+        exp = CutButton(row, "EXPORT", self.export, width=120)
+        exp.pack(side="right", padx=(0, px(8)))
+        Tooltip(exp, L("Saves this list (name, description, keywords, years and single videos) as a file, e.g. as a "
+                       "backup or for another channel. IMPORT under the cards reads it back.",
+                       "Speichert diese Liste (Name, Beschreibung, Stichwörter, Jahre und einzelne Videos) als Datei, "
+                       "z. B. als Sicherung oder für einen anderen Kanal. IMPORT unter den Karten liest sie wieder ein."))
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=pad, pady=(pad, 0))
         left = tk.Frame(body, bg=BG, width=px(430))          # links: Einstellungen und Filter, rechts: Vorschau der Videos
@@ -7036,6 +7109,21 @@ class ListDialog(tk.Toplevel):
         self.add.add(vid)
         self.add_var.set("")
         self.refresh()
+
+    def export(self):
+        name = self.name_var.get().strip() or L("list", "liste")
+        path = filedialog.asksaveasfilename(parent=self, title=L("Export list", "Liste exportieren"),
+                                            defaultextension=".json", initialfile=lists_export_name(name),
+                                            filetypes=[(L("Chronolist lists", "Chronolist-Listen"), "*.json")])
+        if not path:
+            return
+        lst = dict(name=name, desc=self.desc_box.get("1.0", "end").strip(), **self.current())
+        try:
+            export_lists([lst], path)
+        except OSError as e:
+            self.app.write_log(L(f"EXPORT FAILED // {e}", f"EXPORT FEHLGESCHLAGEN // {e}"), "err")
+            return
+        self.app.write_log(L(f"LIST EXPORTED // {name} // {path}", f"LISTE EXPORTIERT // {name} // {path}"), "ok")
 
     def save(self):
         name = self.name_var.get().strip()
@@ -7639,6 +7727,17 @@ class App(tk.Tk):
         self.suggest_btn.grid(row=0, column=1, sticky="ew")
         Tooltip(self.suggest_btn, L("Finds series in your video titles (e.g. \"Minecraft Season 04 #12\") and offers to create a list for each.",
                                     "Findet Serien in deinen Videotiteln (z. B. \"Minecraft Season 04 #12\") und bietet an, für jede eine Liste anzulegen."))
+        self.import_btn = CutButton(btn_row, "IMPORT", self.import_lists_click, height=px(30), size=11)
+        self.import_btn.grid(row=1, column=0, sticky="ew", padx=(0, px(6)), pady=(px(6), 0))
+        self.export_btn = CutButton(btn_row, "EXPORT ALL", self.export_lists_click, height=px(30), size=11)
+        self.export_btn.grid(row=1, column=1, sticky="ew", pady=(px(6), 0))
+        Tooltip(self.import_btn, L("Reads custom lists from a file (made with EXPORT) and adds them as new lists to this "
+                                   "channel. Single videos the channel does not have are left out.",
+                                   "Liest eigene Listen aus einer Datei (mit EXPORT erstellt) und legt sie als neue "
+                                   "Listen in diesem Kanal an. Einzelne Videos, die der Kanal nicht hat, fallen weg."))
+        Tooltip(self.export_btn, L("Saves all custom lists of this channel in one file, e.g. as a backup or for another channel.",
+                                   "Speichert alle eigenen Listen dieses Kanals in einer Datei, z. B. als Sicherung oder für "
+                                   "einen anderen Kanal."))
         Tooltip(self.new_list_btn, L("Your own playlist besides the years: collects all videos whose title contains your keywords (e.g. a series), in upload order.",
                                      "Eine eigene Playlist neben den Jahren: sammelt alle Videos, in deren Titel deine Stichwörter vorkommen (z. B. eine Serie), in Upload-Reihenfolge."))
         self.rows = {}
@@ -7875,6 +7974,44 @@ class App(tk.Tk):
 
     def suggest_lists(self):
         SuggestDialog(self)
+
+    def import_lists_click(self):
+        path = filedialog.askopenfilename(parent=self, title=L("Import lists", "Listen importieren"),
+                                          filetypes=[(L("Chronolist lists", "Chronolist-Listen"), "*.json"),
+                                                     (L("All files", "Alle Dateien"), "*.*")])
+        if not path:
+            return
+        try:
+            names, dropped = import_lists(path)
+        except (ValueError, OSError) as e:
+            self.write_log(L(f"IMPORT FAILED // {e}", f"IMPORT FEHLGESCHLAGEN // {e}"), "err")
+            return
+        self.write_log(L(f"{len(names)} LIST{'S' if len(names) != 1 else ''} IMPORTED // {', '.join(names)}",
+                         f"{len(names)} LISTE{'N' if len(names) != 1 else ''} IMPORTIERT // {', '.join(names)}"), "ok")
+        if dropped:
+            self.write_log(L(f"{dropped} SINGLE VIDEO{'S' if dropped != 1 else ''} LEFT OUT // NOT IN THIS CHANNEL "
+                             f"(OR NOT SCANNED YET)",
+                             f"{dropped} EINZELNE{'S' if dropped == 1 else ''} VIDEO{'S' if dropped != 1 else ''} "
+                             f"WEGGELASSEN // NICHT IN DIESEM KANAL (ODER NOCH NICHT GESCANNT)"), "warn")
+        self.lists_changed()
+
+    def export_lists_click(self):
+        lists = load_lists()
+        if not lists:
+            self.write_log(L("NO CUSTOM LISTS TO EXPORT", "KEINE EIGENEN LISTEN ZUM EXPORTIEREN"), "warn")
+            return
+        path = filedialog.asksaveasfilename(parent=self, title=L("Export all lists", "Alle Listen exportieren"),
+                                            defaultextension=".json", initialfile=lists_export_name(),
+                                            filetypes=[(L("Chronolist lists", "Chronolist-Listen"), "*.json")])
+        if not path:
+            return
+        try:
+            n = export_lists(lists, path)
+        except OSError as e:
+            self.write_log(L(f"EXPORT FAILED // {e}", f"EXPORT FEHLGESCHLAGEN // {e}"), "err")
+            return
+        self.write_log(L(f"{n} LIST{'S' if n != 1 else ''} EXPORTED // {path}",
+                         f"{n} LISTE{'N' if n != 1 else ''} EXPORTIERT // {path}"), "ok")
 
     def edit_list(self, key):
         if find_list(key):

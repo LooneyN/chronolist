@@ -8,6 +8,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ### Note
 - Updating from 3.3.0 or older inside Chronolist can stop with "The process cannot access the file because it is being used by another process". The new version is already downloaded then. Close Chronolist, delete (or rename) Chronolist.exe in its folder, rename Chronolist.new.exe to Chronolist.exe and start it. From this version on, Chronolist finishes the update by itself after closing.
 
+### Added
+- Export and import custom lists: EXPORT in the list editor saves one list, EXPORT ALL under the cards saves all lists of the channel in one file. IMPORT reads such a file and adds the lists as new lists (a name that already exists gets "(2)"). Playlist and progress are not part of the file; single videos the channel does not have are left out.
+
 ### Changed
 - PLAYLISTS is now called CHANNEL SETTINGS: everything in it applies to the channel shown (playlist templates, visibility, AUTO-CHECK schedule, left-out videos). The card shows the visibility and, with AUTO-CHECK on, the schedule.
 - The AUTO-CHECK schedule (interval or fixed times) moved from the PROGRAM settings to the CHANNEL SETTINGS, because it belongs to the channel. NEW VIDEO ALERT stays in the PROGRAM settings under NOTIFICATIONS.
