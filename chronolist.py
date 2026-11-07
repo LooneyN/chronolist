@@ -98,7 +98,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.0.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 164
+BUILD = 165
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -8653,12 +8653,13 @@ class App(tk.Tk):
         lists = load(folder / "lists.json", [])
         keys = [y for y in c.years if y in auto_years and growing(y)] + \
                [list_key(x) for x in (lists if isinstance(lists, list) else []) if x.get("auto")]
+        handle = (info.get("handle") or info.get("title") or "").upper()
         if not keys:
+            self.auto_nothing(handle)
             return
         nxt = datetime.datetime.fromtimestamp(self.auto_next_by[folder.name])
         when = (L("NEXT AT ", "NÄCHSTE UM ") + nxt.strftime("%H:%M")) if mode == "times" else \
             (L("NEXT IN ", "NÄCHSTE IN ") + interval_label(iv))
-        handle = (info.get("handle") or info.get("title") or "").upper()
         self.write_log(L("AUTO-CHECK", "AUTO-PRÜFUNG") + f" // {handle} // {datetime.datetime.now():%H:%M} // {when}", "sep")
         self.worker = Worker(keys, 0, self.out, fallback=False, auto=True, context=c)
         self.run_mode = "running"
@@ -8670,14 +8671,20 @@ class App(tk.Tk):
         self.stop_btn.set_enabled(True)
         self.set_status("running")
 
+    def auto_nothing(self, handle):
+        """Fällige Auto-Prüfung ohne Karte mit AUTO-Schalter: im Log sagen, statt still zu überspringen."""
+        self.write_log(L(f"AUTO-CHECK // {handle} // SKIPPED // NO YEAR OR LIST HAS AUTO ON",
+                         f"AUTO-PRÜFUNG // {handle} // ÜBERSPRUNGEN // KEIN JAHR UND KEINE LISTE HAT AUTO AN"), "warn")
+
     def run_auto(self):
         keys = [y for y in ctx().years if y in AUTO_YEARS and growing(y)] + \
                [list_key(x) for x in load_lists() if x.get("auto")]
         keys = [k for k in keys if k in self.rows]
         self.auto_next = self.plan_auto()
-        if not keys:
-            return
         handle = (ctx().channel.get("handle") or ctx().channel.get("title") or "").upper()
+        if not keys:
+            self.auto_nothing(handle)
+            return
         self.write_log(L("AUTO-CHECK", "AUTO-PRÜFUNG") + f" // {handle} // {datetime.datetime.now():%H:%M} // "
                        + self.auto_next_text(), "sep")
         self.worker = Worker(keys, 0, self.out, fallback=False, auto=True)
