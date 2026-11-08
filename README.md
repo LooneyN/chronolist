@@ -29,7 +29,7 @@ YouTube only lets you sort a channel's uploads by "latest" or "popular". Chronol
 
 - **Any channel**: enter a `@handle`, channel URL or channel ID; name and start year are detected automatically.
 - **One playlist per year**, filled in exact upload order, with progress saved per channel and year.
-- **Custom lists**: collect videos by title keywords (contains any / all / none of them, optionally limited to a range of years) into a playlist with your own name, description and visibility, always in upload order. The editor shows the matches live, lets you exclude or add single videos and start from a copy of an existing list.
+- **Custom lists**: collect videos by title keywords (contains any / all / none of them, optionally limited to a range of years) into a playlist with your own name, description and visibility, always in upload order. A list can also mix in videos from other channels in your channel list, such as a live channel, in exact upload order. The editor shows the matches live, lets you exclude or add single videos and start from a copy of an existing list.
 - **Suggestions**: finds series in your video titles (e.g. "Season 04 #12") and prepares a list for each one.
 - **Videos only**: shorts are left out, livestreams stay in.
 - **More than 5,000 videos per year**: split automatically into "Part 1", "Part 2", … because a YouTube playlist holds at most 5,000 videos.

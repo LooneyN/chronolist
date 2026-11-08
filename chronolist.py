@@ -98,8 +98,8 @@ def default_list_description_template():
 PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
-VERSION = "4.1.0"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 179
+VERSION = "4.2.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
+BUILD = 184
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -859,6 +859,52 @@ def all_year_videos():
     return out
 
 
+def source_entries(lst):
+    """Weitere Kanäle aus der Kanalliste, deren Videos in diese Liste einfließen (ohne den eigenen)."""
+    want = set(lst.get("sources") or [])
+    if not want:
+        return []
+    return [c for c in load_channels() if channel_folder(c).name in want and channel_folder(c) != ctx().chan_dir]
+
+
+def folder_videos(folder):
+    """Alle Videos eines (anderen) Kanalordners in Upload-Reihenfolge, mit Herkunft."""
+    out = []
+    files = []
+    for f in (folder.glob("videos_*.json") if folder.exists() else []):
+        m_ = re.fullmatch(r"videos_(\d{4})\.json", f.name)
+        if m_:
+            files.append((int(m_.group(1)), f))
+    for y, f in sorted(files):
+        for v in load(f, []) or []:
+            out.append({"id": v["id"], "published": v.get("published"), "year": y, "src": folder.name})
+    return out
+
+
+def list_pool(lst):
+    """Videos und Titel für eine Liste: eigener Kanal plus die gewählten weiteren Kanäle, nach Upload-Zeit
+    gemischt. Innerhalb eines Kanals bleibt dessen Reihenfolge erhalten."""
+    pool = all_year_videos()
+    titles = load(titles_file(), {})
+    srcs = source_entries(lst)
+    if not srcs:
+        return pool, titles
+    titles = dict(titles)
+    seqs = [pool]
+    for c in srcs:
+        f = channel_folder(c)
+        seqs.append(folder_videos(f))
+        titles.update(load(f / "titles.json", {}) or {})
+    keyed = []
+    for k, seq in enumerate(seqs):
+        last = ""
+        for i, v in enumerate(seq):
+            last = v.get("published") or max(last, f"{v['year']}-01-01")   # ohne Datum: wie der Vorgänger
+            keyed.append(((last, k, i), v))
+    keyed.sort(key=lambda t: t[0])
+    return [v for _, v in keyed], titles
+
+
 def in_years(lst, year):
     """Liegt das Jahr im eingestellten Zeitraum der Liste (leer = unbegrenzt)?"""
     a, b = lst.get("from"), lst.get("to")
@@ -867,10 +913,13 @@ def in_years(lst, year):
 
 def list_videos(lst, titles=None, pool=None):
     """Treffer einer Liste in Upload-Reihenfolge. Einzelne Videos lassen sich fest hinzufügen/ausschließen."""
+    if pool is None:
+        pool, t2 = list_pool(lst)
+        titles = titles if titles is not None else t2
     titles = titles if titles is not None else load(titles_file(), {})
     add, skip = set(lst.get("add") or []), set(lst.get("skip") or [])
     out = []
-    for v in (pool if pool is not None else all_year_videos()):
+    for v in pool:
         vid = v["id"]
         if vid in skip:
             continue
@@ -917,8 +966,8 @@ def suggest_series(pool=None, titles=None, lists=None, minimum=SERIES_MIN):
     return sorted(out, key=lambda x: (-x["count"], x["name"].lower()))
 
 
-def missing_titles(pool=None):
-    titles = load(titles_file(), {})
+def missing_titles(pool=None, titles=None):
+    titles = titles if titles is not None else load(titles_file(), {})
     nt = set(load(notitle_file(), []))
     return [v["id"] for v in (pool if pool is not None else all_year_videos())
             if v["id"] not in titles and v["id"] not in nt]
@@ -1979,6 +2028,8 @@ class Worker(threading.Thread):
 
     # --- Hilfen
     def emit(self, *msg):
+        if getattr(self, "_quiet", False) and msg and msg[0] in ("activity", "progress", "checking", "current"):
+            return                       # Vorbereitung eines anderen Kanals: Karten des angezeigten nicht anfassen
         if msg and msg[0] == "current":
             self.current_year = msg[1]
         self.out.put(msg)
@@ -2580,6 +2631,41 @@ class Worker(threading.Thread):
         self.log(L(f"SHORTS // {len(data['ids'])} SHORTS ON THE CHANNEL", f"SHORTS // {len(data['ids'])} SHORTS AUF DEM KANAL"), "ok")
         return set(data["ids"])
 
+    def refresh_shorts(self):
+        """Neue Shorts nachlesen: die Shorts-Liste ist neueste zuerst, also nur bis zum ersten bekannten Eintrag
+        (meist 1 Einheit). Liefert alle bekannten Shorts oder None (kein Kontingent / noch nie gelesen)."""
+        sh = known_shorts()
+        if sh is None:
+            return self.get_shorts()
+        if quota_blocked("units"):
+            return sh
+        data = load(shorts_file(), {})
+        lst, token, fresh = data.get("list"), None, []
+        if not lst:
+            return sh
+        try:
+            for _ in range(20):
+                params = {"part": "contentDetails", "playlistId": lst, "maxResults": 50}
+                if token:
+                    params["pageToken"] = token
+                try:
+                    d = self.call("GET", "playlistItems", params)
+                except ApiError:
+                    break
+                ids = [it["contentDetails"]["videoId"] for it in d.get("items", [])]
+                new = [v for v in ids if v not in sh]
+                fresh += new
+                token = d.get("nextPageToken")
+                if len(new) < len(ids) or not token:
+                    break
+        except QuotaExceeded:
+            pass
+        if fresh:
+            data["ids"] = list(data.get("ids") or []) + fresh
+            save(shorts_file(), data)
+            sh = sh | set(fresh)
+        return sh
+
     def get_shorts(self):
         """Shorts-IDs oder None (dann ist noch kein Kontingent dafür da)."""
         sh = known_shorts()
@@ -2711,6 +2797,27 @@ class Worker(threading.Thread):
             self.log(L(f"{year_label(year)} // CHECK FOR NEW VIDEOS SKIPPED // QUOTA", f"{year_label(year)} // NEUE VIDEOS NICHT GEPRÜFT // KONTINGENT"), "warn")
         finally:
             self.act(None, year)
+        if new and new[0][1] is not None or (not new and not quota_blocked("units")):
+            # über die API gefunden: die Upload-Liste enthält auch Shorts -> rausfiltern (Kanalseite zeigt keine)
+            shorts = self.refresh_shorts()
+            if shorts:
+                n0 = len(new)
+                new = [x for x in new if x[0] not in shorts]
+                if n0 - len(new):
+                    self.log(L(f"{year_label(year)} // {n0 - len(new)} NEW SHORT(S) LEFT OUT",
+                               f"{year_label(year)} // {n0 - len(new)} NEUE(S) SHORT(S) AUSGELASSEN"))
+                slipped = [v for v in videos if v["id"] in shorts]
+                if slipped:
+                    # früher durchgerutschte Shorts aus der Liste nehmen; die Playlist wird beim Nachtrag bereinigt
+                    videos = [v for v in videos if v["id"] not in shorts]
+                    save(videos_file(year), videos)
+                    st = load(state_file(year), {})
+                    if st.get("playlist_id"):
+                        st["repair"] = True
+                        save(state_file(year), st)
+                    self.log(L(f"{year_label(year)} // {len(slipped)} SHORT(S) FOUND IN THE LIST // REMOVING THEM",
+                               f"{year_label(year)} // {len(slipped)} SHORT(S) IN DER LISTE GEFUNDEN // WERDEN ENTFERNT"), "warn")
+                    self.emit("progress", year)
         if not new:
             self.log(L(f"{year_label(year)} // NO NEW VIDEOS", f"{year_label(year)} // KEINE NEUEN VIDEOS"))
             return videos
@@ -2738,8 +2845,9 @@ class Worker(threading.Thread):
             cached = self.videos_only(year, cached)
             if growing(year):
                 done = getattr(self, "_refreshed", set())
-                if year not in done:            # pro Lauf nur einmal nachsehen
-                    self._refreshed = done | {year}
+                tag = (ctx().chan_dir.name, year)
+                if tag not in done:             # pro Lauf und Kanal nur einmal nachsehen
+                    self._refreshed = done | {tag}
                     return self.refresh_new(year, cached)
             return cached
         if self.use_web(year):
@@ -2936,6 +3044,69 @@ class Worker(threading.Thread):
         save(videos_file(key), new)
         return new
 
+    def fill_missing_dates(self):
+        """Videos ohne genaue Upload-Zeit (über die Kanalseite gefunden) nachdatieren, sobald Kontingent da ist
+        (1 Einheit pro 50). Wichtig für Listen mit mehreren Kanälen, die nach Upload-Zeit mischen."""
+        done = getattr(self, "_dated", set())
+        if ctx().chan_dir.name in done or quota_blocked("units"):
+            return
+        self._dated = done | {ctx().chan_dir.name}
+        files = [(y, f, load(f, []) or []) for y, f in year_files()]
+        todo = [v["id"] for _, _, vs in files for v in vs if not v.get("published")]
+        if not todo:
+            return
+        found = {}
+        try:
+            for i in range(0, len(todo), 50):
+                d = self.call("GET", "videos", {"part": "snippet", "id": ",".join(todo[i:i + 50]), "maxResults": 50})
+                for it in d.get("items", []):
+                    pub = (it.get("snippet") or {}).get("publishedAt")
+                    if pub:
+                        found[it["id"]] = pub
+        except QuotaExceeded:
+            pass
+        if not found:
+            return
+        for y, f, vs in files:
+            changed = False
+            for v in vs:
+                if not v.get("published") and v["id"] in found:
+                    v["published"] = found[v["id"]]
+                    changed = True
+            if changed:
+                save(f, vs)
+        self.log(L(f"UPLOAD TIMES // {len(found)} VIDEO(S) DATED", f"UPLOAD-ZEITEN // {len(found)} VIDEO(S) NACHDATIERT"))
+
+    def prepare_sources(self, lst):
+        """Weitere Kanäle einer Liste auf Stand bringen: einmalig scannen, neue Uploads holen, Titel nachladen.
+        Läuft im Kontext des jeweiligen Kanals und verändert die Karten des angezeigten Kanals nicht."""
+        done = getattr(self, "_prepared", set())
+        for c in source_entries(lst):
+            name = channel_folder(c).name
+            if name in done:
+                continue
+            done.add(name)
+            self._prepared = done
+            label = (c.get("handle") or c.get("title") or name).upper()
+            use_context(context_for(c))
+            self._quiet = True
+            try:
+                self.log(L(f"LIST SOURCE // {label} // UPDATING ...", f"LISTENQUELLE // {label} // AKTUALISIERE ..."))
+                self.scan_archive()
+                for y in ctx().years:
+                    if growing(y) or load(videos_file(y), None) is None and y >= datetime.date.today().year:
+                        self.collect(y)
+                self.fetch_missing_titles()
+                self.fill_missing_dates()
+            except (Stopped, BrowserFailed):
+                raise
+            except Exception as e:  # noqa: BLE001
+                self.log(L(f"LIST SOURCE // {label} // NOT UPDATED // {e}", f"LISTENQUELLE // {label} // NICHT AKTUALISIERT // {e}"),
+                         "warn")
+            finally:
+                self._quiet = False
+                use_context(self.ctx)
+
     def run_lists(self, keys):
         if not keys:
             return
@@ -2948,6 +3119,14 @@ class Worker(threading.Thread):
                 continue
             self.emit("current", key)
             self.log(L(f"// LIST {lst['name']}", f"// LISTE {lst['name']}"), "sep")
+            if source_entries(lst):
+                try:
+                    self.fill_missing_dates()          # eigener Kanal; die anderen in prepare_sources
+                except (Stopped, BrowserFailed):
+                    raise
+                except Exception:  # noqa: BLE001
+                    pass
+            self.prepare_sources(lst)
             videos = self.sync_list(key)
             self.log(L(f"{len(videos)} VIDEOS MATCH", f"{len(videos)} VIDEOS PASSEN"), "ok")
             self.emit("progress", key)
@@ -6731,6 +6910,8 @@ HELP_TEXT_DE = [
           "Stichwörtern passen, in Upload-Reihenfolge. Du gibst einen Namen ein (er wird der Playlist-Titel) und Begriffe: "
           "\"enthält eines davon\", \"und alle diese\" und \"aber keines dieser\". Gross-/Kleinschreibung zählt nicht. "
           "Optional grenzt du die Liste auf einen Zeitraum von Jahren ein (z. B. 2016 bis 2020). "
+          "Unter VIDEOS VON nimmst du weitere Kanäle aus deiner Kanalliste dazu, etwa einen Live-Kanal: Ihre Treffer "
+          "werden nach Upload-Zeit eingemischt, und ein noch nie gescannter Kanal wird beim nächsten Lauf gescannt. "
           "Die Vorschau zeigt sofort, wie viele Videos passen. Videos schließt du aus (mit Strg/Umschalt+Klick mehrere wählen, dann AUSSCHLIESSEN), und in der Ansicht ALLE CHANNEL-VIDEOS nimmst du auch Videos auf, die nicht passen "
           "oder nimmst sie über Link oder Video-ID fest hinzu.\n"
           "Eine Liste ist eine Karte wie ein Jahr: anklicken zum Markieren, Rechtsklick zum Bearbeiten. Sie wird nach den Jahren "
@@ -6983,6 +7164,8 @@ HELP_TEXT_EN = [
     ("p", "Below the years, CUSTOM LIST creates a playlist of all videos whose title matches your keywords, in upload "
           "order. Enter a name (it becomes the playlist title) and terms: \"contains any of\", \"and all of these\" and "
           "\"but none of these\". Upper/lower case is ignored. Optionally limit the list to a range of years (e.g. 2016 to 2020). "
+          "Under VIDEOS FROM you can add other channels from your channel list, such as a live channel: their matches are "
+          "mixed in by upload time, and a channel that was never scanned is scanned on the next run. "
           "The preview shows right away how many videos match. "
           "Exclude videos (select with Ctrl/Shift+click, then EXCLUDE); the ALL CHANNEL VIDEOS view lets you include videos that do not match or add them for good with a link or video ID.\n"
           "A list is a card like a year: click to select, right-click to edit. It runs after the years and is matched again "
@@ -7481,12 +7664,16 @@ class ListDialog(tk.Toplevel):
             lst = {k: template[k] for k in ("name", "desc", "any", "all", "none", "from", "to") if k in template}
         self.lst_id = lst.get("id") or None
         self.add, self.skip = set(lst.get("add") or []), set(lst.get("skip") or [])
+        self.others = [c for c in load_channels() if channel_folder(c) != ctx().chan_dir]
+        names = {channel_folder(c).name for c in self.others}
+        self.sources = [x for x in (lst.get("sources") or []) if x in names]
+        self.src_labels = {channel_folder(c).name: (c.get("title") or c.get("handle") or "") for c in self.others}
+        self.src_btns = {}
         self.title(L("Custom list", "Eigene Liste"))
         self.transient(parent or app)
         self.minsize(*fit_min(px(1000), px(600)))
         self.geometry(fit(px(1140), px(700)))
-        self.pool = all_year_videos()
-        self.titles = load(titles_file(), {})
+        self.pool, self.titles = list_pool({"sources": self.sources})
         self.shown = []          # (typ, id) je Zeile: "hit" | "add" | "skip"
         self.after_id = None
         self.confirm_delete = False
@@ -7559,6 +7746,27 @@ class ListDialog(tk.Toplevel):
                        "Private: only you. A change is applied to the existing playlist on the next run.",
                        "Wer die Playlist dieser Liste sehen kann. Öffentlich: alle. Nicht gelistet: nur wer den Link "
                        "hat. Privat: nur du. Eine Änderung wird beim nächsten Lauf auf die Playlist übertragen."))
+        if self.others:
+            tk.Label(left, text=L("VIDEOS FROM", "VIDEOS VON"), bg=BG, fg=TEXT_MUTED, font=F("mono", 11),
+                     anchor="w").pack(fill="x")
+            grid = tk.Frame(left, bg=BG)
+            grid.pack(fill="x", pady=(px(4), px(2)))
+            own = CutButton(grid, "● " + fit_text((ctx().channel.get("title") or ctx().channel.get("handle") or "").upper(),
+                                                  F("mono", 11), px(170)), lambda: None, width=208, height=px(30), size=11)
+            own.set_color(GREEN)
+            own.grid(row=0, column=0, sticky="w", padx=(0, px(6)), pady=(0, px(6)))
+            for k, c in enumerate(self.others, start=1):
+                name = channel_folder(c).name
+                b = CutButton(grid, "", lambda n=name: self.toggle_source(n), width=208, height=px(30), size=11)
+                b.grid(row=k // 2, column=k % 2, sticky="w", padx=(0, px(6)), pady=(0, px(6)))
+                self.src_btns[name] = b
+            self.show_sources()
+            tk.Label(left, text=L("OTHER CHANNELS FROM YOUR CHANNEL LIST ARE MIXED IN BY UPLOAD TIME. A CHANNEL THAT "
+                                  "WAS NEVER SCANNED IS SCANNED ON THE NEXT RUN.",
+                                  "WEITERE KANÄLE AUS DEINER KANALLISTE WERDEN NACH UPLOAD-ZEIT EINGEMISCHT. EIN NOCH NIE "
+                                  "GESCANNTER KANAL WIRD BEIM NÄCHSTEN LAUF GESCANNT."),
+                     bg=BG, fg=TEXT_MUTED, font=F("mono", 10, False), anchor="w", justify="left",
+                     wraplength=px(420)).pack(fill="x", pady=(0, px(12)))
 
         Section(left, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
         tk.Label(left, text=L("A VIDEO IS INCLUDED IF ITS TITLE CONTAINS ...", "EIN VIDEO KOMMT IN DIE LISTE, WENN SEIN TITEL ... ENTHÄLT"),
@@ -7719,6 +7927,21 @@ class ListDialog(tk.Toplevel):
             txt += L(f"  //  years {cur['from'] or '…'} to {cur['to'] or '…'}", f"  //  Jahre {cur['from'] or '…'} bis {cur['to'] or '…'}")
         return L("Matches: ", "Passt auf: ") + txt.replace(" OR ", L(" OR ", " ODER ")).replace(" AND ", L(" AND ", " UND "))
 
+    def show_sources(self):
+        for name, b in self.src_btns.items():
+            on = name in self.sources
+            b.set_color(GREEN if on else YELLOW)
+            b.set_text(("● " if on else "+ ") + fit_text(self.src_labels.get(name, name).upper(), F("mono", 11), px(170)))
+
+    def toggle_source(self, name):
+        if name in self.sources:
+            self.sources.remove(name)
+        else:
+            self.sources.append(name)
+        self.show_sources()
+        self.pool, self.titles = list_pool({"sources": self.sources})
+        self.schedule()
+
     def set_privacy(self, opt):
         self.privacy = opt
         for o, b in self.vis_btns.items():
@@ -7739,7 +7962,7 @@ class ListDialog(tk.Toplevel):
             return int(m_.group(1)) if m_ else None
         return {"any": parse_terms(self.any_var.get()), "all": parse_terms(self.all_var.get()),
                 "none": parse_terms(self.none_var.get()), "from": year_of(self.from_var), "to": year_of(self.to_var),
-                "add": sorted(self.add), "skip": sorted(self.skip)}
+                "add": sorted(self.add), "skip": sorted(self.skip), "sources": sorted(self.sources)}
 
     def schedule(self):
         if self.after_id:
@@ -7749,7 +7972,8 @@ class ListDialog(tk.Toplevel):
     def line(self, v):
         d = v.get("published")
         when = fmt_day(d) if d else str(v["year"])
-        return f"{when:>11}  {self.titles.get(v['id']) or v['id']}"
+        src = f"[{self.src_labels.get(v['src'], v['src'])}]  " if v.get("src") else ""
+        return f"{when:>11}  {src}{self.titles.get(v['id']) or v['id']}"
 
     def state_of(self, v, cur):
         """('hit' | 'add' | 'skip' | 'out', passt_per_regel) – ob das Video in der Liste ist."""
@@ -7808,7 +8032,7 @@ class ListDialog(tk.Toplevel):
         for st, v in skips:                       # ausgeschlossene stehen in dieser Ansicht am Ende
             if len(self.shown) < self.SHOW_MAX:
                 self.add_line(st, v)
-        miss = len(missing_titles(self.pool))
+        miss = len(missing_titles([v for v in self.pool if not v.get("src")], self.titles))
         span = sum(1 for v in self.pool if in_years(cur, v["year"]))
         self.count.configure(text=L(f"{hits} OF {span} VIDEOS MATCH", f"{hits} VON {span} VIDEOS PASSEN")
                              + (L(f"  //  {skipped} EXCLUDED", f"  //  {skipped} AUSGESCHLOSSEN") if skipped else ""))
@@ -8734,7 +8958,8 @@ class App(tk.Tk):
                                                                self.logbox.tag_configure("urllink", underline=True)))
         self.logbox.tag_bind("urllink", "<Leave>", lambda e: (self.logbox.configure(cursor=""),
                                                                self.logbox.tag_configure("urllink", underline=False)))
-        self.logbox.tag_bind("urllink", "<Button-1>", self.copy_log_link)
+        self.logbox.tag_bind("urllink", "<Button-1>", self.open_log_link)
+        self.logbox.tag_bind("urllink", "<Button-3>", self.copy_log_link)      # Rechtsklick: Link kopieren
         self.log_panel.windows.append(
             lambda x0, y0, x1, y1, c: self.log_panel.create_window(
                 x0 + px(10), y0 + px(10), window=inner, anchor="nw",
@@ -9819,8 +10044,15 @@ class App(tk.Tk):
         self.clipboard_append(self.code)
         self.write_log(L("CODE COPIED TO CLIPBOARD", "CODE IN DIE ZWISCHENABLAGE KOPIERT"), "info")
 
+    def open_log_link(self, e):
+        """Klick auf einen Link im Log: im Standardbrowser öffnen."""
+        rng = self.logbox.tag_prevrange("urllink", f"@{e.x},{e.y}+1c")
+        if rng:
+            webbrowser.open(self.logbox.get(*rng).strip())
+        return "break"
+
     def copy_log_link(self, e):
-        """Klick auf einen Link im Log: in die Zwischenablage kopieren, kurzer Hinweis am Mauszeiger."""
+        """Rechtsklick auf einen Link im Log: in die Zwischenablage kopieren, kurzer Hinweis am Mauszeiger."""
         rng = self.logbox.tag_prevrange("urllink", f"@{e.x},{e.y}+1c")
         if not rng:
             return "break"
@@ -9885,7 +10117,7 @@ class App(tk.Tk):
             self.logbox.insert("end", "\n", level)
             self.dots_level, self.dots_step = level, 0
         else:
-            for part in re.split(r"(https?://\S+)", text):       # Links im Log: Klick kopiert sie
+            for part in re.split(r"(https?://\S+)", text):       # Links im Log: Klick öffnet, Rechtsklick kopiert
                 if re.match(r"https?://", part):
                     self.logbox.insert("end", part, (level, "urllink"))
                 elif part:
