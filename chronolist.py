@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 174
+BUILD = 175
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -4719,6 +4719,7 @@ class YearRow(Panel):
         self.geo = None
         self.last_label = None
         self.auto_geo = None       # (x0, y0, x1, y1) des AUTO-Schalters
+        self.open_geo = None       # (x0, y0, x1, y1) des OPEN-Knopfs (Playlist im Browser)
         self.auto_command = None
 
     def palette(self):
@@ -4790,8 +4791,12 @@ class YearRow(Panel):
         nx = ix + isz + px(12)
         name_w = tx - px(14) - nx
         self.auto_geo = None
+        self.open_geo = None
         if AUTO_SHOW:
             name_w -= self.draw_auto(tx - px(14), y0 + h * 0.32, on, faded) + px(10)
+        if part_ids(load(state_file(self.year), {})):
+            name_w -= self.draw_open(nx + name_w, y0 + h * 0.32, on, faded) + px(8)
+        if AUTO_SHOW:
             rec = AUTO_LAST.get(str(self.year)) if auto_on(self.year) else None
             if rec and not self.running:
                 # neben dem AUTO-Schalter, nur wenn der Name daneben noch ganz Platz hat
@@ -4884,9 +4889,31 @@ class YearRow(Panel):
         self.auto_geo = (x0 - px(3), y0 - px(3), x1 + px(3), y1 + px(3))
         return w
 
+    def draw_open(self, xr, cy, on, faded):
+        """OPEN: kleiner Knopf rechts in der Statuszeile, öffnet die Playlist im Standardbrowser."""
+        col = TEXT_DIM if on else mix(TEXT_DIM, BG, 0.6 if faded else 0.45)
+        fnt = F("mono", 10)
+        txt = L("OPEN", "ÖFFNEN")
+        tw = tkfont.Font(font=fnt).measure(txt)
+        w, hh, cut = tw + px(18), px(20), px(5)
+        x0, y0, x1, y1 = xr - w, cy - hh / 2, xr, cy + hh / 2
+        self.create_polygon(x0, y0, x1, y0, x1, y1 - cut, x1 - cut, y1, x0, y1, fill=BG, outline=col, width=1,
+                            tags="openbtn")
+        self.create_text((x0 + x1) / 2, cy, text=txt, font=fnt, fill=col, tags="openbtn")
+        self.open_geo = (x0 - px(3), y0 - px(3), x1 + px(3), y1 + px(3))
+        return w
+
+    def open_playlists(self):
+        for pid in part_ids(load(state_file(self.year), {})):
+            webbrowser.open(f"https://www.youtube.com/playlist?list={pid}")
+
     # --- Animation der aktiven Karte: nur Ladebalken + ruhiger Glow
     def _click(self, e):
         if getattr(self, "dragging", False):
+            return
+        o = self.open_geo
+        if o and o[0] <= e.x <= o[2] and o[1] <= e.y <= o[3]:
+            self.open_playlists()
             return
         a = self.auto_geo
         if AUTO_SHOW and a and a[0] <= e.x <= a[2] and a[1] <= e.y <= a[3]:

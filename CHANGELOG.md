@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+- OPEN button on every year and list card that has a playlist: opens it on YouTube in your default browser (all parts if a year is split).
+
 ## [4.0.1] - 2026-11-07
 
 ### Changed
