@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Changed
+- AUTO-CHECK with an interval remembers its last check across restarts: after a restart the next check follows the interval instead of running again after one minute. If the last check is longer ago than the interval, it still runs one minute after the start.
+
 ## [4.2.0] - 2026-11-08
 
 ### Added
