@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.2.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 180
+BUILD = 181
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -2580,6 +2580,41 @@ class Worker(threading.Thread):
         self.log(L(f"SHORTS // {len(data['ids'])} SHORTS ON THE CHANNEL", f"SHORTS // {len(data['ids'])} SHORTS AUF DEM KANAL"), "ok")
         return set(data["ids"])
 
+    def refresh_shorts(self):
+        """Neue Shorts nachlesen: die Shorts-Liste ist neueste zuerst, also nur bis zum ersten bekannten Eintrag
+        (meist 1 Einheit). Liefert alle bekannten Shorts oder None (kein Kontingent / noch nie gelesen)."""
+        sh = known_shorts()
+        if sh is None:
+            return self.get_shorts()
+        if quota_blocked("units"):
+            return sh
+        data = load(shorts_file(), {})
+        lst, token, fresh = data.get("list"), None, []
+        if not lst:
+            return sh
+        try:
+            for _ in range(20):
+                params = {"part": "contentDetails", "playlistId": lst, "maxResults": 50}
+                if token:
+                    params["pageToken"] = token
+                try:
+                    d = self.call("GET", "playlistItems", params)
+                except ApiError:
+                    break
+                ids = [it["contentDetails"]["videoId"] for it in d.get("items", [])]
+                new = [v for v in ids if v not in sh]
+                fresh += new
+                token = d.get("nextPageToken")
+                if len(new) < len(ids) or not token:
+                    break
+        except QuotaExceeded:
+            pass
+        if fresh:
+            data["ids"] = list(data.get("ids") or []) + fresh
+            save(shorts_file(), data)
+            sh = sh | set(fresh)
+        return sh
+
     def get_shorts(self):
         """Shorts-IDs oder None (dann ist noch kein Kontingent dafür da)."""
         sh = known_shorts()
@@ -2711,6 +2746,27 @@ class Worker(threading.Thread):
             self.log(L(f"{year_label(year)} // CHECK FOR NEW VIDEOS SKIPPED // QUOTA", f"{year_label(year)} // NEUE VIDEOS NICHT GEPRÜFT // KONTINGENT"), "warn")
         finally:
             self.act(None, year)
+        if new and new[0][1] is not None or (not new and not quota_blocked("units")):
+            # über die API gefunden: die Upload-Liste enthält auch Shorts -> rausfiltern (Kanalseite zeigt keine)
+            shorts = self.refresh_shorts()
+            if shorts:
+                n0 = len(new)
+                new = [x for x in new if x[0] not in shorts]
+                if n0 - len(new):
+                    self.log(L(f"{year_label(year)} // {n0 - len(new)} NEW SHORT(S) LEFT OUT",
+                               f"{year_label(year)} // {n0 - len(new)} NEUE(S) SHORT(S) AUSGELASSEN"))
+                slipped = [v for v in videos if v["id"] in shorts]
+                if slipped:
+                    # früher durchgerutschte Shorts aus der Liste nehmen; die Playlist wird beim Nachtrag bereinigt
+                    videos = [v for v in videos if v["id"] not in shorts]
+                    save(videos_file(year), videos)
+                    st = load(state_file(year), {})
+                    if st.get("playlist_id"):
+                        st["repair"] = True
+                        save(state_file(year), st)
+                    self.log(L(f"{year_label(year)} // {len(slipped)} SHORT(S) FOUND IN THE LIST // REMOVING THEM",
+                               f"{year_label(year)} // {len(slipped)} SHORT(S) IN DER LISTE GEFUNDEN // WERDEN ENTFERNT"), "warn")
+                    self.emit("progress", year)
         if not new:
             self.log(L(f"{year_label(year)} // NO NEW VIDEOS", f"{year_label(year)} // KEINE NEUEN VIDEOS"))
             return videos

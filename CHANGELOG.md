@@ -5,6 +5,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Fixed
+- Shorts uploaded after the channel's shorts list was read once could slip into the current year and into custom lists. New uploads found through the API are now checked against the latest shorts (usually 1 unit), and shorts that already slipped in are removed from the playlists.
+
 ### Changed
 - Clicking a link in the log opens it in your default browser; right-click copies it.
 
