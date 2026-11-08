@@ -6,6 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
+- The playlist check (CHECK, and after each run) now finds videos that don't belong in the playlist: a custom list removes videos that no longer match it (for example after a title change or an exclusion) and names them in the log; a year playlist only names them and leaves them in.
 - OPEN button on every year and list card that has a playlist: opens it on YouTube in your default browser (all parts if a year is split).
 
 ## [4.0.1] - 2026-11-07

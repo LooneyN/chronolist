@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 176
+BUILD = 177
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -3195,6 +3195,8 @@ class Worker(threading.Thread):
         try:
             removed = 0
             seen = set()
+            wanted = {v["id"] for v in videos}
+            strays = []                   # Videos in der Playlist, die nicht (mehr) dazugehören
             for pid in pids:              # Teile der Reihe nach; doppelt = schon in einem früheren Teil
                 before = set(seen)
                 web = False
@@ -3211,6 +3213,24 @@ class Worker(threading.Thread):
                             self.remove_item(pid, it)
                             removed += 1
                             self.log(L(f"DUPLICATE REMOVED // {it['vid']}", f"DOPPELTES VIDEO ENTFERNT // {it['vid']}"), "warn")
+                        extra = [it for it in items if it["vid"] in here and it["vid"] not in wanted]
+                        if extra and is_list_key(year) and len(extra) > max(5, len(items) // 10):
+                            # ungewöhnlich viele: lieber nichts anfassen, nur melden
+                            self.log(L(f"{year_label(year)} // {len(extra)} VIDEO(S) DON'T MATCH THE LIST // TOO MANY TO REMOVE AUTOMATICALLY",
+                                       f"{year_label(year)} // {len(extra)} VIDEO(S) PASSEN NICHT ZUR LISTE // ZU VIELE ZUM AUTOMATISCHEN ENTFERNEN"),
+                                     "warn")
+                        elif extra and is_list_key(year):
+                            # eigene Liste: enthält genau die Treffer; was nicht mehr passt, fliegt raus
+                            if not web:
+                                self.log(L(f"{year_label(year)} // {len(extra)} VIDEO(S) NO LONGER MATCH THE LIST // REMOVING",
+                                           f"{year_label(year)} // {len(extra)} VIDEO(S) PASSEN NICHT MEHR ZUR LISTE // ENTFERNE"),
+                                         "warn")
+                            for it in extra:
+                                self.remove_item(pid, it)
+                                here.discard(it["vid"])
+                                self.log(L(f"REMOVED // https://youtu.be/{it['vid']}", f"ENTFERNT // https://youtu.be/{it['vid']}"), "warn")
+                        elif extra:
+                            strays += extra
                         seen = before | here
                         break
                     except RelistNeeded:
@@ -3226,6 +3246,11 @@ class Worker(threading.Thread):
                 save(state_file(year), state)
                 self.emit("progress", year)
                 self.log(L(f"RESYNC {year_label(year)} // {moved} VIDEO(S) WERE ALREADY IN THE PLAYLIST", f"ABGLEICH {year_label(year)} // {moved} VIDEO(S) WAREN SCHON IN DER PLAYLIST"), "warn")
+            if strays:
+                links = " ".join(f"https://youtu.be/{it['vid']}" for it in strays[:5]) + (" ..." if len(strays) > 5 else "")
+                self.log(L(f"{year_label(year)} // {len(strays)} VIDEO(S) IN THE PLAYLIST ARE NOT FROM THIS YEAR // LEFT IN // {links}",
+                           f"{year_label(year)} // {len(strays)} VIDEO(S) IN DER PLAYLIST GEHÖREN NICHT ZU DIESEM JAHR // BLEIBEN DRIN // {links}"),
+                         "info")
             msg = L(f"{removed} DUPLICATE(S) REMOVED", f"{removed} DOPPELTE ENTFERNT") if removed else L("NO DUPLICATES", "KEINE DOPPELTEN")
             self.log(L(f"PLAYLIST CHECK {year_label(year)} // {len(seen)} VIDEOS // {msg}", f"PLAYLIST-PRÜFUNG {year_label(year)} // {len(seen)} VIDEOS // {msg}"), "ok")
         except QuotaExceeded:
