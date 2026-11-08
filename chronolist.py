@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 178
+BUILD = 179
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -3159,7 +3159,9 @@ class Worker(threading.Thread):
                         params["pageToken"] = token
                     d = self.call("GET", "playlistItems", params)
                     for it in d.get("items", []):
-                        items.append({"vid": it["contentDetails"]["videoId"], "item": it["id"]})
+                        cd = it["contentDetails"]
+                        # privat/gelöscht: ohne Veröffentlichungsdatum (auf YouTube ausgeblendet)
+                        items.append({"vid": cd["videoId"], "item": it["id"], "hidden": "videoPublishedAt" not in cd})
                     self.act(L(f"CHECKING PLAYLIST // {len(items)} READ", f"PRÜFE PLAYLIST // {len(items)} GELESEN"))
                     token = d.get("nextPageToken")
                     if not token:
@@ -3169,6 +3171,58 @@ class Worker(threading.Thread):
         self.ensure_browser()
         return self.browser.list_items(pid, lambda n: self.act(
             L(f"CHECKING PLAYLIST // {n} READ", f"PRÜFE PLAYLIST // {n} GELESEN")))
+
+    def remove_targets(self, pid, targets, before, dup_ids):
+        """Doppelte bzw. nicht passende Einträge entfernen. Über die API (USE API FOR EVERYTHING) oder über Edge;
+        Einträge, die Edge nicht sieht (nicht mehr verfügbare Videos), gehen nur über die API.
+        Liefert die Zahl der entfernten Doppelten."""
+        def done(it, how=""):
+            if id(it) in dup_ids:
+                self.log(L(f"DUPLICATE REMOVED // https://youtu.be/{it['vid']}{how}",
+                           f"DOPPELTES VIDEO ENTFERNT // https://youtu.be/{it['vid']}{how}"), "warn")
+            else:
+                self.log(L(f"REMOVED // https://youtu.be/{it['vid']}{how}", f"ENTFERNT // https://youtu.be/{it['vid']}{how}"), "warn")
+
+        rest = list(targets)
+        if self.mode == "api":
+            while rest and not quota_blocked("units"):
+                try:
+                    self.call("DELETE", "playlistItems", {"id": rest[0]["item"]})
+                    done(rest.pop(0))
+                except QuotaExceeded:
+                    self.switch_to_browser()
+                    break
+        if rest:
+            self.ensure_browser()
+            web = self.browser.list_items(pid, lambda n: self.act(
+                L(f"CHECKING PLAYLIST // {n} READ", f"PRÜFE PLAYLIST // {n} GELESEN")))
+            occ = {}
+            for w in web:
+                occ.setdefault(w["vid"], []).append(w)
+            hidden = []
+            for it in rest:
+                cand = occ.get(it["vid"], [])
+                # bei Doppelten bleibt das erste Vorkommen (außer es steckt schon in einem früheren Teil)
+                keep_first = id(it) in dup_ids and it["vid"] not in before
+                pool = cand[1:] if keep_first else cand
+                if pool:
+                    w = pool[-1]
+                    cand.remove(w)
+                    self.browser.remove(pid, w)
+                    done(it)
+                else:
+                    hidden.append(it)
+            for it in hidden:          # nur die API sieht diesen Eintrag
+                try:
+                    if it.get("item") and not quota_blocked("units"):
+                        self.call("DELETE", "playlistItems", {"id": it["item"]})
+                        done(it, L(" // UNAVAILABLE, REMOVED VIA API", " // NICHT VERFÜGBAR, ÜBER DIE API ENTFERNT"))
+                        continue
+                except QuotaExceeded:
+                    pass
+                self.log(L(f"COULD NOT REMOVE // https://youtu.be/{it['vid']} // ONLY THE API SEES IT, NO QUOTA LEFT",
+                           f"NICHT ENTFERNT // https://youtu.be/{it['vid']} // NUR DIE API SIEHT ES, KEIN KONTINGENT"), "warn")
+        return sum(1 for it in targets if id(it) in dup_ids)
 
     def remove_item(self, pid, item):
         if self.mode == "api" and item.get("item") and not quota_blocked("units"):
@@ -3197,45 +3251,36 @@ class Worker(threading.Thread):
             seen = set()
             wanted = {v["id"] for v in videos}
             strays = []                   # Videos in der Playlist, die nicht (mehr) dazugehören
+            hidden_vids = set()           # in der Playlist, aber nicht mehr verfügbar (privat/gelöscht)
             for pid in pids:              # Teile der Reihe nach; doppelt = schon in einem früheren Teil
                 before = set(seen)
-                web = False
-                for _ in range(3):
-                    try:
-                        items = self.list_playlist(pid, web)
-                        here, dups = set(), []
-                        for it in items:
-                            if it["vid"] in here or it["vid"] in before:
-                                dups.append(it)
-                            else:
-                                here.add(it["vid"])
-                        for it in dups:
-                            self.remove_item(pid, it)
-                            removed += 1
-                            self.log(L(f"DUPLICATE REMOVED // {it['vid']}", f"DOPPELTES VIDEO ENTFERNT // {it['vid']}"), "warn")
-                        extra = [it for it in items if it["vid"] in here and it["vid"] not in wanted]
-                        if extra and is_list_key(year) and len(extra) > max(5, len(items) // 10):
-                            # ungewöhnlich viele: lieber nichts anfassen, nur melden
-                            self.log(L(f"{year_label(year)} // {len(extra)} VIDEO(S) DON'T MATCH THE LIST // TOO MANY TO REMOVE AUTOMATICALLY",
-                                       f"{year_label(year)} // {len(extra)} VIDEO(S) PASSEN NICHT ZUR LISTE // ZU VIELE ZUM AUTOMATISCHEN ENTFERNEN"),
-                                     "warn")
-                        elif extra and is_list_key(year):
-                            # eigene Liste: enthält genau die Treffer; was nicht mehr passt, fliegt raus
-                            if not web:
-                                self.log(L(f"{year_label(year)} // {len(extra)} VIDEO(S) NO LONGER MATCH THE LIST // REMOVING",
-                                           f"{year_label(year)} // {len(extra)} VIDEO(S) PASSEN NICHT MEHR ZUR LISTE // ENTFERNE"),
-                                         "warn")
-                            for it in extra:
-                                self.remove_item(pid, it)
-                                here.discard(it["vid"])
-                                self.log(L(f"REMOVED // https://youtu.be/{it['vid']}", f"ENTFERNT // https://youtu.be/{it['vid']}"), "warn")
-                        elif extra:
-                            strays += extra
-                        seen = before | here
-                        break
-                    except RelistNeeded:
-                        web = True        # zum Entfernen über Edge: Playlist dort lesen
-                        continue
+                items = self.list_playlist(pid)
+                here, dups = set(), []
+                for it in items:
+                    if it["vid"] in here or it["vid"] in before:
+                        dups.append(it)
+                    else:
+                        here.add(it["vid"])
+                extra = [it for it in items if it["vid"] in here and it["vid"] not in wanted]
+                targets = list(dups)
+                if extra and is_list_key(year) and len(extra) > max(5, len(items) // 10):
+                    # ungewöhnlich viele: lieber nichts anfassen, nur melden
+                    self.log(L(f"{year_label(year)} // {len(extra)} VIDEO(S) DON'T MATCH THE LIST // TOO MANY TO REMOVE AUTOMATICALLY",
+                               f"{year_label(year)} // {len(extra)} VIDEO(S) PASSEN NICHT ZUR LISTE // ZU VIELE ZUM AUTOMATISCHEN ENTFERNEN"),
+                             "warn")
+                elif extra and is_list_key(year):
+                    # eigene Liste: enthält genau die Treffer; was nicht mehr passt, fliegt raus
+                    self.log(L(f"{year_label(year)} // {len(extra)} VIDEO(S) NO LONGER MATCH THE LIST // REMOVING",
+                               f"{year_label(year)} // {len(extra)} VIDEO(S) PASSEN NICHT MEHR ZUR LISTE // ENTFERNE"), "warn")
+                    targets += extra
+                    for it in extra:
+                        here.discard(it["vid"])
+                elif extra:
+                    strays += extra
+                if targets:
+                    removed += self.remove_targets(pid, targets, before, {id(it) for it in dups})
+                hidden_vids |= {it["vid"] for it in items if it.get("hidden")}
+                seen = before | here
             n = state.get("next", 0)
             moved = 0
             while n < len(videos) and videos[n]["id"] in seen:
@@ -3248,7 +3293,7 @@ class Worker(threading.Thread):
                 self.log(L(f"RESYNC {year_label(year)} // {moved} VIDEO(S) WERE ALREADY IN THE PLAYLIST", f"ABGLEICH {year_label(year)} // {moved} VIDEO(S) WAREN SCHON IN DER PLAYLIST"), "warn")
             done_ids = [v["id"] for v in videos[:state.get("next", 0)]]
             skipped = set(state.get("skipped", []))
-            missing = [v for v in done_ids if v not in seen and v not in skipped]
+            missing = [v for v in done_ids if (v not in seen or v in hidden_vids) and v not in skipped]
             if missing:
                 links = " ".join(f"https://youtu.be/{v}" for v in missing[:5]) + (" ..." if len(missing) > 5 else "")
                 self.log(L(f"{year_label(year)} // {len(missing)} VIDEO(S) ARE NOT VISIBLE IN THE PLAYLIST "
@@ -3261,7 +3306,9 @@ class Worker(threading.Thread):
                            f"{year_label(year)} // {len(strays)} VIDEO(S) IN DER PLAYLIST GEHÖREN NICHT ZU DIESEM JAHR // BLEIBEN DRIN // {links}"),
                          "info")
             msg = L(f"{removed} DUPLICATE(S) REMOVED", f"{removed} DOPPELTE ENTFERNT") if removed else L("NO DUPLICATES", "KEINE DOPPELTEN")
-            self.log(L(f"PLAYLIST CHECK {year_label(year)} // {len(seen)} VIDEOS // {msg}", f"PLAYLIST-PRÜFUNG {year_label(year)} // {len(seen)} VIDEOS // {msg}"), "ok")
+            hid = len(hidden_vids & seen)
+            cnt = f"{len(seen)} VIDEOS" + (L(f" ({hid} UNAVAILABLE)", f" ({hid} NICHT VERFÜGBAR)") if hid else "")
+            self.log(L(f"PLAYLIST CHECK {year_label(year)} // {cnt} // {msg}", f"PLAYLIST-PRÜFUNG {year_label(year)} // {cnt} // {msg}"), "ok")
         except QuotaExceeded:
             self.log(L(f"PLAYLIST CHECK {year_label(year)} SKIPPED // QUOTA", f"PLAYLIST-PRÜFUNG {year_label(year)} ÜBERSPRUNGEN // KONTINGENT"), "warn")
         finally:
