@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 175
+BUILD = 176
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -7108,6 +7108,14 @@ class Tooltip:
         widget.bind("<Enter>", self._schedule, add="+")
         widget.bind("<Leave>", self._hide, add="+")
         widget.bind("<ButtonPress>", self._hide, add="+")
+        if callable(text):
+            widget.bind("<Motion>", self._motion, add="+")   # Text kann je nach Stelle wechseln (Knöpfe auf Karten)
+        self.shown = None
+
+    def _motion(self, e=None):
+        if self.tip and self.text() != self.shown:
+            self._hide()
+            self._schedule()
 
     def _schedule(self, e=None):
         self._cancel()
@@ -7123,6 +7131,7 @@ class Tooltip:
         text = self.text() if callable(self.text) else self.text
         if not text or self.tip:
             return
+        self.shown = text
         base = "Segoe UI" if "Segoe UI" in tkfont.families(self.w) else "TkDefaultFont"
         self.tip = tk.Toplevel(self.w)
         self.tip.wm_overrideredirect(True)
@@ -9221,6 +9230,17 @@ class App(tk.Tk):
              "WIRD NUR LOKAL IN CREDENTIALS.JSON NEBEN DEM PROGRAMM GESPEICHERT."), self.save_credentials)
 
     def year_tip(self, row):
+        x, y = row.winfo_pointerx() - row.winfo_rootx(), row.winfo_pointery() - row.winfo_rooty()
+        inside = lambda g: g and g[0] <= x <= g[2] and g[1] <= y <= g[3]   # noqa: E731
+        if inside(row.open_geo):
+            return L("Open this playlist on YouTube in your default browser.",
+                     "Diese Playlist auf YouTube im Standardbrowser öffnen.")
+        if AUTO_SHOW and inside(row.auto_geo):
+            return (L("AUTO on: AUTO-CHECK adds new videos to this playlist by itself. Click to switch it off.",
+                      "AUTO an: AUTO-CHECK fügt neue Videos von selbst in diese Playlist ein. Klick schaltet es aus.")
+                    if auto_on(row.year) else
+                    L("AUTO off: AUTO-CHECK leaves this playlist alone. Click to switch it on.",
+                      "AUTO aus: AUTO-CHECK lässt diese Playlist in Ruhe. Klick schaltet es ein."))
         if is_list_key(row.year):
             return L("Keyword list. Click to select it, right-click to edit it. ",
                      "Stichwortliste. Klick wählt sie aus, Rechtsklick bearbeitet sie. ") + \
