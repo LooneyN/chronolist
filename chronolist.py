@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 177
+BUILD = 178
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -3246,6 +3246,15 @@ class Worker(threading.Thread):
                 save(state_file(year), state)
                 self.emit("progress", year)
                 self.log(L(f"RESYNC {year_label(year)} // {moved} VIDEO(S) WERE ALREADY IN THE PLAYLIST", f"ABGLEICH {year_label(year)} // {moved} VIDEO(S) WAREN SCHON IN DER PLAYLIST"), "warn")
+            done_ids = [v["id"] for v in videos[:state.get("next", 0)]]
+            skipped = set(state.get("skipped", []))
+            missing = [v for v in done_ids if v not in seen and v not in skipped]
+            if missing:
+                links = " ".join(f"https://youtu.be/{v}" for v in missing[:5]) + (" ..." if len(missing) > 5 else "")
+                self.log(L(f"{year_label(year)} // {len(missing)} VIDEO(S) ARE NOT VISIBLE IN THE PLAYLIST "
+                           f"(USUALLY PRIVATE, DELETED OR MEMBERS-ONLY NOW) // {links}",
+                           f"{year_label(year)} // {len(missing)} VIDEO(S) SIND IN DER PLAYLIST NICHT SICHTBAR "
+                           f"(MEIST INZWISCHEN PRIVAT, GELÖSCHT ODER NUR FÜR MITGLIEDER) // {links}"), "info")
             if strays:
                 links = " ".join(f"https://youtu.be/{it['vid']}" for it in strays[:5]) + (" ..." if len(strays) > 5 else "")
                 self.log(L(f"{year_label(year)} // {len(strays)} VIDEO(S) IN THE PLAYLIST ARE NOT FROM THIS YEAR // LEFT IN // {links}",
