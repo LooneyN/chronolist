@@ -6,7 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 ## [Unreleased]
 
 ### Added
-- Custom lists can include videos from other channels in your channel list (VIDEOS FROM in the list editor), for example a main channel plus its live channel. The matches of all chosen channels are mixed in by upload time, the preview shows which channel each video comes from, and a channel that was never scanned is scanned on the next run. AUTO-CHECK of such a list also looks for new uploads on the other channels.
+- Custom lists can include videos from other channels in your channel list (VIDEOS FROM in the list editor), for example a main channel plus its live channel. The matches of all chosen channels are mixed in by upload time, the preview shows which channel each video comes from, and a channel that was never scanned is scanned on the next run. AUTO-CHECK of such a list also looks for new uploads on the other channels. Videos found without an exact upload time (channel page in Edge) are dated through the API as soon as quota is available (1 unit per 50), and the next run moves them to the right place.
 
 ### Fixed
 - Shorts uploaded after the channel's shorts list was read once could slip into the current year and into custom lists. New uploads found through the API are now checked against the latest shorts (usually 1 unit), and shorts that already slipped in are removed from the playlists.

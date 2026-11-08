@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.2.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 183
+BUILD = 184
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -3044,6 +3044,39 @@ class Worker(threading.Thread):
         save(videos_file(key), new)
         return new
 
+    def fill_missing_dates(self):
+        """Videos ohne genaue Upload-Zeit (über die Kanalseite gefunden) nachdatieren, sobald Kontingent da ist
+        (1 Einheit pro 50). Wichtig für Listen mit mehreren Kanälen, die nach Upload-Zeit mischen."""
+        done = getattr(self, "_dated", set())
+        if ctx().chan_dir.name in done or quota_blocked("units"):
+            return
+        self._dated = done | {ctx().chan_dir.name}
+        files = [(y, f, load(f, []) or []) for y, f in year_files()]
+        todo = [v["id"] for _, _, vs in files for v in vs if not v.get("published")]
+        if not todo:
+            return
+        found = {}
+        try:
+            for i in range(0, len(todo), 50):
+                d = self.call("GET", "videos", {"part": "snippet", "id": ",".join(todo[i:i + 50]), "maxResults": 50})
+                for it in d.get("items", []):
+                    pub = (it.get("snippet") or {}).get("publishedAt")
+                    if pub:
+                        found[it["id"]] = pub
+        except QuotaExceeded:
+            pass
+        if not found:
+            return
+        for y, f, vs in files:
+            changed = False
+            for v in vs:
+                if not v.get("published") and v["id"] in found:
+                    v["published"] = found[v["id"]]
+                    changed = True
+            if changed:
+                save(f, vs)
+        self.log(L(f"UPLOAD TIMES // {len(found)} VIDEO(S) DATED", f"UPLOAD-ZEITEN // {len(found)} VIDEO(S) NACHDATIERT"))
+
     def prepare_sources(self, lst):
         """Weitere Kanäle einer Liste auf Stand bringen: einmalig scannen, neue Uploads holen, Titel nachladen.
         Läuft im Kontext des jeweiligen Kanals und verändert die Karten des angezeigten Kanals nicht."""
@@ -3064,6 +3097,7 @@ class Worker(threading.Thread):
                     if growing(y) or load(videos_file(y), None) is None and y >= datetime.date.today().year:
                         self.collect(y)
                 self.fetch_missing_titles()
+                self.fill_missing_dates()
             except (Stopped, BrowserFailed):
                 raise
             except Exception as e:  # noqa: BLE001
@@ -3085,6 +3119,13 @@ class Worker(threading.Thread):
                 continue
             self.emit("current", key)
             self.log(L(f"// LIST {lst['name']}", f"// LISTE {lst['name']}"), "sep")
+            if source_entries(lst):
+                try:
+                    self.fill_missing_dates()          # eigener Kanal; die anderen in prepare_sources
+                except (Stopped, BrowserFailed):
+                    raise
+                except Exception:  # noqa: BLE001
+                    pass
             self.prepare_sources(lst)
             videos = self.sync_list(key)
             self.log(L(f"{len(videos)} VIDEOS MATCH", f"{len(videos)} VIDEOS PASSEN"), "ok")
