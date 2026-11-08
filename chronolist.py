@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.3.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 185
+BUILD = 186
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -8966,7 +8966,7 @@ class App(tk.Tk):
         lsb.bind("<B1-Motion>", update_follow, add="+")
         self.logbox.bind("<Configure>", keep_bottom, add="+")
         for tag, col in (("ts", RED_MILD), ("info", TEXT_DIM), ("ok", GREEN), ("warn", YELLOW),
-                         ("err", RED), ("sep", RED), ("leaf", GREEN), ("loglink", YELLOW)):
+                         ("err", RED), ("sep", RED), ("leaf", GREEN), ("loglink", YELLOW), ("chan", CYAN)):
             self.logbox.tag_configure(tag, foreground=col)
         self.logbox.tag_configure("urllink", underline=False)
         self.logbox.tag_bind("urllink", "<Enter>", lambda e: (self.logbox.configure(cursor="hand2"),
@@ -10091,11 +10091,13 @@ class App(tk.Tk):
         return "break"
 
     # --- Nachrichten vom Worker
-    def write_log(self, text, level="info", actions=None):
+    def write_log(self, text, level="info", actions=None, chan=None):
         stamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.logbox.config(state="normal")
         self.finish_dots()
         self.logbox.insert("end", f"[{stamp}] ", "ts")
+        if chan:
+            self.logbox.insert("end", f"{chan} // ", "chan")      # Meldung eines nicht angezeigten Kanals
         if actions:
             # Zeile mit anklickbaren Aktionen (z. B. Playlist im Browser öffnen)
             self.logbox.insert("end", text, level)
@@ -10192,7 +10194,13 @@ class App(tk.Tk):
                         save(vf, view)
                     continue
                 if kind == "log":
-                    self.write_log(msg[1], msg[2])
+                    chan = None
+                    if self.worker_foreign():
+                        c = self.worker.ctx.channel or {}
+                        chan = (c.get("handle") or c.get("title") or "").upper() or None
+                        if chan and chan in str(msg[1]).upper():
+                            chan = None            # steht schon in der Zeile (AUTO-CHECK // @KANAL // ...)
+                    self.write_log(msg[1], msg[2], chan=chan)
                 elif kind == "progress":
                     y = msg[1]
                     if y in self.rows:
