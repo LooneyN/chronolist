@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-11-08
+
+### Added
+- OPEN button on every year and list card that has a playlist: opens it on YouTube in your default browser (all parts if a year is split). The OPEN and AUTO buttons have their own tooltips.
+- The playlist check (CHECK, and after each run) finds videos that don't belong in the playlist. A custom list removes videos that no longer match it (for example after a title change or an exclusion) and names them in the log; a year playlist only names them and leaves them in.
+- The playlist check names videos that were added but are no longer visible in the playlist (usually because they are private, deleted or members-only now), with links, and counts unavailable entries.
+
+### Fixed
+- Duplicates and other entries that the YouTube page hides (for example a second copy of an unavailable video) were not found when the check read the playlist in Edge. The check now reads through the API, which sees them, and removes such entries through the API (50 units each), since Edge can't reach them. Without quota it reads in Edge as before.
+
 ## [4.0.1] - 2026-11-07
 
 ### Changed
@@ -249,7 +259,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v4.0.1...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v4.1.0...HEAD
+[4.1.0]: https://github.com/LooneyN/chronolist/compare/v4.0.1...v4.1.0
 [4.0.1]: https://github.com/LooneyN/chronolist/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/LooneyN/chronolist/compare/v3.5.0...v4.0.0
 [3.5.0]: https://github.com/LooneyN/chronolist/compare/v3.4.0...v3.5.0

@@ -98,8 +98,8 @@ def default_list_description_template():
 PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
-VERSION = "4.0.1"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 174
+VERSION = "4.1.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
+BUILD = 179
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -3159,7 +3159,9 @@ class Worker(threading.Thread):
                         params["pageToken"] = token
                     d = self.call("GET", "playlistItems", params)
                     for it in d.get("items", []):
-                        items.append({"vid": it["contentDetails"]["videoId"], "item": it["id"]})
+                        cd = it["contentDetails"]
+                        # privat/gelöscht: ohne Veröffentlichungsdatum (auf YouTube ausgeblendet)
+                        items.append({"vid": cd["videoId"], "item": it["id"], "hidden": "videoPublishedAt" not in cd})
                     self.act(L(f"CHECKING PLAYLIST // {len(items)} READ", f"PRÜFE PLAYLIST // {len(items)} GELESEN"))
                     token = d.get("nextPageToken")
                     if not token:
@@ -3169,6 +3171,58 @@ class Worker(threading.Thread):
         self.ensure_browser()
         return self.browser.list_items(pid, lambda n: self.act(
             L(f"CHECKING PLAYLIST // {n} READ", f"PRÜFE PLAYLIST // {n} GELESEN")))
+
+    def remove_targets(self, pid, targets, before, dup_ids):
+        """Doppelte bzw. nicht passende Einträge entfernen. Über die API (USE API FOR EVERYTHING) oder über Edge;
+        Einträge, die Edge nicht sieht (nicht mehr verfügbare Videos), gehen nur über die API.
+        Liefert die Zahl der entfernten Doppelten."""
+        def done(it, how=""):
+            if id(it) in dup_ids:
+                self.log(L(f"DUPLICATE REMOVED // https://youtu.be/{it['vid']}{how}",
+                           f"DOPPELTES VIDEO ENTFERNT // https://youtu.be/{it['vid']}{how}"), "warn")
+            else:
+                self.log(L(f"REMOVED // https://youtu.be/{it['vid']}{how}", f"ENTFERNT // https://youtu.be/{it['vid']}{how}"), "warn")
+
+        rest = list(targets)
+        if self.mode == "api":
+            while rest and not quota_blocked("units"):
+                try:
+                    self.call("DELETE", "playlistItems", {"id": rest[0]["item"]})
+                    done(rest.pop(0))
+                except QuotaExceeded:
+                    self.switch_to_browser()
+                    break
+        if rest:
+            self.ensure_browser()
+            web = self.browser.list_items(pid, lambda n: self.act(
+                L(f"CHECKING PLAYLIST // {n} READ", f"PRÜFE PLAYLIST // {n} GELESEN")))
+            occ = {}
+            for w in web:
+                occ.setdefault(w["vid"], []).append(w)
+            hidden = []
+            for it in rest:
+                cand = occ.get(it["vid"], [])
+                # bei Doppelten bleibt das erste Vorkommen (außer es steckt schon in einem früheren Teil)
+                keep_first = id(it) in dup_ids and it["vid"] not in before
+                pool = cand[1:] if keep_first else cand
+                if pool:
+                    w = pool[-1]
+                    cand.remove(w)
+                    self.browser.remove(pid, w)
+                    done(it)
+                else:
+                    hidden.append(it)
+            for it in hidden:          # nur die API sieht diesen Eintrag
+                try:
+                    if it.get("item") and not quota_blocked("units"):
+                        self.call("DELETE", "playlistItems", {"id": it["item"]})
+                        done(it, L(" // UNAVAILABLE, REMOVED VIA API", " // NICHT VERFÜGBAR, ÜBER DIE API ENTFERNT"))
+                        continue
+                except QuotaExceeded:
+                    pass
+                self.log(L(f"COULD NOT REMOVE // https://youtu.be/{it['vid']} // ONLY THE API SEES IT, NO QUOTA LEFT",
+                           f"NICHT ENTFERNT // https://youtu.be/{it['vid']} // NUR DIE API SIEHT ES, KEIN KONTINGENT"), "warn")
+        return sum(1 for it in targets if id(it) in dup_ids)
 
     def remove_item(self, pid, item):
         if self.mode == "api" and item.get("item") and not quota_blocked("units"):
@@ -3195,27 +3249,38 @@ class Worker(threading.Thread):
         try:
             removed = 0
             seen = set()
+            wanted = {v["id"] for v in videos}
+            strays = []                   # Videos in der Playlist, die nicht (mehr) dazugehören
+            hidden_vids = set()           # in der Playlist, aber nicht mehr verfügbar (privat/gelöscht)
             for pid in pids:              # Teile der Reihe nach; doppelt = schon in einem früheren Teil
                 before = set(seen)
-                web = False
-                for _ in range(3):
-                    try:
-                        items = self.list_playlist(pid, web)
-                        here, dups = set(), []
-                        for it in items:
-                            if it["vid"] in here or it["vid"] in before:
-                                dups.append(it)
-                            else:
-                                here.add(it["vid"])
-                        for it in dups:
-                            self.remove_item(pid, it)
-                            removed += 1
-                            self.log(L(f"DUPLICATE REMOVED // {it['vid']}", f"DOPPELTES VIDEO ENTFERNT // {it['vid']}"), "warn")
-                        seen = before | here
-                        break
-                    except RelistNeeded:
-                        web = True        # zum Entfernen über Edge: Playlist dort lesen
-                        continue
+                items = self.list_playlist(pid)
+                here, dups = set(), []
+                for it in items:
+                    if it["vid"] in here or it["vid"] in before:
+                        dups.append(it)
+                    else:
+                        here.add(it["vid"])
+                extra = [it for it in items if it["vid"] in here and it["vid"] not in wanted]
+                targets = list(dups)
+                if extra and is_list_key(year) and len(extra) > max(5, len(items) // 10):
+                    # ungewöhnlich viele: lieber nichts anfassen, nur melden
+                    self.log(L(f"{year_label(year)} // {len(extra)} VIDEO(S) DON'T MATCH THE LIST // TOO MANY TO REMOVE AUTOMATICALLY",
+                               f"{year_label(year)} // {len(extra)} VIDEO(S) PASSEN NICHT ZUR LISTE // ZU VIELE ZUM AUTOMATISCHEN ENTFERNEN"),
+                             "warn")
+                elif extra and is_list_key(year):
+                    # eigene Liste: enthält genau die Treffer; was nicht mehr passt, fliegt raus
+                    self.log(L(f"{year_label(year)} // {len(extra)} VIDEO(S) NO LONGER MATCH THE LIST // REMOVING",
+                               f"{year_label(year)} // {len(extra)} VIDEO(S) PASSEN NICHT MEHR ZUR LISTE // ENTFERNE"), "warn")
+                    targets += extra
+                    for it in extra:
+                        here.discard(it["vid"])
+                elif extra:
+                    strays += extra
+                if targets:
+                    removed += self.remove_targets(pid, targets, before, {id(it) for it in dups})
+                hidden_vids |= {it["vid"] for it in items if it.get("hidden")}
+                seen = before | here
             n = state.get("next", 0)
             moved = 0
             while n < len(videos) and videos[n]["id"] in seen:
@@ -3226,8 +3291,24 @@ class Worker(threading.Thread):
                 save(state_file(year), state)
                 self.emit("progress", year)
                 self.log(L(f"RESYNC {year_label(year)} // {moved} VIDEO(S) WERE ALREADY IN THE PLAYLIST", f"ABGLEICH {year_label(year)} // {moved} VIDEO(S) WAREN SCHON IN DER PLAYLIST"), "warn")
+            done_ids = [v["id"] for v in videos[:state.get("next", 0)]]
+            skipped = set(state.get("skipped", []))
+            missing = [v for v in done_ids if (v not in seen or v in hidden_vids) and v not in skipped]
+            if missing:
+                links = " ".join(f"https://youtu.be/{v}" for v in missing[:5]) + (" ..." if len(missing) > 5 else "")
+                self.log(L(f"{year_label(year)} // {len(missing)} VIDEO(S) ARE NOT VISIBLE IN THE PLAYLIST "
+                           f"(USUALLY PRIVATE, DELETED OR MEMBERS-ONLY NOW) // {links}",
+                           f"{year_label(year)} // {len(missing)} VIDEO(S) SIND IN DER PLAYLIST NICHT SICHTBAR "
+                           f"(MEIST INZWISCHEN PRIVAT, GELÖSCHT ODER NUR FÜR MITGLIEDER) // {links}"), "info")
+            if strays:
+                links = " ".join(f"https://youtu.be/{it['vid']}" for it in strays[:5]) + (" ..." if len(strays) > 5 else "")
+                self.log(L(f"{year_label(year)} // {len(strays)} VIDEO(S) IN THE PLAYLIST ARE NOT FROM THIS YEAR // LEFT IN // {links}",
+                           f"{year_label(year)} // {len(strays)} VIDEO(S) IN DER PLAYLIST GEHÖREN NICHT ZU DIESEM JAHR // BLEIBEN DRIN // {links}"),
+                         "info")
             msg = L(f"{removed} DUPLICATE(S) REMOVED", f"{removed} DOPPELTE ENTFERNT") if removed else L("NO DUPLICATES", "KEINE DOPPELTEN")
-            self.log(L(f"PLAYLIST CHECK {year_label(year)} // {len(seen)} VIDEOS // {msg}", f"PLAYLIST-PRÜFUNG {year_label(year)} // {len(seen)} VIDEOS // {msg}"), "ok")
+            hid = len(hidden_vids & seen)
+            cnt = f"{len(seen)} VIDEOS" + (L(f" ({hid} UNAVAILABLE)", f" ({hid} NICHT VERFÜGBAR)") if hid else "")
+            self.log(L(f"PLAYLIST CHECK {year_label(year)} // {cnt} // {msg}", f"PLAYLIST-PRÜFUNG {year_label(year)} // {cnt} // {msg}"), "ok")
         except QuotaExceeded:
             self.log(L(f"PLAYLIST CHECK {year_label(year)} SKIPPED // QUOTA", f"PLAYLIST-PRÜFUNG {year_label(year)} ÜBERSPRUNGEN // KONTINGENT"), "warn")
         finally:
@@ -4719,6 +4800,7 @@ class YearRow(Panel):
         self.geo = None
         self.last_label = None
         self.auto_geo = None       # (x0, y0, x1, y1) des AUTO-Schalters
+        self.open_geo = None       # (x0, y0, x1, y1) des OPEN-Knopfs (Playlist im Browser)
         self.auto_command = None
 
     def palette(self):
@@ -4790,8 +4872,12 @@ class YearRow(Panel):
         nx = ix + isz + px(12)
         name_w = tx - px(14) - nx
         self.auto_geo = None
+        self.open_geo = None
         if AUTO_SHOW:
             name_w -= self.draw_auto(tx - px(14), y0 + h * 0.32, on, faded) + px(10)
+        if part_ids(load(state_file(self.year), {})):
+            name_w -= self.draw_open(nx + name_w, y0 + h * 0.32, on, faded) + px(8)
+        if AUTO_SHOW:
             rec = AUTO_LAST.get(str(self.year)) if auto_on(self.year) else None
             if rec and not self.running:
                 # neben dem AUTO-Schalter, nur wenn der Name daneben noch ganz Platz hat
@@ -4884,9 +4970,31 @@ class YearRow(Panel):
         self.auto_geo = (x0 - px(3), y0 - px(3), x1 + px(3), y1 + px(3))
         return w
 
+    def draw_open(self, xr, cy, on, faded):
+        """OPEN: kleiner Knopf rechts in der Statuszeile, öffnet die Playlist im Standardbrowser."""
+        col = TEXT_DIM if on else mix(TEXT_DIM, BG, 0.6 if faded else 0.45)
+        fnt = F("mono", 10)
+        txt = L("OPEN", "ÖFFNEN")
+        tw = tkfont.Font(font=fnt).measure(txt)
+        w, hh, cut = tw + px(18), px(20), px(5)
+        x0, y0, x1, y1 = xr - w, cy - hh / 2, xr, cy + hh / 2
+        self.create_polygon(x0, y0, x1, y0, x1, y1 - cut, x1 - cut, y1, x0, y1, fill=BG, outline=col, width=1,
+                            tags="openbtn")
+        self.create_text((x0 + x1) / 2, cy, text=txt, font=fnt, fill=col, tags="openbtn")
+        self.open_geo = (x0 - px(3), y0 - px(3), x1 + px(3), y1 + px(3))
+        return w
+
+    def open_playlists(self):
+        for pid in part_ids(load(state_file(self.year), {})):
+            webbrowser.open(f"https://www.youtube.com/playlist?list={pid}")
+
     # --- Animation der aktiven Karte: nur Ladebalken + ruhiger Glow
     def _click(self, e):
         if getattr(self, "dragging", False):
+            return
+        o = self.open_geo
+        if o and o[0] <= e.x <= o[2] and o[1] <= e.y <= o[3]:
+            self.open_playlists()
             return
         a = self.auto_geo
         if AUTO_SHOW and a and a[0] <= e.x <= a[2] and a[1] <= e.y <= a[3]:
@@ -7081,6 +7189,14 @@ class Tooltip:
         widget.bind("<Enter>", self._schedule, add="+")
         widget.bind("<Leave>", self._hide, add="+")
         widget.bind("<ButtonPress>", self._hide, add="+")
+        if callable(text):
+            widget.bind("<Motion>", self._motion, add="+")   # Text kann je nach Stelle wechseln (Knöpfe auf Karten)
+        self.shown = None
+
+    def _motion(self, e=None):
+        if self.tip and self.text() != self.shown:
+            self._hide()
+            self._schedule()
 
     def _schedule(self, e=None):
         self._cancel()
@@ -7096,6 +7212,7 @@ class Tooltip:
         text = self.text() if callable(self.text) else self.text
         if not text or self.tip:
             return
+        self.shown = text
         base = "Segoe UI" if "Segoe UI" in tkfont.families(self.w) else "TkDefaultFont"
         self.tip = tk.Toplevel(self.w)
         self.tip.wm_overrideredirect(True)
@@ -9194,6 +9311,17 @@ class App(tk.Tk):
              "WIRD NUR LOKAL IN CREDENTIALS.JSON NEBEN DEM PROGRAMM GESPEICHERT."), self.save_credentials)
 
     def year_tip(self, row):
+        x, y = row.winfo_pointerx() - row.winfo_rootx(), row.winfo_pointery() - row.winfo_rooty()
+        inside = lambda g: g and g[0] <= x <= g[2] and g[1] <= y <= g[3]   # noqa: E731
+        if inside(row.open_geo):
+            return L("Open this playlist on YouTube in your default browser.",
+                     "Diese Playlist auf YouTube im Standardbrowser öffnen.")
+        if AUTO_SHOW and inside(row.auto_geo):
+            return (L("AUTO on: AUTO-CHECK adds new videos to this playlist by itself. Click to switch it off.",
+                      "AUTO an: AUTO-CHECK fügt neue Videos von selbst in diese Playlist ein. Klick schaltet es aus.")
+                    if auto_on(row.year) else
+                    L("AUTO off: AUTO-CHECK leaves this playlist alone. Click to switch it on.",
+                      "AUTO aus: AUTO-CHECK lässt diese Playlist in Ruhe. Klick schaltet es ein."))
         if is_list_key(row.year):
             return L("Keyword list. Click to select it, right-click to edit it. ",
                      "Stichwortliste. Klick wählt sie aus, Rechtsklick bearbeitet sie. ") + \
