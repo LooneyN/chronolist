@@ -99,7 +99,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.2.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 179
+BUILD = 180
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -8734,7 +8734,8 @@ class App(tk.Tk):
                                                                self.logbox.tag_configure("urllink", underline=True)))
         self.logbox.tag_bind("urllink", "<Leave>", lambda e: (self.logbox.configure(cursor=""),
                                                                self.logbox.tag_configure("urllink", underline=False)))
-        self.logbox.tag_bind("urllink", "<Button-1>", self.copy_log_link)
+        self.logbox.tag_bind("urllink", "<Button-1>", self.open_log_link)
+        self.logbox.tag_bind("urllink", "<Button-3>", self.copy_log_link)      # Rechtsklick: Link kopieren
         self.log_panel.windows.append(
             lambda x0, y0, x1, y1, c: self.log_panel.create_window(
                 x0 + px(10), y0 + px(10), window=inner, anchor="nw",
@@ -9819,8 +9820,15 @@ class App(tk.Tk):
         self.clipboard_append(self.code)
         self.write_log(L("CODE COPIED TO CLIPBOARD", "CODE IN DIE ZWISCHENABLAGE KOPIERT"), "info")
 
+    def open_log_link(self, e):
+        """Klick auf einen Link im Log: im Standardbrowser öffnen."""
+        rng = self.logbox.tag_prevrange("urllink", f"@{e.x},{e.y}+1c")
+        if rng:
+            webbrowser.open(self.logbox.get(*rng).strip())
+        return "break"
+
     def copy_log_link(self, e):
-        """Klick auf einen Link im Log: in die Zwischenablage kopieren, kurzer Hinweis am Mauszeiger."""
+        """Rechtsklick auf einen Link im Log: in die Zwischenablage kopieren, kurzer Hinweis am Mauszeiger."""
         rng = self.logbox.tag_prevrange("urllink", f"@{e.x},{e.y}+1c")
         if not rng:
             return "break"
@@ -9885,7 +9893,7 @@ class App(tk.Tk):
             self.logbox.insert("end", "\n", level)
             self.dots_level, self.dots_step = level, 0
         else:
-            for part in re.split(r"(https?://\S+)", text):       # Links im Log: Klick kopiert sie
+            for part in re.split(r"(https?://\S+)", text):       # Links im Log: Klick öffnet, Rechtsklick kopiert
                 if re.match(r"https?://", part):
                     self.logbox.insert("end", part, (level, "urllink"))
                 elif part:
