@@ -98,8 +98,8 @@ def default_list_description_template():
 PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
-VERSION = "4.2.0"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 184
+VERSION = "4.3.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
+BUILD = 186
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -5472,11 +5472,26 @@ def schedule_from(st):
     return bool(st.get("auto_check")), mode, iv, times
 
 
-def plan_next(mode, interval, times, first=False):
-    """Zeitpunkt der nächsten Auto-Prüfung (beim Start im Intervall-Modus schon nach einer Minute)."""
+def mark_auto_run(folder):
+    """Start einer Auto-Prüfung merken, damit das Intervall einen Programmneustart übersteht."""
+    try:
+        save(folder / "autorun.json", {"last": time.time()})
+    except OSError:
+        pass
+
+
+def plan_next(mode, interval, times, first=False, folder=None):
+    """Zeitpunkt der nächsten Auto-Prüfung. Intervall: ab der letzten Prüfung gerechnet (auch über einen
+    Neustart hinweg); war sie länger her oder gab es noch keine, beim Start nach einer Minute."""
     if mode == "times" and times:
         return next_time_at(times)
-    return time.time() + (60 if first else interval * 60)
+    now = time.time()
+    if not first:
+        return now + interval * 60
+    last = (load(folder / "autorun.json", {}) or {}).get("last") if folder else None
+    if isinstance(last, (int, float)) and last <= now:
+        return max(last + interval * 60, now + 60)
+    return now + 60
 
 
 def channel_folder(entry):
@@ -8951,7 +8966,7 @@ class App(tk.Tk):
         lsb.bind("<B1-Motion>", update_follow, add="+")
         self.logbox.bind("<Configure>", keep_bottom, add="+")
         for tag, col in (("ts", RED_MILD), ("info", TEXT_DIM), ("ok", GREEN), ("warn", YELLOW),
-                         ("err", RED), ("sep", RED), ("leaf", GREEN), ("loglink", YELLOW)):
+                         ("err", RED), ("sep", RED), ("leaf", GREEN), ("loglink", YELLOW), ("chan", CYAN)):
             self.logbox.tag_configure(tag, foreground=col)
         self.logbox.tag_configure("urllink", underline=False)
         self.logbox.tag_bind("urllink", "<Enter>", lambda e: (self.logbox.configure(cursor="hand2"),
@@ -9213,9 +9228,7 @@ class App(tk.Tk):
     def plan_auto(self, first=False):
         """Zeitpunkt der nächsten automatischen Prüfung: feste Uhrzeiten oder Intervall
         (beim Einschalten bzw. Programmstart im Intervall-Modus schon nach einer Minute)."""
-        if self.auto_mode == "times" and self.auto_times:
-            return next_time_at(self.auto_times)
-        return time.time() + (60 if first else self.auto_interval * 60)
+        return plan_next(self.auto_mode, self.auto_interval, self.auto_times, first, ctx().chan_dir)
 
     def auto_next_text(self):
         if self.auto_mode == "times" and self.auto_times:
@@ -9319,7 +9332,8 @@ class App(tk.Tk):
             if not on:
                 self.auto_next_by.pop(folder, None)
                 continue
-            nxt = self.auto_next_by.setdefault(folder, plan_next(mode, iv, times, first=True) + 60 * i)
+            nxt = self.auto_next_by.setdefault(folder, plan_next(mode, iv, times, first=True,
+                                                                 folder=DATA_DIR / folder) + 60 * i)
             if now >= nxt:
                 due.append((nxt, c))
         if not due:
@@ -9344,6 +9358,7 @@ class App(tk.Tk):
         keys = [y for y in c.years if y in auto_years and growing(y)] + \
                [list_key(x) for x in (lists if isinstance(lists, list) else []) if x.get("auto")]
         handle = (info.get("handle") or info.get("title") or "").upper()
+        mark_auto_run(folder)
         if not keys:
             self.auto_nothing(handle)
             return
@@ -9371,6 +9386,7 @@ class App(tk.Tk):
                [list_key(x) for x in load_lists() if x.get("auto")]
         keys = [k for k in keys if k in self.rows]
         self.auto_next = self.plan_auto()
+        mark_auto_run(ctx().chan_dir)
         handle = (ctx().channel.get("handle") or ctx().channel.get("title") or "").upper()
         if not keys:
             self.auto_nothing(handle)
@@ -10075,11 +10091,13 @@ class App(tk.Tk):
         return "break"
 
     # --- Nachrichten vom Worker
-    def write_log(self, text, level="info", actions=None):
+    def write_log(self, text, level="info", actions=None, chan=None):
         stamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.logbox.config(state="normal")
         self.finish_dots()
         self.logbox.insert("end", f"[{stamp}] ", "ts")
+        if chan:
+            self.logbox.insert("end", f"{chan} // ", "chan")      # Meldung eines nicht angezeigten Kanals
         if actions:
             # Zeile mit anklickbaren Aktionen (z. B. Playlist im Browser öffnen)
             self.logbox.insert("end", text, level)
@@ -10176,7 +10194,13 @@ class App(tk.Tk):
                         save(vf, view)
                     continue
                 if kind == "log":
-                    self.write_log(msg[1], msg[2])
+                    chan = None
+                    if self.worker_foreign():
+                        c = self.worker.ctx.channel or {}
+                        chan = (c.get("handle") or c.get("title") or "").upper() or None
+                        if chan and chan in str(msg[1]).upper():
+                            chan = None            # steht schon in der Zeile (AUTO-CHECK // @KANAL // ...)
+                    self.write_log(msg[1], msg[2], chan=chan)
                 elif kind == "progress":
                     y = msg[1]
                     if y in self.rows:

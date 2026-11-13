@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-11-13
+
+### Changed
+- Log lines of a run or check for a channel that isn't shown start with that channel's handle in cyan (e.g. "@CHANNEL // 2026 // NO NEW VIDEOS").
+- AUTO-CHECK with an interval remembers its last check across restarts: after a restart the next check follows the interval instead of running again after one minute. If the last check is longer ago than the interval, it still runs one minute after the start.
+
 ## [4.2.0] - 2026-11-08
 
 ### Added
@@ -270,7 +276,8 @@ First public release.
 
 Versions before 2.7.0 were developed privately and are not published.
 
-[Unreleased]: https://github.com/LooneyN/chronolist/compare/v4.2.0...HEAD
+[Unreleased]: https://github.com/LooneyN/chronolist/compare/v4.2.1...HEAD
+[4.2.1]: https://github.com/LooneyN/chronolist/compare/v4.2.0...v4.2.1
 [4.2.0]: https://github.com/LooneyN/chronolist/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/LooneyN/chronolist/compare/v4.0.1...v4.1.0
 [4.0.1]: https://github.com/LooneyN/chronolist/compare/v4.0.0...v4.0.1
