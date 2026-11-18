@@ -20,6 +20,7 @@ Einstellungen: settings.json     (u. a. Zielkanal, Playlist-Namensvorlage, Updat
 Fortschritt:   data/<kanal>/videos_<jahr>.json, collect_<jahr>.json, state_<jahr>.json
 """
 import copy
+import functools
 import datetime
 import json
 import os
@@ -99,7 +100,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.3.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 186
+BUILD = 187
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -815,16 +816,37 @@ def norm_text(s):
     return " ".join(str(s or "").casefold().split())
 
 
+_QUOTES = "\"\u201c\u201d\u201e\u00ab\u00bb"
+
+
 def parse_terms(text):
-    """'a, b' oder Zeilen -> ['a', 'b'] (klein geschrieben, ohne Leereinträge)."""
+    """'a, b' oder Zeilen -> ['a', 'b'] (klein geschrieben, ohne Leereinträge).
+    Typografische Anführungszeichen werden zu normalen ("GTA VI" = ganze Wörter)."""
     if isinstance(text, (list, tuple)):
         text = "\n".join(text)
     out = []
     for part in re.split(r"[,\n;]", str(text or "")):
         t = norm_text(part)
+        if len(t) >= 2 and t[0] in _QUOTES and t[-1] in _QUOTES:
+            t = '"' + t[1:-1].strip() + '"' if t[1:-1].strip() else ""
         if t and t not in out:
             out.append(t)
     return out
+
+
+@functools.lru_cache(maxsize=512)
+def _term_rx(term):
+    if len(term) >= 3 and term[0] == '"' and term[-1] == '"':
+        return re.compile(r"(?<!\w)" + re.escape(term[1:-1]) + r"(?!\w)")    # "GTA VI": nur ganze Wörter
+    if len(term) >= 2 and term.endswith("*"):
+        return re.compile(r"(?<!\w)" + re.escape(term[:-1].rstrip()))         # zelda*: Wortanfang
+    return None
+
+
+def term_hit(term, text):
+    """Steckt ein Suchbegriff im (normalisierten) Titel? Ohne Zeichen: irgendwo enthalten (wie bisher)."""
+    rx = _term_rx(term)
+    return bool(rx.search(text)) if rx else term in text
 
 
 def title_matches(lst, title):
@@ -833,11 +855,11 @@ def title_matches(lst, title):
     any_t, all_t, none_t = (lst.get("any") or []), (lst.get("all") or []), (lst.get("none") or [])
     if not (any_t or all_t):
         return False                      # ohne Suchbegriff keine Treffer
-    if any_t and not any(x in t for x in any_t):
+    if any_t and not any(term_hit(x, t) for x in any_t):
         return False
-    if all_t and not all(x in t for x in all_t):
+    if all_t and not all(term_hit(x, t) for x in all_t):
         return False
-    return not any(x in t for x in none_t)
+    return not any(term_hit(x, t) for x in none_t)
 
 
 def year_files():
@@ -6925,6 +6947,9 @@ HELP_TEXT_DE = [
           "Stichwörtern passen, in Upload-Reihenfolge. Du gibst einen Namen ein (er wird der Playlist-Titel) und Begriffe: "
           "\"enthält eines davon\", \"und alle diese\" und \"aber keines dieser\". Gross-/Kleinschreibung zählt nicht. "
           "Optional grenzt du die Liste auf einen Zeitraum von Jahren ein (z. B. 2016 bis 2020). "
+          "Ein Begriff in Anführungszeichen zählt nur als ganze Wörter: \"GTA VI\" passt auf „GTA VI Trailer“, aber nicht "
+          "auf „GTA Vice City“. Ein Sternchen am Ende heißt „Wort beginnt mit“: zelda* passt auf „Zelda“ und „Zeldas“. "
+          "Ohne Zeichen genügt es, wenn der Begriff irgendwo im Titel steckt. "
           "Unter VIDEOS VON nimmst du weitere Kanäle aus deiner Kanalliste dazu, etwa einen Live-Kanal: Ihre Treffer "
           "werden nach Upload-Zeit eingemischt, und ein noch nie gescannter Kanal wird beim nächsten Lauf gescannt. "
           "Die Vorschau zeigt sofort, wie viele Videos passen. Videos schließt du aus (mit Strg/Umschalt+Klick mehrere wählen, dann AUSSCHLIESSEN), und in der Ansicht ALLE CHANNEL-VIDEOS nimmst du auch Videos auf, die nicht passen "
@@ -7179,6 +7204,9 @@ HELP_TEXT_EN = [
     ("p", "Below the years, CUSTOM LIST creates a playlist of all videos whose title matches your keywords, in upload "
           "order. Enter a name (it becomes the playlist title) and terms: \"contains any of\", \"and all of these\" and "
           "\"but none of these\". Upper/lower case is ignored. Optionally limit the list to a range of years (e.g. 2016 to 2020). "
+          "A term in quotes only counts as whole words: \"GTA VI\" matches \"GTA VI Trailer\" but not \"GTA Vice City\". "
+          "A star at the end means \"word starts with\": zelda* matches \"Zelda\" and \"Zeldas\". "
+          "Without either, the term may appear anywhere in the title. "
           "Under VIDEOS FROM you can add other channels from your channel list, such as a live channel: their matches are "
           "mixed in by upload time, and a channel that was never scanned is scanned on the next run. "
           "The preview shows right away how many videos match. "
@@ -7649,7 +7677,7 @@ class SuggestDialog(tk.Toplevel):
 
     def fill(self):
         qs = parse_terms(self.q.get())
-        self.shown = [it for it in self.items if not qs or any(t in norm_text(it["name"]) for t in qs)]
+        self.shown = [it for it in self.items if not qs or any(term_hit(t, norm_text(it["name"])) for t in qs)]
         self.lb.delete(0, "end")
         for it in self.shown:
             yrs = str(it["from"]) if it["from"] == it["to"] else f"{it['from']}–{it['to']}"
@@ -7785,7 +7813,11 @@ class ListDialog(tk.Toplevel):
 
         Section(left, L("FILTER", "FILTER"), "KEYWORDS // YEARS").pack(fill="x", pady=(0, px(10)))
         tk.Label(left, text=L("A VIDEO IS INCLUDED IF ITS TITLE CONTAINS ...", "EIN VIDEO KOMMT IN DIE LISTE, WENN SEIN TITEL ... ENTHÄLT"),
-                 bg=BG, fg=CYAN, font=F("mono", 11), anchor="w").pack(fill="x", pady=(0, px(6)))
+                 bg=BG, fg=CYAN, font=F("mono", 11), anchor="w").pack(fill="x", pady=(0, px(2)))
+        tk.Label(left, text=L('"GTA VI" IN QUOTES = WHOLE WORDS ONLY (NOT GTA VICE CITY)  //  ZELDA* = WORD STARTS WITH',
+                              '"GTA VI" IN ANFÜHRUNGSZEICHEN = NUR GANZE WÖRTER (NICHT GTA VICE CITY)  //  ZELDA* = WORT BEGINNT MIT'),
+                 bg=BG, fg=TEXT_MUTED, font=F("mono", 10, False), anchor="w", justify="left",
+                 wraplength=px(420)).pack(fill="x", pady=(0, px(6)))
         self.any_var = tk.StringVar(value=", ".join(lst.get("any") or []))
         self.rule_field(left, L("ANY OF", "EINES VON"), L("at least one, comma = or, e.g. minecraft, zelda",
                                                           "mindestens eines, Komma = oder, z. B. minecraft, zelda"), self.any_var)
@@ -8032,7 +8064,7 @@ class ListDialog(tk.Toplevel):
                 skipped += 1
             if qs:
                 t_ = norm_text(self.titles.get(v["id"], ""))
-                if not any(q in t_ or q == v["id"].lower() for q in qs):
+                if not any(term_hit(q, t_) or q == v["id"].lower() for q in qs):
                     continue
             if not show_all:
                 if st == "skip":
