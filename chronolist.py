@@ -100,7 +100,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.3.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 187
+BUILD = 188
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -7839,8 +7839,8 @@ class ListDialog(tk.Toplevel):
                          font=F("mono", 13, False), highlightthickness=1, highlightcolor=CYAN,
                          highlightbackground=mix(CYAN, BG, 0.4), selectbackground=mix(CYAN, BG, 0.3))
             e.pack(side="left", ipady=px(4))
-        tk.Label(left, text=L("UPPER/LOWER CASE IS IGNORED. A TERM MATCHES ANYWHERE IN THE TITLE.",
-                              "GROSS-/KLEINSCHREIBUNG ZÄHLT NICHT. EIN BEGRIFF PASST ÜBERALL IM TITEL."),
+        tk.Label(left, text=L("UPPER/LOWER CASE IS IGNORED. WITHOUT QUOTES OR STAR, A TERM MATCHES ANYWHERE IN THE TITLE.",
+                              "GROSS-/KLEINSCHREIBUNG ZÄHLT NICHT. OHNE ANFÜHRUNGSZEICHEN ODER STERN PASST EIN BEGRIFF ÜBERALL IM TITEL."),
                  bg=BG, fg=TEXT_MUTED, font=F("mono", 11, False), anchor="w", justify="left", wraplength=px(420)).pack(fill="x", pady=(0, px(8)))
 
         self.rule_sum = tk.Label(left, text="", bg=BG, fg=TEXT_DIM, font=F("mono", 11, False), anchor="w", justify="left",
