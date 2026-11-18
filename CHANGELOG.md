@@ -7,6 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 - Search terms in custom lists can use modifiers: a term in quotes only matches whole words ("GTA VI" finds "GTA VI Trailer" but no longer "GTA Vice City"), and a star at the end means "word starts with" (zelda* finds "Zelda" and "Zeldas"). Terms without either work as before.
+- The list editor no longer shows excluded videos that don't match the rules anyway, and saving the list removes them from its exclusions.
 
 ## [4.2.1] - 2026-11-13
 

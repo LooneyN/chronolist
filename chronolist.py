@@ -100,7 +100,7 @@ PRIVACY_OPTIONS = ("public", "unlisted", "private")
 TEMPLATE_FIELDS = ("channel", "handle", "year", "count")
 APP_NAME = "Chronolist"
 VERSION = "4.3.0-dev"   # Entwicklungsstand; beim Release ohne "-dev"
-BUILD = 188
+BUILD = 189
 REPO = "LooneyN/chronolist"
 REPO_URL = f"https://github.com/{REPO}"
 # ------------------------------------------------------------------------------
@@ -8057,7 +8057,9 @@ class ListDialog(tk.Toplevel):
         capped = False
         skips = []
         for v in self.pool:
-            st, _ = self.state_of(v, cur)
+            st, rule = self.state_of(v, cur)
+            if st == "skip" and not rule:
+                st = "out"          # Ausschluss, der nach den jetzigen Regeln ohnehin nicht passt: nicht mehr zeigen
             if st in ("hit", "add"):
                 hits += 1
             elif st == "skip":
@@ -8194,6 +8196,9 @@ class ListDialog(tk.Toplevel):
         if not (cur["any"] or cur["all"]):
             self.note.configure(text=L("PLEASE ENTER AT LEAST ONE KEYWORD.", "BITTE MINDESTENS EIN STICHWORT EINGEBEN."), fg=RED)
             return
+        # Ausschlüsse, die nach den Regeln ohnehin nicht passen, sind überflüssig: beim Speichern aufräumen
+        by_id = {v["id"]: v for v in self.pool}
+        cur["skip"] = sorted(vid for vid in self.skip if vid in by_id and self.state_of(by_id[vid], cur)[1])
         lists = load_lists()
         if self.lst_id:
             lst = next((x for x in lists if x["id"] == self.lst_id), None)
